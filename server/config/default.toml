@@ -1,5 +1,5 @@
 bind_addr = "0.0.0.0:7878"
-sqlite_path = "data/rustnano.sqlite3"
+sqlite_path = "data/nexus.sqlite3"
 vlm_endpoint = "http://100.80.10.33:1234/v1/chat/completions"
 
 [limits]
@@ -8,8 +8,8 @@ request_timeout_ms = 30000
 max_inflight_requests = 2000
 
 [auth]
-token_issuer = "rustnano"
-audience = "rustnano-nodes"
+token_issuer = "nexus"
+audience = "nexus-nodes"
 node_auth_token = "dev-token"
 admin_username = "admin"
 admin_password = "admin"
