@@ -1,0 +1,10 @@
+[package]
+name = "storage"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+shared-protocol = { path = "../shared-protocol" }
+thiserror.workspace = true

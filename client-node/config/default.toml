@@ -1,0 +1,10 @@
+node_id = "local-node-1"
+tenant_id = "tenant-dev"
+user_id = "user-dev"
+server_endpoint = "ws://127.0.0.1:7878/ws"
+auth_token = "dev-token"
+
+[limits]
+max_connections = 500
+request_timeout_ms = 30000
+max_inflight_requests = 2000
