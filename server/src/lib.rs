@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::{password_hash::rand_core::OsRng, Argon2};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Json, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -21,6 +23,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio::time::interval;
 use tracing::{error, info};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -285,6 +288,13 @@ async fn dispatch_tool(
     if !admin_authorized_headers(&state.config, &headers) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
+    dispatch_tool_inner(&state, req).await
+}
+
+async fn dispatch_tool_inner(
+    state: &AppState,
+    req: RpcDispatchRequest,
+) -> axum::response::Response {
     if state.inflight_guard.available_permits() == 0 {
         return (StatusCode::TOO_MANY_REQUESTS, "inflight limit").into_response();
     }
@@ -374,21 +384,22 @@ async fn register_user(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> impl IntoResponse {
-    let password_hash = format!("plain:{}", req.password);
-    let user = shared_protocol::LoginUser {
-        username: req.username.clone(),
-        password_hash,
+    let password_hash = match hash_password(&req.password) {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    let account = shared_protocol::UserAccount {
         tenant_id: req.tenant_id.clone(),
         user_id: req.user_id.clone(),
+        display_name: req.display_name,
     };
-    if let Err(err) = state.repo.upsert_user(&shared_protocol::UserAccount {
+    let login = shared_protocol::LoginUser {
+        username: req.username,
+        password_hash,
         tenant_id: req.tenant_id,
         user_id: req.user_id,
-        display_name: req.display_name,
-    }) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-    }
-    match state.repo.create_login_user(&user) {
+    };
+    match state.repo.register_user_with_login(&account, &login) {
         Ok(_) => (StatusCode::CREATED, "registered").into_response(),
         Err(storage::StorageError::UsernameConflict) => {
             (StatusCode::CONFLICT, "username exists").into_response()
@@ -401,14 +412,16 @@ async fn login_user(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    let password_hash = format!("plain:{}", req.password);
-    let Some(user) = (match state.repo.authenticate_login_user(&req.username, &password_hash) {
+    let Some(user) = (match state.repo.get_login_user_by_username(&req.username) {
         Ok(v) => v,
         Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }) else {
         return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
     };
-    let session_id = format!("sess-{}-{}", now_ms(), req.username);
+    if !verify_password(&req.password, &user.password_hash) {
+        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+    }
+    let session_id = Uuid::new_v4().to_string();
     let session = shared_protocol::LoginSession {
         session_id: session_id.clone(),
         username: req.username,
@@ -461,17 +474,9 @@ async fn dispatch_tool_for_session(
         return (StatusCode::NOT_FOUND, "device not found").into_response();
     };
 
-    let mut headers = HeaderMap::new();
-    let auth_value =
-        format!("Basic {}:{}", state.config.auth.admin_username, state.config.auth.admin_password);
-    if let Ok(v) = auth_value.parse() {
-        headers.insert("authorization", v);
-    }
-
-    dispatch_tool(
-        State(state),
-        headers,
-        Json(RpcDispatchRequest {
+    dispatch_tool_inner(
+        &state,
+        RpcDispatchRequest {
             request_id: req.request_id,
             tenant_id: session.tenant_id,
             user_id: session.user_id,
@@ -481,10 +486,24 @@ async fn dispatch_tool_for_session(
             input_tokens: req.input_tokens,
             output_tokens: req.output_tokens,
             model: req.model,
-        }),
+        },
     )
     .await
-    .into_response()
+}
+
+fn hash_password(password: &str) -> Result<String> {
+    let salt = SaltString::generate(&mut OsRng);
+    Ok(Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| anyhow!("password hash failure: {e}"))?
+        .to_string())
+}
+
+fn verify_password(password: &str, password_hash: &str) -> bool {
+    let Ok(parsed) = PasswordHash::new(password_hash) else {
+        return false;
+    };
+    Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok()
 }
 
 fn eval_calc(command: &str) -> Result<String> {
@@ -643,7 +662,8 @@ mod tests {
     use tokio::net::TcpListener as TokioTcpListener;
 
     use super::{
-        admin_authorized_headers, eval_calc, provider_health, run_connection_load_baseline,
+        admin_authorized_headers, eval_calc, hash_password, provider_health,
+        run_connection_load_baseline, verify_password,
     };
 
     #[test]
@@ -665,6 +685,14 @@ mod tests {
             auth: AuthConfig::default(),
         };
         assert!(admin_authorized_headers(&config, &headers));
+    }
+
+    #[test]
+    fn password_hash_and_verify_roundtrip() {
+        let hash = hash_password("super-secret").expect("hash");
+        assert_ne!(hash, "super-secret");
+        assert!(verify_password("super-secret", &hash));
+        assert!(!verify_password("wrong", &hash));
     }
 
     #[tokio::test]
