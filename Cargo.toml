@@ -12,6 +12,7 @@ anyhow = "1.0.100"
 axum = { version = "0.8.4", features = ["http1", "json", "tokio", "ws"] }
 futures-util = "0.3.31"
 reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls"] }
+postgres = "0.19.12"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

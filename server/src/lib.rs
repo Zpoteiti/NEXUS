@@ -11,12 +11,12 @@ use axum::routing::{get, post};
 use axum::{serve, Router};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use shared_protocol::{
     ClientToServer, NodeHello, NodeRegistration, ProviderHealth, ServerConfig, ServerToClient,
     ToolKind, ToolRequest, ToolResult, UsageRecord,
 };
-use storage::{GatewayRepository, SqliteRepository};
+use storage::{GatewayRepository, RepositoryFactory, StorageFactory};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio::time::interval;
@@ -59,11 +59,56 @@ pub struct RouteLookupRequest {
     pub external_user: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RegisterRequest {
+    pub username: String,
+    pub password: String,
+    pub tenant_id: String,
+    pub user_id: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LoginResponse {
+    pub session_id: String,
+    pub tenant_id: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SessionQuery {
+    pub session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DispatchByAliasRequest {
+    pub request_id: String,
+    pub tool: ToolKind,
+    pub command: String,
+    pub device_alias: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model: String,
+}
+
 pub async fn run(config: ServerConfig) -> Result<()> {
-    let repo: Arc<dyn GatewayRepository> = Arc::new(
-        SqliteRepository::new(&config.sqlite_path)
-            .with_context(|| format!("open sqlite at {}", config.sqlite_path))?,
-    );
+    let repo: Arc<dyn GatewayRepository> = if let Some(dsn) = &config.postgres_dsn {
+        Arc::from(
+            <StorageFactory as RepositoryFactory>::postgres(dsn)
+                .with_context(|| "open postgres")?,
+        )
+    } else {
+        Arc::from(
+            <StorageFactory as RepositoryFactory>::sqlite(&config.sqlite_path)
+                .with_context(|| format!("open sqlite at {}", config.sqlite_path))?,
+        )
+    };
     repo.migrate()?;
 
     let state = AppState {
@@ -79,6 +124,10 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         .route("/health", get(health))
         .route("/ws", get(ws_handler))
         .route("/rpc/tool", post(dispatch_tool))
+        .route("/auth/register", post(register_user))
+        .route("/auth/login", post(login_user))
+        .route("/user/devices", get(user_devices))
+        .route("/user/dispatch", post(dispatch_tool_for_session))
         .route("/admin/tenants", get(admin_tenants))
         .route("/admin/usage", get(admin_usage))
         .route("/admin/nodes", get(admin_nodes))
@@ -133,6 +182,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         drop(permit);
         return;
     }
+    let _ = state.repo.upsert_user_device(&shared_protocol::UserDevice {
+        tenant_id: registration.tenant_id.clone(),
+        user_id: registration.user_id.clone(),
+        node_id: registration.node_id.clone(),
+        alias: registration.node_id.clone(),
+    });
 
     let (tx, mut rx) = mpsc::channel::<ServerToClient>(64);
     {
@@ -315,6 +370,123 @@ async fn dispatch_tool(
     Json(tool_result).into_response()
 }
 
+async fn register_user(
+    State(state): State<AppState>,
+    Json(req): Json<RegisterRequest>,
+) -> impl IntoResponse {
+    let password_hash = format!("plain:{}", req.password);
+    let user = shared_protocol::LoginUser {
+        username: req.username.clone(),
+        password_hash,
+        tenant_id: req.tenant_id.clone(),
+        user_id: req.user_id.clone(),
+    };
+    if let Err(err) = state.repo.upsert_user(&shared_protocol::UserAccount {
+        tenant_id: req.tenant_id,
+        user_id: req.user_id,
+        display_name: req.display_name,
+    }) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+    }
+    match state.repo.create_login_user(&user) {
+        Ok(_) => (StatusCode::CREATED, "registered").into_response(),
+        Err(storage::StorageError::UsernameConflict) => {
+            (StatusCode::CONFLICT, "username exists").into_response()
+        }
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn login_user(
+    State(state): State<AppState>,
+    Json(req): Json<LoginRequest>,
+) -> impl IntoResponse {
+    let password_hash = format!("plain:{}", req.password);
+    let Some(user) = (match state.repo.authenticate_login_user(&req.username, &password_hash) {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }) else {
+        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+    };
+    let session_id = format!("sess-{}-{}", now_ms(), req.username);
+    let session = shared_protocol::LoginSession {
+        session_id: session_id.clone(),
+        username: req.username,
+        tenant_id: user.tenant_id.clone(),
+        user_id: user.user_id.clone(),
+        created_at_ms: now_ms(),
+    };
+    if let Err(err) = state.repo.save_login_session(&session) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+    }
+    Json(LoginResponse { session_id, tenant_id: user.tenant_id, user_id: user.user_id })
+        .into_response()
+}
+
+async fn user_devices(
+    State(state): State<AppState>,
+    Query(q): Query<SessionQuery>,
+) -> impl IntoResponse {
+    let Some(session) = (match state.repo.get_login_session(&q.session_id) {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }) else {
+        return (StatusCode::UNAUTHORIZED, "invalid session").into_response();
+    };
+    match state.repo.list_user_devices(&session.tenant_id, &session.user_id) {
+        Ok(v) => Json(v).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn dispatch_tool_for_session(
+    State(state): State<AppState>,
+    Query(q): Query<SessionQuery>,
+    Json(req): Json<DispatchByAliasRequest>,
+) -> impl IntoResponse {
+    let Some(session) = (match state.repo.get_login_session(&q.session_id) {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }) else {
+        return (StatusCode::UNAUTHORIZED, "invalid session").into_response();
+    };
+    let Some(node_id) = (match state.repo.resolve_device_node(
+        &session.tenant_id,
+        &session.user_id,
+        &req.device_alias,
+    ) {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }) else {
+        return (StatusCode::NOT_FOUND, "device not found").into_response();
+    };
+
+    let mut headers = HeaderMap::new();
+    let auth_value =
+        format!("Basic {}:{}", state.config.auth.admin_username, state.config.auth.admin_password);
+    if let Ok(v) = auth_value.parse() {
+        headers.insert("authorization", v);
+    }
+
+    dispatch_tool(
+        State(state),
+        headers,
+        Json(RpcDispatchRequest {
+            request_id: req.request_id,
+            tenant_id: session.tenant_id,
+            user_id: session.user_id,
+            node_id,
+            tool: req.tool,
+            command: req.command,
+            input_tokens: req.input_tokens,
+            output_tokens: req.output_tokens,
+            model: req.model,
+        }),
+    )
+    .await
+    .into_response()
+}
+
 fn eval_calc(command: &str) -> Result<String> {
     let parts = command.split_whitespace().collect::<Vec<_>>();
     if parts.len() != 3 {
@@ -487,6 +659,7 @@ mod tests {
         let config = ServerConfig {
             bind_addr: "127.0.0.1:7878".to_owned(),
             sqlite_path: ":memory:".to_owned(),
+            postgres_dsn: None,
             vlm_endpoint: "http://127.0.0.1/health".to_owned(),
             limits: RuntimeLimits::default(),
             auth: AuthConfig::default(),

@@ -1,6 +1,6 @@
 # NEXUS
 
-NEXUS is a multitenant Rust gateway with SQLite-first persistence, WebSocket node RPC, tenant-scoped channel routing, and an admin interface.
+NEXUS is a multitenant Rust gateway with pluggable SQLite/PostgreSQL persistence, WebSocket node RPC, tenant-scoped channel routing, and an admin interface.
 
 ## Components
 
@@ -14,7 +14,8 @@ NEXUS is a multitenant Rust gateway with SQLite-first persistence, WebSocket nod
 Server default config is in `server/config/default.toml`:
 
 - `bind_addr`: HTTP/WebSocket bind address
-- `sqlite_path`: SQLite database path
+- `sqlite_path`: SQLite database path (used when `postgres_dsn` is unset)
+- `postgres_dsn`: PostgreSQL DSN (optional, preferred for multi-user login/session storage)
 - `vlm_endpoint`: provider health-check endpoint
 - `auth.node_auth_token`: token required for node registration
 - `auth.admin_username` and `auth.admin_password`: admin guard credentials
@@ -52,6 +53,10 @@ Admin and service endpoints:
 - `GET /admin/channel-route?tenant_id=...&channel_name=...&external_user=...`
 - `GET /admin/provider-health`
 - `POST /rpc/tool`
+- `POST /auth/register`
+- `POST /auth/login`
+- `GET /user/devices?session_id=...`
+- `POST /user/dispatch?session_id=...`
 - `GET /ws`
 
 Use header `authorization: Basic <username>:<password>` for admin and RPC routes.
@@ -60,7 +65,7 @@ Use header `authorization: Basic <username>:<password>` for admin and RPC routes
 
 - SQLite schema is created by `SqliteRepository::migrate()`.
 - Repository access is done through `GatewayRepository`.
-- PostgreSQL migration path is scaffolded by `PostgresScaffoldRepository` and `RepositoryFactory`.
+- PostgreSQL support is implemented by `PostgresRepository` and selected via `RepositoryFactory`.
 
 ## Safeguards
 
@@ -75,3 +80,11 @@ Use header `authorization: Basic <username>:<password>` for admin and RPC routes
 - Tenant isolation and per-user channel binding tests in `storage/tests`
 - Tool RPC roundtrip test in `server/tests/tool_roundtrip.rs`
 - Provider health-check and load baseline tests in `server/src/lib.rs` tests
+
+
+## Login / Tenant / Device Model
+
+- Registration creates a globally unique `username` in `login_users` and maps it to (`tenant_id`, `user_id`).
+- Login returns a `session_id`; every session is persisted in `login_sessions` (PostgreSQL/SQLite).
+- Each user can own multiple devices (`user_devices` alias -> `node_id`).
+- `/user/dispatch` resolves device alias using session scope, so user A can only dispatch to user A devices.

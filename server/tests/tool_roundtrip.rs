@@ -20,6 +20,7 @@ async fn tool_roundtrip_returns_client_result() {
     let config = ServerConfig {
         bind_addr: address.clone(),
         sqlite_path: db_path,
+        postgres_dsn: None,
         vlm_endpoint: "http://127.0.0.1:1/health".to_owned(),
         limits: RuntimeLimits {
             max_connections: 600,

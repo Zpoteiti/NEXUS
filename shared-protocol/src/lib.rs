@@ -39,6 +39,7 @@ impl Default for AuthConfig {
 pub struct ServerConfig {
     pub bind_addr: String,
     pub sqlite_path: String,
+    pub postgres_dsn: Option<String>,
     pub vlm_endpoint: String,
     pub limits: RuntimeLimits,
     pub auth: AuthConfig,
@@ -49,6 +50,7 @@ impl Default for ServerConfig {
         Self {
             bind_addr: "0.0.0.0:7878".to_owned(),
             sqlite_path: "data/nexus.sqlite3".to_owned(),
+            postgres_dsn: None,
             vlm_endpoint: "http://100.80.10.33:1234/v1/chat/completions".to_owned(),
             limits: RuntimeLimits::default(),
             auth: AuthConfig::default(),
@@ -114,6 +116,31 @@ pub struct UserAccount {
     pub tenant_id: String,
     pub user_id: String,
     pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoginUser {
+    pub username: String,
+    pub password_hash: String,
+    pub tenant_id: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoginSession {
+    pub session_id: String,
+    pub username: String,
+    pub tenant_id: String,
+    pub user_id: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserDevice {
+    pub tenant_id: String,
+    pub user_id: String,
+    pub node_id: String,
+    pub alias: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
