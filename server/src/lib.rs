@@ -7,11 +7,13 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::{password_hash::rand_core::OsRng, Argon2};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, get_service, post};
 use axum::{serve, Json, Router};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use cookie::Cookie;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use shared_protocol::{
@@ -21,6 +23,7 @@ use shared_protocol::{
 use storage::{
     GatewayRepository, PostgresRepository, SessionListItem, UsageDetailItem, UsageTrendPoint,
 };
+use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio::time::interval;
@@ -480,16 +483,20 @@ async fn dispatch_tool_inner(state: &AppState, req: RpcDispatchRequest) -> Respo
 }
 
 fn parse_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookie = headers.get("cookie")?.to_str().ok()?;
-    cookie.split(';').find_map(|pair| {
-        let mut it = pair.trim().splitn(2, '=');
-        let k = it.next()?;
-        let v = it.next().unwrap_or_default();
-        if k == name {
-            Some(v.to_owned())
-        } else {
-            None
-        }
+    headers.get_all(header::COOKIE).iter().find_map(|value| {
+        let cookie_header = value.to_str().ok()?;
+        cookie_header
+            .split(';')
+            .filter_map(|cookie| Cookie::parse_encoded(cookie.trim()).ok())
+            .find_map(
+                |cookie| {
+                    if cookie.name() == name {
+                        Some(cookie.value().to_owned())
+                    } else {
+                        None
+                    }
+                },
+            )
     })
 }
 
@@ -816,7 +823,7 @@ async fn user_usage_details(
 }
 
 fn admin_authorized_headers(config: &ServerConfig, headers: &HeaderMap) -> bool {
-    let Some(value) = headers.get("authorization") else {
+    let Some(value) = headers.get(header::AUTHORIZATION) else {
         return false;
     };
     let Ok(value) = value.to_str() else {
@@ -825,8 +832,10 @@ fn admin_authorized_headers(config: &ServerConfig, headers: &HeaderMap) -> bool 
     if !value.starts_with("Basic ") {
         return false;
     }
-    let expected = format!("Basic {}:{}", config.auth.admin_username, config.auth.admin_password);
-    value == expected
+    let expected_credentials = BASE64_STANDARD
+        .encode(format!("{}:{}", config.auth.admin_username, config.auth.admin_password));
+    let expected = format!("Basic {expected_credentials}");
+    value.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 fn now_ms() -> u64 {
@@ -877,10 +886,10 @@ mod tests {
     #[test]
     fn admin_auth_guard_checks_basic_header() {
         let mut headers = HeaderMap::new();
-        headers.insert("authorization", HeaderValue::from_static("Basic admin:admin"));
+        headers.insert("authorization", HeaderValue::from_static("Basic YWRtaW46YWRtaW4="));
         let config = ServerConfig {
             bind_addr: "127.0.0.1:7878".to_owned(),
-            postgres_dsn: "postgres://postgres:postgres@127.0.0.1:5432/nexus".to_owned(),
+            postgres_dsn: "postgres://user:pass@127.0.0.1:5432/nexus".to_owned(),
             vlm_endpoint: "http://127.0.0.1/health".to_owned(),
             limits: RuntimeLimits::default(),
             auth: AuthConfig::default(),

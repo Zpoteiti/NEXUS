@@ -3,8 +3,8 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
-const username = ref('admin')
-const password = ref('admin')
+const username = ref('')
+const password = ref('')
 const role = ref<'admin' | 'user'>('user')
 const error = ref('')
 const auth = useAuthStore()
