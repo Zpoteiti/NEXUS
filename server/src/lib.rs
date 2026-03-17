@@ -6,22 +6,25 @@ use anyhow::{anyhow, Context, Result};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{password_hash::rand_core::OsRng, Argon2};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Json, Query, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
-use axum::routing::{get, post};
-use axum::{serve, Router};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, get_service, post};
+use axum::{serve, Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use shared_protocol::{
-    ClientToServer, NodeHello, NodeRegistration, ProviderHealth, ServerConfig, ServerToClient,
-    ToolKind, ToolRequest, ToolResult, UsageRecord,
+    ClientToServer, NodeHello, NodeRegistration, ServerConfig, ServerToClient, ToolKind,
+    ToolRequest, ToolResult, UsageRecord,
 };
-use storage::{GatewayRepository, RepositoryFactory, StorageFactory};
+use storage::{
+    GatewayRepository, PostgresRepository, SessionListItem, UsageDetailItem, UsageTrendPoint,
+};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio::time::interval;
+use tower_http::services::ServeDir;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -56,13 +59,6 @@ pub struct RpcDispatchRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RouteLookupRequest {
-    pub tenant_id: String,
-    pub channel_name: String,
-    pub external_user: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
     pub username: String,
     pub password: String,
@@ -79,14 +75,9 @@ pub struct LoginRequest {
 
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
-    pub session_id: String,
     pub tenant_id: String,
     pub user_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SessionQuery {
-    pub session_id: String,
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,18 +91,79 @@ pub struct DispatchByAliasRequest {
     pub model: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ListQuery {
+    limit: Option<u32>,
+    offset: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrendQuery {
+    days: Option<u32>,
+    tenant_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiError {
+    code: &'static str,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminDashboardResponse {
+    total_users: u64,
+    daily_active_users: u64,
+    usage_by_user: Vec<UserUsageItem>,
+    usage_trend: Vec<UsageTrendItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct UserUsageItem {
+    tenant_id: String,
+    user_id: String,
+    requests: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct UsageTrendItem {
+    day: String,
+    requests: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct UserDashboardResponse {
+    tenant_id: String,
+    user_id: String,
+    sessions: u64,
+    memories: u64,
+    requests: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+}
+
+fn api_error(status: StatusCode, code: &'static str, message: impl Into<String>) -> Response {
+    (status, Json(ApiError { code, message: message.into() })).into_response()
+}
+
+async fn require_admin_auth(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !admin_authorized_headers(&state.config, &headers) {
+        return api_error(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "unauthorized");
+    }
+    next.run(request).await
+}
+
 pub async fn run(config: ServerConfig) -> Result<()> {
-    let repo: Arc<dyn GatewayRepository> = if let Some(dsn) = &config.postgres_dsn {
-        Arc::from(
-            <StorageFactory as RepositoryFactory>::postgres(dsn)
-                .with_context(|| "open postgres")?,
-        )
-    } else {
-        Arc::from(
-            <StorageFactory as RepositoryFactory>::sqlite(&config.sqlite_path)
-                .with_context(|| format!("open sqlite at {}", config.sqlite_path))?,
-        )
-    };
+    let repo: Arc<dyn GatewayRepository> =
+        Arc::new(PostgresRepository::new(&config.postgres_dsn).with_context(|| "open postgres")?);
     repo.migrate()?;
 
     let state = AppState {
@@ -123,20 +175,34 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         pending: Arc::new(Mutex::new(HashMap::new())),
     };
 
+    let admin_routes = Router::new()
+        .route("/rpc/tool", post(dispatch_tool))
+        .route("/api/admin/dashboard", get(admin_dashboard_data))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin_auth));
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/ws", get(ws_handler))
-        .route("/rpc/tool", post(dispatch_tool))
+        .route("/openapi.yaml", get(openapi_yaml))
         .route("/auth/register", post(register_user))
         .route("/auth/login", post(login_user))
+        .route("/auth/logout", post(logout_user))
+        .route("/api/user/dashboard", get(user_dashboard_data))
+        .route("/api/user/sessions", get(user_sessions))
+        .route("/api/user/sessions/{session_id}/memory", get(user_session_memory))
+        .route("/api/user/usage", get(user_usage_details))
         .route("/user/devices", get(user_devices))
         .route("/user/dispatch", post(dispatch_tool_for_session))
-        .route("/admin/tenants", get(admin_tenants))
-        .route("/admin/usage", get(admin_usage))
-        .route("/admin/nodes", get(admin_nodes))
-        .route("/admin/channel-route", get(admin_channel_route))
-        .route("/admin/provider-health", get(admin_provider_health))
-        .route("/admin", get(admin_html))
+        .route("/admin", get(spa_admin))
+        .route("/admin/{*path}", get(spa_admin))
+        .route("/app", get(spa_app))
+        .route("/app/{*path}", get(spa_app))
+        .nest_service(
+            "/assets",
+            get_service(ServeDir::new("webui/dist/assets"))
+                .handle_error(|_| async { (StatusCode::INTERNAL_SERVER_ERROR, "asset error") }),
+        )
+        .merge(admin_routes)
         .with_state(state);
 
     let listener = TcpListener::bind(&config.bind_addr)
@@ -144,6 +210,32 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         .with_context(|| format!("bind {}", config.bind_addr))?;
     info!("server listening on {}", config.bind_addr);
     serve(listener, app).await.context("axum serve failed")
+}
+
+async fn openapi_yaml() -> impl IntoResponse {
+    match tokio::fs::read_to_string("server/openapi.yaml").await {
+        Ok(v) => ([("content-type", "application/yaml")], v).into_response(),
+        Err(_) => api_error(StatusCode::NOT_FOUND, "NOT_FOUND", "openapi not found"),
+    }
+}
+
+async fn spa_admin() -> impl IntoResponse {
+    serve_spa_index().await
+}
+
+async fn spa_app() -> impl IntoResponse {
+    serve_spa_index().await
+}
+
+async fn serve_spa_index() -> Response {
+    match tokio::fs::read_to_string("webui/dist/index.html").await {
+        Ok(v) => ([("content-type", "text/html; charset=utf-8")], v).into_response(),
+        Err(_) => api_error(
+            StatusCode::NOT_FOUND,
+            "WEBUI_NOT_BUILT",
+            "webui/dist/index.html not found; run webui build first",
+        ),
+    }
 }
 
 async fn health() -> impl IntoResponse {
@@ -185,6 +277,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         drop(permit);
         return;
     }
+
     let _ = state.repo.upsert_user_device(&shared_protocol::UserDevice {
         tenant_id: registration.tenant_id.clone(),
         user_id: registration.user_id.clone(),
@@ -214,11 +307,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         loop {
             tokio::select! {
                 maybe_message = rx.recv() => {
-                    let Some(server_message) = maybe_message else {
-                        return;
-                    };
+                    let Some(server_message) = maybe_message else { return; };
                     let payload = match serde_json::to_string(&server_message) {
-                        Ok(value) => value,
+                        Ok(v) => v,
                         Err(_) => return,
                     };
                     if sink.send(Message::Text(payload.into())).await.is_err() {
@@ -227,7 +318,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
                 _ = ticker.tick() => {
                     let ping_payload = match serde_json::to_string(&ServerToClient::Ping) {
-                        Ok(value) => value,
+                        Ok(v) => v,
                         Err(_) => return,
                     };
                     if sink.send(Message::Text(ping_payload.into())).await.is_err() {
@@ -282,26 +373,26 @@ async fn cleanup_session(state: &AppState, node_id: &str) {
 
 async fn dispatch_tool(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(req): Json<RpcDispatchRequest>,
 ) -> impl IntoResponse {
-    if !admin_authorized_headers(&state.config, &headers) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
     dispatch_tool_inner(&state, req).await
 }
 
-async fn dispatch_tool_inner(
-    state: &AppState,
-    req: RpcDispatchRequest,
-) -> axum::response::Response {
+async fn dispatch_tool_inner(state: &AppState, req: RpcDispatchRequest) -> Response {
     if state.inflight_guard.available_permits() == 0 {
-        return (StatusCode::TOO_MANY_REQUESTS, "inflight limit").into_response();
+        return api_error(StatusCode::TOO_MANY_REQUESTS, "INFLIGHT_LIMIT", "inflight limit");
     }
     let permit = match state.inflight_guard.acquire().await {
         Ok(permit) => permit,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "semaphore error").into_response(),
+        Err(_) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "semaphore error",
+            )
+        }
     };
+
     if matches!(req.tool, ToolKind::Calculator) {
         let output = eval_calc(&req.command);
         let result = ToolResult {
@@ -327,19 +418,23 @@ async fn dispatch_tool_inner(
     };
     let Some(session) = session else {
         drop(permit);
-        return (StatusCode::NOT_FOUND, "node not connected").into_response();
+        return api_error(StatusCode::NOT_FOUND, "NODE_NOT_CONNECTED", "node not connected");
     };
     if session.registration.tenant_id != req.tenant_id
         || session.registration.user_id != req.user_id
     {
         drop(permit);
-        return (StatusCode::FORBIDDEN, "tenant mismatch").into_response();
+        return api_error(StatusCode::FORBIDDEN, "TENANT_MISMATCH", "tenant mismatch");
     }
     if matches!(req.tool, ToolKind::CustomMcp) && req.command.contains(':') {
         let tool_name = req.command.split(':').next().unwrap_or_default();
         if !session.custom_tools.iter().any(|v| v == tool_name) {
             drop(permit);
-            return (StatusCode::FORBIDDEN, "custom tool not visible").into_response();
+            return api_error(
+                StatusCode::FORBIDDEN,
+                "CUSTOM_TOOL_NOT_VISIBLE",
+                "custom tool not visible",
+            );
         }
     }
 
@@ -357,7 +452,7 @@ async fn dispatch_tool_inner(
     if session.tx.send(outbound).await.is_err() {
         state.pending.lock().await.remove(&req.request_id);
         drop(permit);
-        return (StatusCode::BAD_GATEWAY, "node disconnected").into_response();
+        return api_error(StatusCode::BAD_GATEWAY, "NODE_DISCONNECTED", "node disconnected");
     }
 
     let response =
@@ -366,7 +461,11 @@ async fn dispatch_tool_inner(
     drop(permit);
     let Ok(Ok(tool_result)) = response else {
         state.pending.lock().await.remove(&req.request_id);
-        return (StatusCode::GATEWAY_TIMEOUT, "tool request timeout").into_response();
+        return api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "TOOL_REQUEST_TIMEOUT",
+            "tool request timeout",
+        );
     };
 
     let _ = state.repo.record_usage(&UsageRecord {
@@ -380,13 +479,55 @@ async fn dispatch_tool_inner(
     Json(tool_result).into_response()
 }
 
+fn parse_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    let cookie = headers.get("cookie")?.to_str().ok()?;
+    cookie.split(';').find_map(|pair| {
+        let mut it = pair.trim().splitn(2, '=');
+        let k = it.next()?;
+        let v = it.next().unwrap_or_default();
+        if k == name {
+            Some(v.to_owned())
+        } else {
+            None
+        }
+    })
+}
+
+fn resolve_session_or_error_from_headers(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> std::result::Result<shared_protocol::LoginSession, Response> {
+    let Some(session_id) = parse_cookie(headers, "nexus_session") else {
+        return Err(api_error(StatusCode::UNAUTHORIZED, "INVALID_SESSION", "missing session"));
+    };
+    match state.repo.get_login_session(&session_id) {
+        Ok(Some(session)) => Ok(session),
+        Ok(None) => Err(api_error(StatusCode::UNAUTHORIZED, "INVALID_SESSION", "invalid session")),
+        Err(err) => {
+            Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string()))
+        }
+    }
+}
+
+fn verify_csrf_or_error(headers: &HeaderMap) -> std::result::Result<(), Response> {
+    let cookie_token = parse_cookie(headers, "nexus_csrf");
+    let header_token =
+        headers.get("x-csrf-token").and_then(|v| v.to_str().ok()).map(|v| v.to_owned());
+    match (cookie_token, header_token) {
+        (Some(a), Some(b)) if a == b => Ok(()),
+        _ => Err(api_error(StatusCode::FORBIDDEN, "CSRF_INVALID", "csrf token mismatch")),
+    }
+}
+
 async fn register_user(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> impl IntoResponse {
     let password_hash = match hash_password(&req.password) {
         Ok(v) => v,
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => {
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string())
+        }
     };
     let account = shared_protocol::UserAccount {
         tenant_id: req.tenant_id.clone(),
@@ -402,9 +543,9 @@ async fn register_user(
     match state.repo.register_user_with_login(&account, &login) {
         Ok(_) => (StatusCode::CREATED, "registered").into_response(),
         Err(storage::StorageError::UsernameConflict) => {
-            (StatusCode::CONFLICT, "username exists").into_response()
+            api_error(StatusCode::CONFLICT, "USERNAME_EXISTS", "username exists")
         }
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string()),
     }
 }
 
@@ -414,14 +555,17 @@ async fn login_user(
 ) -> impl IntoResponse {
     let Some(user) = (match state.repo.get_login_user_by_username(&req.username) {
         Ok(v) => v,
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => {
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string())
+        }
     }) else {
-        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+        return api_error(StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS", "invalid credentials");
     };
     if !verify_password(&req.password, &user.password_hash) {
-        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+        return api_error(StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS", "invalid credentials");
     }
     let session_id = Uuid::new_v4().to_string();
+    let csrf_token = Uuid::new_v4().to_string();
     let session = shared_protocol::LoginSession {
         session_id: session_id.clone(),
         username: req.username,
@@ -430,48 +574,62 @@ async fn login_user(
         created_at_ms: now_ms(),
     };
     if let Err(err) = state.repo.save_login_session(&session) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string());
     }
-    Json(LoginResponse { session_id, tenant_id: user.tenant_id, user_id: user.user_id })
+
+    let headers = [
+        ("set-cookie", format!("nexus_session={session_id}; Path=/; HttpOnly; SameSite=Lax")),
+        ("set-cookie", format!("nexus_csrf={csrf_token}; Path=/; SameSite=Lax")),
+    ];
+    (headers, Json(LoginResponse { tenant_id: user.tenant_id, user_id: user.user_id, csrf_token }))
         .into_response()
 }
 
-async fn user_devices(
-    State(state): State<AppState>,
-    Query(q): Query<SessionQuery>,
-) -> impl IntoResponse {
-    let Some(session) = (match state.repo.get_login_session(&q.session_id) {
-        Ok(v) => v,
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }) else {
-        return (StatusCode::UNAUTHORIZED, "invalid session").into_response();
+async fn logout_user() -> impl IntoResponse {
+    (
+        [
+            ("set-cookie", "nexus_session=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax".to_owned()),
+            ("set-cookie", "nexus_csrf=; Path=/; Max-Age=0; SameSite=Lax".to_owned()),
+        ],
+        StatusCode::OK,
+    )
+        .into_response()
+}
+
+async fn user_devices(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let session = match resolve_session_or_error_from_headers(&state, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
     };
     match state.repo.list_user_devices(&session.tenant_id, &session.user_id) {
         Ok(v) => Json(v).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string()),
     }
 }
 
 async fn dispatch_tool_for_session(
     State(state): State<AppState>,
-    Query(q): Query<SessionQuery>,
+    headers: HeaderMap,
     Json(req): Json<DispatchByAliasRequest>,
 ) -> impl IntoResponse {
-    let Some(session) = (match state.repo.get_login_session(&q.session_id) {
-        Ok(v) => v,
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }) else {
-        return (StatusCode::UNAUTHORIZED, "invalid session").into_response();
+    let session = match resolve_session_or_error_from_headers(&state, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
     };
+    if let Err(response) = verify_csrf_or_error(&headers) {
+        return response;
+    }
     let Some(node_id) = (match state.repo.resolve_device_node(
         &session.tenant_id,
         &session.user_id,
         &req.device_alias,
     ) {
         Ok(v) => v,
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => {
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string())
+        }
     }) else {
-        return (StatusCode::NOT_FOUND, "device not found").into_response();
+        return api_error(StatusCode::NOT_FOUND, "DEVICE_NOT_FOUND", "device not found");
     };
 
     dispatch_tool_inner(
@@ -523,77 +681,138 @@ fn eval_calc(command: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
-async fn admin_tenants(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if !admin_authorized_headers(&state.config, &headers) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
-    match state.repo.list_tenants() {
-        Ok(data) => Json(data).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+async fn admin_dashboard_data(
+    State(state): State<AppState>,
+    Query(q): Query<TrendQuery>,
+) -> impl IntoResponse {
+    let days = q.days.unwrap_or(7).clamp(1, 30);
+    let tenant = q.tenant_id.as_deref();
+    let stats = match state.repo.admin_dashboard_stats(now_ms()) {
+        Ok(v) => v,
+        Err(err) => {
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string())
+        }
+    };
+    let trend = match state.repo.usage_trend(tenant, days) {
+        Ok(v) => v,
+        Err(err) => {
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string())
+        }
+    };
+
+    Json(AdminDashboardResponse {
+        total_users: stats.total_users,
+        daily_active_users: stats.daily_active_users,
+        usage_by_user: stats
+            .usage_by_user
+            .into_iter()
+            .map(|v| UserUsageItem {
+                tenant_id: v.tenant_id,
+                user_id: v.user_id,
+                requests: v.requests,
+                total_input_tokens: v.total_input_tokens,
+                total_output_tokens: v.total_output_tokens,
+            })
+            .collect(),
+        usage_trend: trend.into_iter().map(map_trend).collect(),
+    })
+    .into_response()
+}
+
+fn map_trend(v: UsageTrendPoint) -> UsageTrendItem {
+    UsageTrendItem {
+        day: v.day,
+        requests: v.requests,
+        total_input_tokens: v.total_input_tokens,
+        total_output_tokens: v.total_output_tokens,
     }
 }
 
-async fn admin_usage(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if !admin_authorized_headers(&state.config, &headers) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
-    match state.repo.usage_summary() {
-        Ok(data) => Json(data).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn admin_nodes(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if !admin_authorized_headers(&state.config, &headers) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
-    match state.repo.list_nodes() {
-        Ok(data) => Json(data).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn admin_channel_route(
+async fn user_dashboard_data(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<RouteLookupRequest>,
 ) -> impl IntoResponse {
-    if !admin_authorized_headers(&state.config, &headers) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
-    match state.repo.resolve_channel_user(&q.tenant_id, &q.channel_name, &q.external_user) {
-        Ok(data) => Json(data).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    let session = match resolve_session_or_error_from_headers(&state, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state.repo.user_dashboard_stats(&session.tenant_id, &session.user_id) {
+        Ok(stats) => Json(UserDashboardResponse {
+            tenant_id: session.tenant_id,
+            user_id: session.user_id,
+            sessions: stats.sessions,
+            memories: stats.memories,
+            requests: stats.requests,
+            total_input_tokens: stats.total_input_tokens,
+            total_output_tokens: stats.total_output_tokens,
+        })
+        .into_response(),
+        Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string()),
     }
 }
 
-async fn admin_provider_health(
+#[derive(Debug, Serialize)]
+struct UserSessionsResponse {
+    items: Vec<SessionListItem>,
+}
+
+async fn user_sessions(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
-    if !admin_authorized_headers(&state.config, &headers) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
-    match provider_health(&state.config.vlm_endpoint).await {
-        Ok(data) => Json(data).into_response(),
-        Err(err) => (StatusCode::BAD_GATEWAY, err.to_string()).into_response(),
+    let session = match resolve_session_or_error_from_headers(&state, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+    let offset = q.offset.unwrap_or(0);
+    match state.repo.list_user_sessions(&session.tenant_id, &session.user_id, limit, offset) {
+        Ok(items) => Json(UserSessionsResponse { items }).into_response(),
+        Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string()),
     }
 }
 
-async fn admin_html(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if !admin_authorized_headers(&state.config, &headers) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+#[derive(Debug, Serialize)]
+struct MemoryResponse {
+    items: Vec<shared_protocol::MemoryRecord>,
+}
+
+async fn user_session_memory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let session = match resolve_session_or_error_from_headers(&state, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state.repo.list_session_memory(&session.tenant_id, &session.user_id, &session_id) {
+        Ok(items) => Json(MemoryResponse { items }).into_response(),
+        Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string()),
     }
-    let tenants = state.repo.list_tenants().unwrap_or_default();
-    let usage = state.repo.usage_summary().unwrap_or_default();
-    let nodes = state.repo.list_nodes().unwrap_or_default();
-    let html = format!(
-        "<html><body><h1>NEXUS admin</h1><p>tenants: {}</p><p>usage rows: {}</p><p>nodes: {}</p></body></html>",
-        tenants.len(),
-        usage.len(),
-        nodes.len()
-    );
-    (StatusCode::OK, html).into_response()
+}
+
+#[derive(Debug, Serialize)]
+struct UsageDetailsResponse {
+    items: Vec<UsageDetailItem>,
+}
+
+async fn user_usage_details(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ListQuery>,
+) -> impl IntoResponse {
+    let session = match resolve_session_or_error_from_headers(&state, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+    let offset = q.offset.unwrap_or(0);
+    match state.repo.list_usage_details(&session.tenant_id, &session.user_id, limit, offset) {
+        Ok(items) => Json(UsageDetailsResponse { items }).into_response(),
+        Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err.to_string()),
+    }
 }
 
 fn admin_authorized_headers(config: &ServerConfig, headers: &HeaderMap) -> bool {
@@ -608,19 +827,6 @@ fn admin_authorized_headers(config: &ServerConfig, headers: &HeaderMap) -> bool 
     }
     let expected = format!("Basic {}:{}", config.auth.admin_username, config.auth.admin_password);
     value == expected
-}
-
-async fn provider_health(endpoint: &str) -> Result<ProviderHealth> {
-    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
-    let res = client.get(endpoint).send().await;
-    match res {
-        Ok(resp) => Ok(ProviderHealth {
-            endpoint: endpoint.to_owned(),
-            reachable: true,
-            status_code: resp.status().as_u16(),
-        }),
-        Err(err) => Err(anyhow!("provider endpoint unreachable: {err}")),
-    }
 }
 
 fn now_ms() -> u64 {
@@ -654,16 +860,12 @@ pub async fn run_connection_load_baseline(max_connections: usize, clients: usize
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
-
     use axum::http::{HeaderMap, HeaderValue};
     use shared_protocol::{AuthConfig, RuntimeLimits, ServerConfig};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener as TokioTcpListener;
 
     use super::{
-        admin_authorized_headers, eval_calc, hash_password, provider_health,
-        run_connection_load_baseline, verify_password,
+        admin_authorized_headers, eval_calc, hash_password, parse_cookie,
+        run_connection_load_baseline, verify_csrf_or_error, verify_password,
     };
 
     #[test]
@@ -678,8 +880,7 @@ mod tests {
         headers.insert("authorization", HeaderValue::from_static("Basic admin:admin"));
         let config = ServerConfig {
             bind_addr: "127.0.0.1:7878".to_owned(),
-            sqlite_path: ":memory:".to_owned(),
-            postgres_dsn: None,
+            postgres_dsn: "postgres://postgres:postgres@127.0.0.1:5432/nexus".to_owned(),
             vlm_endpoint: "http://127.0.0.1/health".to_owned(),
             limits: RuntimeLimits::default(),
             auth: AuthConfig::default(),
@@ -701,23 +902,18 @@ mod tests {
         assert_eq!(accepted, 500);
     }
 
-    #[tokio::test]
-    async fn provider_health_reports_reachable_status() {
-        let std_listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = std_listener.local_addr().expect("addr").port();
-        std_listener.set_nonblocking(true).expect("nonblocking");
-        let listener = TokioTcpListener::from_std(std_listener).expect("tokio listener");
-        let task = tokio::spawn(async move {
-            if let Ok((mut socket, _)) = listener.accept().await {
-                let mut buf = [0_u8; 256];
-                let _ = socket.read(&mut buf).await;
-                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
-            }
-        });
-        let result =
-            provider_health(&format!("http://127.0.0.1:{port}/health")).await.expect("health");
-        assert!(result.reachable);
-        assert_eq!(result.status_code, 200);
-        task.await.expect("server task");
+    #[test]
+    fn cookie_parser_works() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", HeaderValue::from_static("a=1; nexus_session=abc; b=2"));
+        assert_eq!(parse_cookie(&headers, "nexus_session").as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn csrf_guard_rejects_mismatch() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", HeaderValue::from_static("nexus_csrf=token-a"));
+        headers.insert("x-csrf-token", HeaderValue::from_static("token-b"));
+        assert!(verify_csrf_or_error(&headers).is_err());
     }
 }

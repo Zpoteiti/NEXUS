@@ -1,0 +1,57 @@
+openapi: 3.0.3
+info:
+  title: NEXUS API
+  version: 0.1.0
+paths:
+  /auth/register:
+    post:
+      summary: Register user
+  /auth/login:
+    post:
+      summary: Login user and issue cookie session
+  /auth/logout:
+    post:
+      summary: Logout current user
+  /api/admin/dashboard:
+    get:
+      summary: Admin dashboard
+      parameters:
+        - in: query
+          name: days
+          schema: { type: integer, minimum: 1, maximum: 30 }
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+  /api/user/dashboard:
+    get:
+      summary: Current user dashboard
+  /api/user/sessions:
+    get:
+      summary: Current user session list
+  /api/user/sessions/{session_id}/memory:
+    get:
+      summary: Current user session memory timeline
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+  /api/user/usage:
+    get:
+      summary: Current user usage detail
+  /user/devices:
+    get:
+      summary: Current user devices
+  /user/dispatch:
+    post:
+      summary: Dispatch tool from current user context
+  /rpc/tool:
+    post:
+      summary: Admin dispatch tool
+components:
+  schemas:
+    ApiError:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }

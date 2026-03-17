@@ -1,91 +1,83 @@
 # NEXUS
 
-NEXUS is a multitenant Rust gateway with pluggable SQLite/PostgreSQL persistence, WebSocket node RPC, tenant-scoped channel routing, and an admin interface.
+NEXUS is a multitenant Rust gateway with PostgreSQL persistence, WebSocket node RPC, and a decoupled WebUI frontend.
 
 ## Components
 
 - `shared-protocol`: shared config and RPC contract types
-- `storage`: repository interfaces with SQLite and PostgreSQL backends
-- `server`: multitenant gateway, admin endpoints, usage metering, safeguards
+- `storage`: PostgreSQL repository implementation
+- `server`: gateway service + auth + API + static webui hosting
 - `client-node`: local tool executor connected over WebSocket
+- `webui`: Vue 3 + Vite + TypeScript + Pinia + Vue Router frontend
 
 ## Configuration
 
 Server default config is in `server/config/default.toml`:
 
 - `bind_addr`: HTTP/WebSocket bind address
-- `sqlite_path`: SQLite database path (used when `postgres_dsn` is unset)
-- `postgres_dsn`: PostgreSQL DSN (optional, preferred for multi-user login/session storage)
-- `vlm_endpoint`: provider health-check endpoint
+- `postgres_dsn`: PostgreSQL DSN (required)
+- `vlm_endpoint`: provider endpoint metadata
 - `auth.node_auth_token`: token required for node registration
-- `auth.admin_username` and `auth.admin_password`: admin guard credentials
+- `auth.admin_username` and `auth.admin_password`: admin basic-auth credentials
 - `limits.max_connections`: WebSocket connection cap
 - `limits.max_inflight_requests`: RPC inflight cap
 - `limits.request_timeout_ms`: per-request timeout
 
-Client default config is in `client-node/config/default.toml`:
+## Local development
 
-- `node_id`, `tenant_id`, `user_id`
-- `server_endpoint`
-- `auth_token`
-
-## Run
-
-From `nexus` (NEXUS workspace):
+### 1) Start backend
 
 ```bash
 cargo run -p server
 ```
 
-In another terminal:
+### 2) Start frontend (dev mode)
 
 ```bash
-cargo run -p client-node
+cd webui
+npm install
+npm run dev
 ```
 
-Admin and service endpoints:
+By default Vite proxies `/api`, `/auth`, `/user`, `/rpc` to `http://127.0.0.1:7878`.
+
+### 3) Build frontend for production
+
+```bash
+cd webui
+npm run build
+```
+
+Build output is `webui/dist`. Server serves static assets from this directory.
+
+## UI routes
+
+- `/admin/*` -> administrator app
+- `/app/*` -> user app
+- `/login` -> unified login page
+
+## API overview
 
 - `GET /health`
-- `GET /admin`
-- `GET /admin/tenants`
-- `GET /admin/usage`
-- `GET /admin/nodes`
-- `GET /admin/channel-route?tenant_id=...&channel_name=...&external_user=...`
-- `GET /admin/provider-health`
-- `POST /rpc/tool`
+- `GET /openapi.yaml`
 - `POST /auth/register`
-- `POST /auth/login`
-- `GET /user/devices?session_id=...`
-- `POST /user/dispatch?session_id=...`
+- `POST /auth/login` (sets `nexus_session` HttpOnly cookie + `nexus_csrf` cookie)
+- `POST /auth/logout`
+- `GET /api/admin/dashboard` (Basic auth required)
+- `GET /api/user/dashboard` (cookie session required)
+- `GET /api/user/sessions`
+- `GET /api/user/sessions/{session_id}/memory`
+- `GET /api/user/usage`
+- `GET /user/devices`
+- `POST /user/dispatch` (requires `x-csrf-token`)
+- `POST /rpc/tool` (Basic auth required)
 - `GET /ws`
 
-Use header `authorization: Basic <username>:<password>` for admin and RPC routes.
+## Auth model
 
-## SQLite and Migration Prep
+- Admin: Basic auth header (`authorization: Basic <username>:<password>`)
+- User: cookie session (`nexus_session`) + CSRF token (`nexus_csrf` + `x-csrf-token` for mutating user actions)
 
-- SQLite schema is created by `SqliteRepository::migrate()`.
-- Repository access is done through `GatewayRepository`.
-- PostgreSQL support is implemented by `PostgresRepository` and selected via `RepositoryFactory`.
+## OpenAPI
 
-## Safeguards
-
-- Connection semaphore for max connected nodes
-- Inflight semaphore for RPC backpressure
-- Bounded per-node outbound queue
-- Heartbeat ping/pong lifecycle updates
-- Tenant/user checks before dispatching remote tools
-
-## Test Coverage
-
-- Tenant isolation and per-user channel binding tests in `storage/tests`
-- Tool RPC roundtrip test in `server/tests/tool_roundtrip.rs`
-- Provider health-check and load baseline tests in `server/src/lib.rs` tests
-
-
-## Login / Tenant / Device Model
-
-- Registration creates a globally unique `username` in `login_users` and maps it to (`tenant_id`, `user_id`).
-- Passwords are stored with Argon2 hashes (salted), never plaintext.
-- Login returns a UUIDv4 `session_id`; every session is persisted in `login_sessions` (PostgreSQL/SQLite).
-- Each user can own multiple devices (`user_devices` alias -> `node_id`).
-- `/user/dispatch` resolves device alias using session scope, so user A can only dispatch to user A devices.
+OpenAPI spec is maintained at `server/openapi.yaml` and exposed at runtime via `/openapi.yaml`.

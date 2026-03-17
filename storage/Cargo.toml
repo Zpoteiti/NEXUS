@@ -5,7 +5,6 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-rusqlite.workspace = true
 postgres.workspace = true
 r2d2_postgres.workspace = true
 r2d2.workspace = true

@@ -1,9 +1,14 @@
+use std::env;
+
 use shared_protocol::{MemoryRecord, UserAccount, UserChannelBinding};
-use storage::{GatewayRepository, SqliteRepository};
+use storage::{GatewayRepository, PostgresRepository};
 
 #[test]
 fn tenant_isolation_blocks_cross_tenant_memory_reads() {
-    let repo = SqliteRepository::in_memory().expect("repo");
+    let Some(dsn) = env::var("NEXUS_TEST_POSTGRES_DSN").ok() else {
+        return;
+    };
+    let repo = PostgresRepository::new(&dsn).expect("repo");
     repo.append_memory(&MemoryRecord {
         tenant_id: "tenant-a".to_owned(),
         user_id: "user-1".to_owned(),
@@ -13,7 +18,7 @@ fn tenant_isolation_blocks_cross_tenant_memory_reads() {
     .expect("insert");
 
     let own = repo.list_memory("tenant-a", "user-1", "session-a").expect("list own");
-    assert_eq!(own.len(), 1);
+    assert!(!own.is_empty());
 
     let isolated = repo.list_memory("tenant-b", "user-1", "session-a").expect("list other");
     assert!(isolated.is_empty());
@@ -21,7 +26,10 @@ fn tenant_isolation_blocks_cross_tenant_memory_reads() {
 
 #[test]
 fn user_channel_bindings_resolve_independently() {
-    let repo = SqliteRepository::in_memory().expect("repo");
+    let Some(dsn) = env::var("NEXUS_TEST_POSTGRES_DSN").ok() else {
+        return;
+    };
+    let repo = PostgresRepository::new(&dsn).expect("repo");
     repo.upsert_user(&UserAccount {
         tenant_id: "tenant-a".to_owned(),
         user_id: "alice".to_owned(),

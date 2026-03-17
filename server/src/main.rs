@@ -1,5 +1,5 @@
 use anyhow::Result;
-use shared_protocol::ServerConfig;
+use shared_protocol::{load_toml_config_or_default, ServerConfig};
 use tracing::info;
 
 #[tokio::main]
@@ -12,10 +12,5 @@ async fn main() -> Result<()> {
 }
 
 fn load_config() -> Result<ServerConfig> {
-    let path = std::path::Path::new("config/default.toml");
-    if !path.exists() {
-        return Ok(ServerConfig::default());
-    }
-    let raw = std::fs::read_to_string(path)?;
-    Ok(toml::from_str::<ServerConfig>(&raw)?)
+    Ok(load_toml_config_or_default("config/default.toml")?)
 }

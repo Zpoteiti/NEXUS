@@ -1,5 +1,37 @@
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use thiserror::Error;
+
+pub fn load_toml_config_or_default<T>(path: impl AsRef<Path>) -> Result<T, ConfigLoadError>
+where
+    T: DeserializeOwned + Default,
+{
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(T::default());
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|source| ConfigLoadError::Read { path: path.display().to_string(), source })?;
+    toml::from_str::<T>(&raw)
+        .map_err(|source| ConfigLoadError::Parse { path: path.display().to_string(), source })
+}
+
+#[derive(Debug, Error)]
+pub enum ConfigLoadError {
+    #[error("failed to read config from {path}: {source}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse toml config from {path}: {source}")]
+    Parse {
+        path: String,
+        #[source]
+        source: toml::de::Error,
+    },
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeLimits {
@@ -38,8 +70,7 @@ impl Default for AuthConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerConfig {
     pub bind_addr: String,
-    pub sqlite_path: String,
-    pub postgres_dsn: Option<String>,
+    pub postgres_dsn: String,
     pub vlm_endpoint: String,
     pub limits: RuntimeLimits,
     pub auth: AuthConfig,
@@ -49,8 +80,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             bind_addr: "0.0.0.0:7878".to_owned(),
-            sqlite_path: "data/nexus.sqlite3".to_owned(),
-            postgres_dsn: None,
+            postgres_dsn: "postgres://postgres:postgres@127.0.0.1:5432/nexus".to_owned(),
             vlm_endpoint: "http://100.80.10.33:1234/v1/chat/completions".to_owned(),
             limits: RuntimeLimits::default(),
             auth: AuthConfig::default(),
@@ -257,4 +287,40 @@ pub enum ProtocolError {
     AuthFailed,
     #[error("message decode failed")]
     DecodeFailed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_toml_config_or_default;
+    use serde::Deserialize;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+    struct DemoConfig {
+        value: String,
+    }
+
+    #[test]
+    fn load_config_returns_default_when_file_missing() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nexus-missing-{nonce}.toml"));
+        let cfg = load_toml_config_or_default::<DemoConfig>(&path).expect("load default config");
+        assert_eq!(cfg, DemoConfig::default());
+    }
+
+    #[test]
+    fn load_config_parses_existing_toml_file() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nexus-config-{nonce}.toml"));
+        std::fs::write(&path, "value = \"ok\"\n").expect("write config file");
+        let cfg = load_toml_config_or_default::<DemoConfig>(&path).expect("load config from toml");
+        assert_eq!(cfg.value, "ok");
+        std::fs::remove_file(path).expect("cleanup temp file");
+    }
 }

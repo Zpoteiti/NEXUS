@@ -1,3 +1,4 @@
+use std::env;
 use std::net::TcpListener;
 use std::time::Duration;
 
@@ -11,16 +12,16 @@ use shared_protocol::{
 
 #[tokio::test]
 async fn tool_roundtrip_returns_client_result() {
+    let Some(dsn) = env::var("NEXUS_TEST_POSTGRES_DSN").ok() else {
+        return;
+    };
     let port = next_port();
     let address = format!("127.0.0.1:{port}");
     let endpoint = format!("ws://{address}/ws");
     let base = format!("http://{address}");
-    let db_path = format!("tool-roundtrip-{port}.sqlite3");
-
     let config = ServerConfig {
         bind_addr: address.clone(),
-        sqlite_path: db_path,
-        postgres_dsn: None,
+        postgres_dsn: dsn,
         vlm_endpoint: "http://127.0.0.1:1/health".to_owned(),
         limits: RuntimeLimits {
             max_connections: 600,

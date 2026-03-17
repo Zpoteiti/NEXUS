@@ -1,10 +1,9 @@
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use shared_protocol::{
-    ClientNodeConfig, ClientToServer, NodeHello, NodeRegistration, ServerToClient, ToolKind,
-    ToolResult,
+    load_toml_config_or_default, ClientNodeConfig, ClientToServer, NodeHello, NodeRegistration,
+    ServerToClient, ToolKind, ToolResult,
 };
-use std::path::Path;
 use tokio::process::Command;
 use tokio_tungstenite::connect_async;
 use tracing::info;
@@ -65,12 +64,7 @@ async fn main() -> Result<()> {
 }
 
 fn load_config() -> Result<ClientNodeConfig> {
-    let path = Path::new("config/default.toml");
-    if !path.exists() {
-        return Ok(ClientNodeConfig::default());
-    }
-    let raw = std::fs::read_to_string(path)?;
-    Ok(toml::from_str::<ClientNodeConfig>(&raw)?)
+    Ok(load_toml_config_or_default("config/default.toml")?)
 }
 
 async fn execute_tool(tool: ToolKind, command: &str) -> Result<String> {
