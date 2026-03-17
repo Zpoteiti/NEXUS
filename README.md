@@ -19,6 +19,8 @@ Server default config is in `server/config/default.toml`:
 - `vlm_endpoint`: provider endpoint metadata
 - `auth.node_auth_token`: token required for node registration
 - `auth.admin_username` and `auth.admin_password`: admin basic-auth credentials
+
+> ⚠️ The defaults in `server/config/default.toml` are placeholders and must be replaced before deploying to staging/production.
 - `limits.max_connections`: WebSocket connection cap
 - `limits.max_inflight_requests`: RPC inflight cap
 - `limits.request_timeout_ms`: per-request timeout
@@ -75,7 +77,7 @@ Build output is `webui/dist`. Server serves static assets from this directory.
 
 ## Auth model
 
-- Admin: Basic auth header (`authorization: Basic <username>:<password>`)
+- Admin: Basic auth header (`authorization: Basic <base64(username:password)>`)
 - User: cookie session (`nexus_session`) + CSRF token (`nexus_csrf` + `x-csrf-token` for mutating user actions)
 
 ## OpenAPI

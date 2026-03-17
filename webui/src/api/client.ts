@@ -30,9 +30,18 @@ http.interceptors.response.use(
   }
 )
 
+const encodeBasicCredentials = (username: string, password: string) => {
+  const utf8 = new TextEncoder().encode(`${username}:${password}`)
+  let binary = ''
+  utf8.forEach((byte) => {
+    binary += String.fromCharCode(byte)
+  })
+  return btoa(binary)
+}
+
 export const api = {
   setAdminBasic(username: string, password: string) {
-    adminBasic = `Basic ${username}:${password}`
+    adminBasic = `Basic ${encodeBasicCredentials(username, password)}`
   },
   clearAdminBasic() {
     adminBasic = ''

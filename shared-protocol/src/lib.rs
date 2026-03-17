@@ -61,8 +61,8 @@ impl Default for AuthConfig {
             token_issuer: "nexus".to_owned(),
             audience: "nexus-nodes".to_owned(),
             node_auth_token: "dev-token".to_owned(),
-            admin_username: "admin".to_owned(),
-            admin_password: "admin".to_owned(),
+            admin_username: "change-me-admin-user".to_owned(),
+            admin_password: "change-me-admin-password".to_owned(),
         }
     }
 }
@@ -80,7 +80,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             bind_addr: "0.0.0.0:7878".to_owned(),
-            postgres_dsn: "postgres://postgres:postgres@127.0.0.1:5432/nexus".to_owned(),
+            postgres_dsn: "postgres://user:pass@127.0.0.1:5432/nexus".to_owned(),
             vlm_endpoint: "http://100.80.10.33:1234/v1/chat/completions".to_owned(),
             limits: RuntimeLimits::default(),
             auth: AuthConfig::default(),

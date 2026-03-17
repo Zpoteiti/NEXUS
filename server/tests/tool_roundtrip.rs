@@ -95,7 +95,7 @@ async fn tool_roundtrip_returns_client_result() {
     let client = reqwest::Client::new();
     let response = client
         .post(format!("{base}/rpc/tool"))
-        .header("authorization", "Basic admin:admin")
+        .header("authorization", "Basic YWRtaW46YWRtaW4=")
         .json(&json!({
             "request_id": "req-1",
             "tenant_id": "tenant-a",
