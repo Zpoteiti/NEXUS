@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "nexus-common",
+    "nexus-server",
+    "nexus-client",
+]
+resolver = "2"
