@@ -6,10 +6,13 @@
 
 mod agent_loop;
 mod api;
+mod auth;
 mod bus;
 mod channels;
+mod config;
 mod context;
 mod db;
+mod memory;
 mod providers;
 mod state;
 mod tools_registry;

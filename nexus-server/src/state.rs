@@ -26,3 +26,18 @@
 // TODO: 定义 DeviceState struct
 // TODO: 定义 AppState struct（在线设备路由表 + 挂起等待表）
 // TODO: 实现 AppState::new() 构造函数
+
+// TODO: pub fn cancel_pending_requests_for_device(
+//           device_id: &str,
+//           pending: &RwLock<HashMap<RequestId, oneshot::Sender<ToolExecutionResult>>>,
+//       )
+//   由 ws.rs 在设备断线（WebSocket 循环退出）时调用。
+//   遍历挂起等待表，找出所有 request_id 归属 device_id 的条目并将其 Sender drop 掉。
+//   Sender 被 drop 后，agent_loop.rs 中对应的 oneshot::Receiver.await 会立即返回
+//   Err(RecvError)，agent_loop 将其包装为工具执行失败的 Tool Result 喂回 LLM，
+//   触发自我纠正机制，避免 agent_loop 永久挂起（盲区 6-A）。
+//
+//   实现提示：
+//   - RequestId 需要携带归属 device_id 的信息（建议格式："{device_id}:{uuid}"），
+//     或在挂起等待表的 value 中额外存储 device_id 字段，以便此函数高效过滤。
+//   - 调用方式：ws.rs 在 socket_receive_loop 退出前（defer/drop guard 模式）调用。
