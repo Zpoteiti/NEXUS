@@ -28,6 +28,7 @@ mod guardrails;
 mod mcp_client;
 mod process;
 mod session;
+mod skills;
 mod tools;
 
 #[tokio::main]
@@ -39,6 +40,7 @@ async fn main() {
 
     // 阶段二：发现与注册
     // TODO: 扫描本地内置工具（discovery.rs）
+    // TODO: 调用 skills::scan_skills() 扫描本地 skill 目录，经 skill_to_schema() 转换后注册为可用工具（skills.rs）
     // TODO: 连接外部 MCP Server 并获取工具列表（mcp_client.rs）
     // TODO: 发送 RegisterTools（session.rs）
 
