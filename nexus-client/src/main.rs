@@ -1,16 +1,49 @@
 /// 职责边界：
-/// 1. 客户端的启动入口。
-/// 2. 负责读取配置、建立与 Server 的 WebSocket 连接 (`/ws?device_id=...`)。
-/// 3. 开启接收循环，将 Server 下发的指令分发给 executor 或 mcp_client。
+/// 客户端启动入口，分三个阶段完成初始化并进入主循环。
+///
+/// 【阶段一：连接】
+/// 1. 调用 config.rs 加载 ClientConfig（Server 地址、device_id、认证凭据等）。
+/// 2. 调用 session.rs 建立与 Server 的 WebSocket 长连接（路径：/ws?device_id=...）。
+/// 3. 连接成功后，Server 发起登录流程（ServerToClient::RequireLogin）；
+///    Client 提交凭据完成认证，Server 将该设备绑定到对应 UserId。
+///
+/// 【阶段二：发现与注册】
+/// 4. 调用 discovery.rs 扫描本地内置工具（如 shell 工具）。
+/// 5. 调用 mcp_client.rs 连接并扫描所有外部 MCP Server，获取其工具 Schema。
+/// 6. 将内置工具与 MCP 工具的 Schema 聚合，通过 session.rs 的 WebSocket 连接
+///    发送 ClientToServer::RegisterTools 给 Server，完成工具注册。
+///
+/// 【阶段三：主循环】
+/// 7. 在 session.rs 中开启心跳循环，定期发送 ClientToServer::Heartbeat
+///    （含当前工具列表的 tools_hash，供 Server 检测工具变更）。
+/// 8. 开启指令接收大循环，监听 ServerToClient 消息，
+///    将 ExecuteToolRequest 等指令分发给 executor.rs 处理，
+///    将执行结果封装为 ClientToServer::ToolExecutionResult 回传 Server。
 
+mod config;
+mod discovery;
+mod env;
 mod executor;
+mod guardrails;
 mod mcp_client;
+mod process;
+mod session;
+mod tools;
 
 #[tokio::main]
 async fn main() {
-    // TODO: 建立 WebSocket 连接
-    // TODO: 注册本地工具与 MCP 工具 (RegisterTools)
-    // TODO: 开启心跳循环 (Heartbeat)
-    // TODO: 开启接收指令的大循环
+    // 阶段一：连接
+    // TODO: 加载 ClientConfig（config.rs）
+    // TODO: 建立 WebSocket 长连接（session.rs）
+    // TODO: 完成 Server 登录认证
+
+    // 阶段二：发现与注册
+    // TODO: 扫描本地内置工具（discovery.rs）
+    // TODO: 连接外部 MCP Server 并获取工具列表（mcp_client.rs）
+    // TODO: 发送 RegisterTools（session.rs）
+
+    // 阶段三：主循环
+    // TODO: 开启心跳循环（session.rs，含 tools_hash）
+    // TODO: 开启 ServerToClient 指令接收大循环，分发给 executor.rs
     todo!("Implement client entrypoint")
 }
