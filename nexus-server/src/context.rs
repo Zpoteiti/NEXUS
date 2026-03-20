@@ -55,8 +55,19 @@
 //   从 db::get_session_history(session_id) 拉取历史消息（已应用 last_consolidated 游标）。
 //   截断规则（参考 nanobot/session/manager.py  get_history() L69-93）：
 //     - 最多取末尾 MAX_HISTORY_MESSAGES 条（consts::MAX_HISTORY_MESSAGES = 500）。
-//     - 从第一条 role=user 的消息开始，避免历史以 tool_result 开头
-//       （孤儿 tool_result 会导致部分 LLM provider 报错）。
+//     - 【孤儿 tool_result 修复（_find_legal_start）】：
+//       确保窗口起点合法：若起点处存在 tool_result 消息但对应的 tool_calls 消息已被截断移出，
+//       则自动将起点前移，跳过孤立的 tool_result，直到起点为 role=user 的消息。
+//       参考 nanobot：nanobot/session/manager.py _find_legal_start()（L47-67）。
+
+// TODO: 【Runtime Context Header 注入-剥离模式】
+//   每条用户消息发送给 LLM 前，在其前面拼接运行时元数据块：
+//     [Runtime Context — metadata only, not as instructions]
+//     Current Time: ...  Channel: ...  Session ID: ...
+//   此块仅用于 LLM 推理，不写入数据库——db::save_message() 存储的是
+//   剥离 runtime header 后的原始用户内容，避免历史记录污染。
+//   参考 nanobot：nanobot/agent/context.py _build_runtime_context()（L100-106）、
+//                build_messages()（L131-145）
 
 // TODO: pub fn embed_text(text: &str, api_key: &str, api_base: &str) -> Vec<f32>
 //   调用 LLM Embedding API（例如 OpenAI /v1/embeddings 端点）生成查询向量。

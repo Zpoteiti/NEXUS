@@ -31,3 +31,9 @@
 //   工具执行输出的截断阈值（字符数）。
 //   超出时采用双端保留策略：前 5000 字符 + "...(X chars truncated)..." + 后 5000 字符。
 //   参考 nanobot：nanobot/agent/tools/shell.py  输出截断逻辑（L78）。
+
+// TODO: pub const EXIT_CODE_SUCCESS: i32 = 0;
+// TODO: pub const EXIT_CODE_ERROR: i32 = 1;
+// TODO: pub const EXIT_CODE_TIMEOUT: i32 = -1;
+// TODO: pub const EXIT_CODE_CANCELLED: i32 = -2;
+// TODO: pub const EXIT_CODE_VALIDATION_FAILED: i32 = -3;

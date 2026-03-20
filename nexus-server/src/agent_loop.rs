@@ -13,9 +13,14 @@
 /// 3. 【自我纠正机制】收到执行错误或参数校验失败时，
 ///    不抛出系统异常，而是将错误信息包装为 "Tool Result (Error Hint)"，
 ///    以 tool_result 角色消息喂回 LLM，触发其自我纠正并重新生成参数。
+/// 4. 【LLM 错误响应不入历史】
+///    当 LLM 返回 finish_reason = "error" 时，该响应不写入 session 历史，
+///    不调用 db::save_message()，避免错误消息污染后续上下文，
+///    防止 LLM 陷入"读到错误→继续报错"的持续 400 循环。
 ///
 /// 参考 nanobot：
 /// - 完全复刻 nanobot/agent/loop.py 中的 _run_agent_loop 状态机逻辑。
+/// - nanobot/agent/loop.py _run_agent_loop 中 finish_reason=="error" 分支（约 L234-239）。
 /// - Rust 中等待 Client 执行结果需要用 tokio::sync::oneshot 配合 AppState 挂起等待表。
 
 // TODO: 实现 pub async fn run_agent_loop(state: AppState, session_id: SessionId, user_prompt: String)

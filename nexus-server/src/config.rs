@@ -43,6 +43,13 @@
 //     pub server_port: u16,              // 默认：8080
 //     pub heartbeat_timeout_sec: u64,    // 默认：60
 //     pub max_agent_iterations: u32,     // 默认：40（与 consts::MAX_AGENT_ITERATIONS 对齐）
+//
+//     // LLM 行为控制参数（均有默认值）
+//     pub context_window_tokens: usize,  // 默认：128000
+//                                         // LLM 上下文窗口大小，用于 memory.rs 触发整合的阈值计算
+//                                         // （当 prompt tokens > context_window_tokens * 0.5 时触发）
+//     pub max_tokens: usize,             // 默认：8192，LLM 单次响应最大 token 数
+//     pub temperature: f32,              // 默认：0.7，LLM 采样温度
 // }
 
 // TODO: pub fn load_config() -> ServerConfig
@@ -50,3 +57,7 @@
 //   再用 std::env::var() 读取各字段；
 //   必填字段缺失时调用 panic!("环境变量 XXX 未设置，Server 无法启动") 给出明确提示；
 //   有默认值的字段用 unwrap_or_else(|_| "默认值".to_string()) 处理。
+//
+//   context_window_tokens 是记忆整合的核心触发参数，
+//   必须与实际部署的 LLM 模型上下文窗口匹配，否则会导致整合过早或过晚触发。
+//   参考 nanobot：nanobot/config/schema.py AgentDefaults.context_window_tokens

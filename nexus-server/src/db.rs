@@ -54,6 +54,39 @@
 //   将 user_preferences 序列化为 JSON 后更新 users 表对应行。
 //   调用方：api.rs（Settings 页"user_preferences 配置"保存接口）
 
+// TODO: pub async fn update_user_soul(
+//           db: &PgPool,
+//           user_id: UserId,
+//           soul: &str,
+//       ) -> Result<()>
+//   更新 users 表的 soul 字段（Markdown 文本，对应 nanobot 的 SOUL.md）。
+//   调用方：api.rs PATCH /api/user/soul
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 【channel_identities 表】
+// 存储外部渠道平台用户 ID 与 Nexus UserId 的绑定关系。
+// 支持同一 Nexus 用户绑定多个渠道账号（Telegram、Slack 等），
+// 也支持同一渠道账号在首次接入时触发绑定流程。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TODO: pub async fn bind_channel_identity(
+//           db: &PgPool,
+//           channel: &str,          // 渠道名，例如 "telegram"、"slack"
+//           platform_user_id: &str, // 平台原生用户 ID，例如 "123456|@alice"
+//           nexus_user_id: UserId,
+//       ) -> Result<()>
+//   在 channel_identities 表中插入或更新绑定记录。
+//   调用方：channels/telegram.rs 首次收到消息时
+
+// TODO: pub async fn get_user_by_channel_identity(
+//           db: &PgPool,
+//           channel: &str,
+//           platform_user_id: &str,
+//       ) -> Result<Option<UserId>>
+//   根据渠道和平台用户 ID 查找对应的 Nexus UserId。
+//   返回 None 表示该平台账号尚未绑定任何 Nexus 用户，需触发绑定流程。
+//   调用方：channels/mod.rs 收到 InboundEvent 时
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 【sessions 表】
 // 存储对话会话的元数据，包含所属用户、创建时间、last_consolidated 游标。

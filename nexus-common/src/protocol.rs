@@ -87,6 +87,13 @@ pub struct ToolStdoutStream {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolExecutionResult {
     pub request_id: String,
+    /// exit_code 语义约定（Client 和 Server 必须遵守此规范）：
+    ///   0  — 执行成功
+    ///   1  — 执行失败（stderr 或业务错误，output 中包含错误详情）
+    ///  -1  — 执行超时（被 tokio::time::timeout kill）
+    ///  -2  — 被取消（设备断线或 cancel_pending_requests_for_device 触发）
+    ///  -3  — 参数校验失败（executor.rs guardrails 或 schema 校验拦截，未执行）
+    /// 参考 nanobot：nanobot/agent/tools/shell.py ExecTool.run() 返回值语义
     pub exit_code: i32,
     pub output: String,
 }
