@@ -23,20 +23,16 @@ pub struct NexusMessage<T> {
 #[serde(tag = "type", content = "data")]
 pub enum ServerToClient {
     ExecuteToolRequest(ExecuteToolRequest),
-
-    // TODO: 登录握手变体（WebSocket 连接建立后的认证流程）
-    //
-    // RequireLogin { message: String }
-    //   Server 在 Client 建立 WebSocket 连接后立即发出，要求 Client 提交凭据。
-    //   message 字段可携带提示文本（例如 "Please authenticate"）。
-    //
-    // LoginSuccess { user_id: String, device_id: String }
-    //   认证成功，Server 将该 WebSocket 连接绑定到对应的 (UserId, DeviceId)，
-    //   并将设备注册到 AppState 在线设备路由表。
-    //
-    // LoginFailed { reason: String }
-    //   认证失败（凭据错误、JWT 过期、用户不存在等），
-    //   Server 发出后应立即关闭该 WebSocket 连接。
+    RequireLogin {
+        message: String,
+    },
+    LoginSuccess {
+        user_id: String,
+        device_id: String,
+    },
+    LoginFailed {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,14 +48,11 @@ pub struct ExecuteToolRequest {
 pub enum ClientToServer {
     ToolStdoutStream(ToolStdoutStream),
     ToolExecutionResult(ToolExecutionResult),
-
-    // TODO: 登录握手变体
-    //
-    // SubmitCredentials { email: String, password_hash: String }
-    //   Client 收到 ServerToClient::RequireLogin 后发出，提交认证凭据。
-    //   password_hash 在 Client 侧做一次哈希后传输，避免明文密码上网；
-    //   Server 端 auth.rs 再与 DB 中存储的 bcrypt hash 做最终比对。
-    //   （替代方案：直接传 JWT token，由 ws.rs 调用 auth::verify_jwt() 验证）
+    SubmitToken {
+        token: String,
+        device_id: String,
+        device_name: String,
+    },
     
     /// 新增：客户端连上 MCP 或启动时，主动向 Server 上报当前可用的所有工具 Schema
     RegisterTools {

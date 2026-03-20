@@ -10,4 +10,29 @@ pub struct NexusErrorPayload {
     pub message: String, // 人类可读的错误详情
 }
 
-// TODO: 定义常见的 Error Codes 常量或 Enum
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum NexusErrorCode {
+    AuthFailed,
+    AuthTokenExpired,
+    ExecutionTimeout,
+    ExecutionCancelled,
+    ValidationFailed,
+    DeviceNotFound,
+    ProtocolMismatch,
+    InternalError,
+}
+
+impl NexusErrorCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NexusErrorCode::AuthFailed => "AUTH_FAILED",
+            NexusErrorCode::AuthTokenExpired => "AUTH_TOKEN_EXPIRED",
+            NexusErrorCode::ExecutionTimeout => "EXECUTION_TIMEOUT",
+            NexusErrorCode::ExecutionCancelled => "EXECUTION_CANCELLED",
+            NexusErrorCode::ValidationFailed => "VALIDATION_FAILED",
+            NexusErrorCode::DeviceNotFound => "DEVICE_NOT_FOUND",
+            NexusErrorCode::ProtocolMismatch => "PROTOCOL_MISMATCH",
+            NexusErrorCode::InternalError => "INTERNAL_ERROR",
+        }
+    }
+}
