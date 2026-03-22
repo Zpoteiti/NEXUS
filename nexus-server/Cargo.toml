@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 nexus-common = { path = "../nexus-common" }
+dotenvy = "0.15"
