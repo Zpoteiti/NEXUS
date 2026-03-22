@@ -9,15 +9,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 通用的 WebSocket 消息信封
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NexusMessage<T> {
-    pub message_id: String,
-    #[serde(rename = "type")]
-    pub message_type: String,
-    pub payload: T,
-}
-
 /// 服务端下发给客户端的指令
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -52,6 +43,8 @@ pub enum ClientToServer {
         token: String,
         device_id: String,
         device_name: String,
+        /// 客户端声明的协议版本，Server 应校验是否等于 consts::PROTOCOL_VERSION，不匹配则拒绝登录。
+        protocol_version: String,
     },
     
     /// 新增：客户端连上 MCP 或启动时，主动向 Server 上报当前可用的所有工具 Schema
@@ -67,6 +60,7 @@ pub enum ClientToServer {
     Heartbeat {
         device_id: String,
         tools_hash: String,
+        /// 合法值："online" | "busy"。M1 阶段 Client 只发送 "online"。
         status: String,
     }
 }
