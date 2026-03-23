@@ -37,12 +37,6 @@
 ///
 /// 若不执行步骤 2，agent_loop 将永久 .await 挂起，该 session 的 LLM 调用链永远无法继续。
 
-// TODO: pub async fn ws_upgrade_handler(
-//           ws: WebSocketUpgrade,
-//           state: AppState,
-//           db: PgPool,
-//       ) -> impl IntoResponse
-//   执行 WebSocket 升级，将连接传入 socket_receive_loop。
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
