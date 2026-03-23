@@ -67,15 +67,8 @@ nexus-server 是 NEXUS 的中枢编排层，负责连接 WebUI 与 Client 设备
 ### 关键环境变量清单
 - `DATABASE_URL`：数据库连接串
 - `ADMIN_TOKEN`：管理员注册校验令牌
-- `LLM_API_KEY`：模型服务访问密钥
-- `LLM_API_BASE`：模型服务地址
-- `LLM_MODEL_NAME`：模型名称
 - `SERVER_PORT`：服务监听端口
 - `HEARTBEAT_TIMEOUT_SEC`：心跳超时剔除秒数
-- `MAX_AGENT_ITERATIONS`：Agent 循环最大轮次
-- `CONTEXT_WINDOW_TOKENS`：上下文窗口阈值
-- `MAX_TOKENS`：单次响应输出上限
-- `TEMPERATURE`：采样温度
 
 ### 运行方式
 - 在 Linux 主机准备 `.env` 与数据库后，通过 Docker Compose 启动服务。

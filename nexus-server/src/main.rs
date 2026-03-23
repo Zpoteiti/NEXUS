@@ -39,7 +39,7 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("Failed to initialize database: {e}"));
 
-    let state = state::AppState::new(pool);
+    let state = state::AppState::new(pool, config.clone());
 
     let app = Router::new()
         .route("/ws", get(ws::ws_handler))

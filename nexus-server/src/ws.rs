@@ -10,9 +10,8 @@
 /// WebSocket 连接建立后，在进入正常消息循环之前，必须先完成以下握手序列：
 ///
 /// 1. ws.rs 向 Client 发送 ServerToClient::RequireLogin { message: "Please authenticate" }
-/// 2. 等待 Client 回复 ClientToServer::SubmitCredentials { email, password_hash }
-///    （或 Client 直接上报 JWT token，由实现侧选择认证方式）
-/// 3. 调用 auth::verify_jwt(token) 或 auth::login(payload, db) 验证凭据：
+/// 2. 等待 Client 回复 ClientToServer::SubmitToken { token, device_id, device_name, protocol_version }
+/// 3. 调用 db::verify_device_token(token) 验证 Device Token：
 ///    - 成功：取得 (user_id, device_id)，
 ///            向 Client 发送 ServerToClient::LoginSuccess { user_id, device_id }，
 ///            将设备注册到 AppState 在线设备路由表（含 ws_tx、last_seen 等字段），
@@ -20,7 +19,7 @@
 ///    - 失败：向 Client 发送 ServerToClient::LoginFailed { reason }，
 ///            立即关闭 WebSocket 连接，不注册到 AppState。
 ///
-/// 握手超时处理：若在 HEARTBEAT_TIMEOUT_SEC 内未收到 SubmitCredentials，
+/// 握手超时处理：若在 HEARTBEAT_TIMEOUT_SEC 内未收到 SubmitToken，
 /// 直接关闭连接（防止恶意空连接耗尽连接池）。
 ///
 /// ─────────────────────────────────────────────────────────────────────────────
@@ -54,8 +53,8 @@ use nexus_common::consts::{HEARTBEAT_INTERVAL_SEC, PROTOCOL_VERSION};
 use nexus_common::protocol::{ClientToServer, ServerToClient};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
+use tracing::{info, warn};
 
-use crate::config;
 use crate::db;
 use crate::state::{AppState, DeviceState, cancel_pending_requests_for_device};
 
@@ -84,9 +83,9 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         return;
     }
 
-    let timeout_sec = config::load_config().heartbeat_timeout_sec;
+    let timeout_sec = state.config.heartbeat_timeout_sec;
     if timeout_sec < HEARTBEAT_INTERVAL_SEC {
-        eprintln!(
+        warn!(
             "warn: heartbeat_timeout_sec({}) < HEARTBEAT_INTERVAL_SEC({})",
             timeout_sec, HEARTBEAT_INTERVAL_SEC
         );
@@ -175,7 +174,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 devices.remove(&device_id);
             }
             cancel_pending_requests_for_device(&device_id, &state.pending).await;
-            eprintln!("device offline: device_id={device_id}");
+            info!("device offline: device_id={device_id}");
             return;
         }
     };
@@ -190,11 +189,11 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
             devices.remove(&device_id);
         }
         cancel_pending_requests_for_device(&device_id, &state.pending).await;
-        eprintln!("device offline: device_id={device_id}");
+        info!("device offline: device_id={device_id}");
         return;
     }
 
-    println!("device online: device_id={device_id}, user_id={user_id}");
+    info!("device online: device_id={device_id}, user_id={user_id}");
 
     while let Some(frame) = stream.next().await {
         let message = match frame {
@@ -206,7 +205,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
             Message::Text(text) => text.to_string(),
             Message::Close(_) => break,
             _ => {
-                eprintln!("warn: non-text frame ignored from device_id={device_id}");
+                warn!("non-text frame ignored from device_id={device_id}");
                 continue;
             }
         };
@@ -214,7 +213,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         let incoming = match serde_json::from_str::<ClientToServer>(&text) {
             Ok(v) => v,
             Err(_) => {
-                eprintln!("warn: invalid json from device_id={device_id}");
+                warn!("invalid json from device_id={device_id}");
                 continue;
             }
         };
@@ -226,8 +225,8 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 status: _,
             } => {
                 if incoming_device_id != device_id {
-                    eprintln!(
-                        "warn: heartbeat device_id mismatch: expected={}, got={}",
+                    warn!(
+                        "heartbeat device_id mismatch: expected={}, got={}",
                         device_id, incoming_device_id
                     );
                     continue;
@@ -243,8 +242,8 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 schemas,
             } => {
                 if incoming_device_id != device_id {
-                    eprintln!(
-                        "warn: register_tools device_id mismatch: expected={}, got={}",
+                    warn!(
+                        "register_tools device_id mismatch: expected={}, got={}",
                         device_id, incoming_device_id
                     );
                     continue;
@@ -262,13 +261,13 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 if let Some(tx) = sender {
                     let _ = tx.send(result);
                 } else {
-                    eprintln!(
-                        "warn: missing pending sender for request_id from device_id={device_id}"
+                    warn!(
+                        "missing pending sender for request_id from device_id={device_id}"
                     );
                 }
             }
             _ => {
-                eprintln!("warn: unsupported message ignored from device_id={device_id}");
+                warn!("unsupported message ignored from device_id={device_id}");
             }
         }
     }
@@ -280,5 +279,5 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         devices.remove(&device_id);
     }
     cancel_pending_requests_for_device(&device_id, &state.pending).await;
-    println!("device offline: device_id={device_id}");
+    info!("device offline: device_id={device_id}");
 }

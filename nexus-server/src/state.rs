@@ -35,6 +35,8 @@ use nexus_common::protocol::ToolExecutionResult;
 use sqlx::PgPool;
 use tokio::sync::{RwLock, mpsc, oneshot};
 
+use crate::config::ServerConfig;
+
 pub struct DeviceState {
     pub user_id: String,
     pub device_name: String,
@@ -46,14 +48,16 @@ pub struct DeviceState {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub config: ServerConfig,
     pub db: PgPool,
     pub devices: Arc<RwLock<HashMap<String, DeviceState>>>,
     pub pending: Arc<RwLock<HashMap<String, oneshot::Sender<ToolExecutionResult>>>>,
 }
 
 impl AppState {
-    pub fn new(db: PgPool) -> Self {
+    pub fn new(db: PgPool, config: ServerConfig) -> Self {
         Self {
+            config,
             db,
             devices: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(HashMap::new())),
