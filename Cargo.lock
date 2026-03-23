@@ -900,7 +900,15 @@ dependencies = [
 name = "nexus-client"
 version = "0.1.0"
 dependencies = [
+ "dotenvy",
+ "futures-util",
  "nexus-common",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

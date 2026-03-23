@@ -21,31 +21,19 @@
 ///    将执行结果封装为 ClientToServer::ToolExecutionResult 回传 Server。
 
 mod config;
-mod discovery;
-mod env;
-mod executor;
-mod guardrails;
-mod mcp_client;
-mod process;
 mod session;
-mod skills;
-mod tools;
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() {
-    // 阶段一：连接
-    // TODO: 加载 ClientConfig（config.rs）
-    // TODO: 建立 WebSocket 长连接（session.rs）
-    // TODO: 完成 Server 登录认证
+    tracing_subscriber::fmt::init();
 
-    // 阶段二：发现与注册
-    // TODO: 扫描本地内置工具（discovery.rs）
-    // TODO: 调用 skills::scan_skills() 扫描本地 skill 目录，经 skill_to_schema() 转换后注册为可用工具（skills.rs）
-    // TODO: 连接外部 MCP Server 并获取工具列表（mcp_client.rs）
-    // TODO: 发送 RegisterTools（session.rs）
+    let config = config::load_config();
+    let mut session = session::connect_and_loop(config).await;
 
-    // 阶段三：主循环
-    // TODO: 开启心跳循环（session.rs，含 tools_hash）
-    // TODO: 开启 ServerToClient 指令接收大循环，分发给 executor.rs
-    todo!("Implement client entrypoint")
+    while let Some(message) = session.recv().await {
+        info!("received server message: {:?}", message);
+    }
+
+    warn!("session inbound channel closed");
 }
