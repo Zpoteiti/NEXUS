@@ -4,27 +4,55 @@
 /// 3. 挂载 Axum 的路由（HTTP API 路由来自 api.rs，WebSocket 路由来自 ws.rs）。
 /// 4. 绝对不要在这里写具体的 WebSocket 收发逻辑或 LLM 提示词逻辑。
 
-mod agent_loop;
-mod api;
-mod auth;
-mod bus;
-mod channels;
+// mod agent_loop;
+// mod api;
+// mod auth;
+// mod bus;
+// mod channels;
 mod config;
-mod context;
+// mod context;
 mod db;
-mod memory;
-mod providers;
+// mod memory;
+// mod providers;
 mod state;
-mod tools_registry;
+// mod tools_registry;
 mod ws;
+
+use axum::Router;
+use axum::http::StatusCode;
+use axum::routing::get;
+use sqlx::PgPool;
+use std::net::SocketAddr;
+use tracing::info;
 
 #[tokio::main]
 async fn main() {
-    // TODO: 初始化 dotenvy
-    // TODO: 连接 PostgreSQL（db.rs）
-    // TODO: 调用 bus::init() 获取四端点
-    // TODO: 初始化 AppState（state.rs）
-    // TODO: 启动 ChannelManager（channels/mod.rs）
-    // TODO: 启动 Axum 服务器，挂载 api.rs 和 ws.rs 的路由
-    todo!("Initialize the server boilerplate")
+    tracing_subscriber::fmt::init();
+
+    let config = config::load_config();
+
+    let pool = PgPool::connect(&config.database_url)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to connect PostgreSQL: {e}"));
+
+    db::init_db(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to initialize database: {e}"));
+
+    let state = state::AppState::new(pool);
+
+    let app = Router::new()
+        .route("/ws", get(ws::ws_handler))
+        .fallback(|| async { (StatusCode::NOT_IMPLEMENTED, "Not Implemented") })
+        .with_state(state);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.server_port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to bind 0.0.0.0:{}: {e}", config.server_port));
+
+    info!("Server listening on 0.0.0.0:{}", config.server_port);
+    axum::serve(listener, app)
+        .await
+        .unwrap_or_else(|e| panic!("Axum server error: {e}"));
 }

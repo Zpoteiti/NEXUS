@@ -44,10 +44,241 @@
 //           db: PgPool,
 //       ) -> impl IntoResponse
 //   执行 WebSocket 升级，将连接传入 socket_receive_loop。
+use std::time::{Duration, Instant};
 
-// TODO: pub async fn socket_receive_loop(
-//           socket: WebSocket,
-//           state: AppState,
-//           db: PgPool,
-//       )
-//   完成握手认证 → 注册设备 → 进入消息收发大循环 → 退出时清理挂起请求。
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::response::IntoResponse;
+use futures_util::{SinkExt, StreamExt};
+use nexus_common::consts::{HEARTBEAT_INTERVAL_SEC, PROTOCOL_VERSION};
+use nexus_common::protocol::{ClientToServer, ServerToClient};
+use tokio::sync::mpsc;
+use tokio::time::timeout;
+
+use crate::config;
+use crate::db;
+use crate::state::{AppState, DeviceState, cancel_pending_requests_for_device};
+
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| socket_receive_loop(socket, state))
+}
+
+pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
+    let (mut sink, mut stream) = socket.split();
+
+    let require_login = ServerToClient::RequireLogin {
+        message: "Please authenticate".to_string(),
+    };
+    let require_login_text = match serde_json::to_string(&require_login) {
+        Ok(text) => text,
+        Err(_) => return,
+    };
+    if sink
+        .send(Message::Text(require_login_text.into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let timeout_sec = config::load_config().heartbeat_timeout_sec;
+    if timeout_sec < HEARTBEAT_INTERVAL_SEC {
+        eprintln!(
+            "warn: heartbeat_timeout_sec({}) < HEARTBEAT_INTERVAL_SEC({})",
+            timeout_sec, HEARTBEAT_INTERVAL_SEC
+        );
+    }
+    let first_message = match timeout(Duration::from_secs(timeout_sec), stream.next()).await {
+        Ok(Some(Ok(msg))) => msg,
+        _ => return,
+    };
+
+    let login_text = match first_message {
+        Message::Text(text) => text.to_string(),
+        _ => return,
+    };
+
+    let submit = match serde_json::from_str::<ClientToServer>(&login_text) {
+        Ok(ClientToServer::SubmitToken {
+            token,
+            device_id,
+            device_name,
+            protocol_version,
+        }) => (token, device_id, device_name, protocol_version),
+        _ => return,
+    };
+
+    let (token, device_id, device_name, protocol_version) = submit;
+
+    if protocol_version != PROTOCOL_VERSION {
+        let failed = ServerToClient::LoginFailed {
+            reason: "Protocol version mismatch".to_string(),
+        };
+        if let Ok(text) = serde_json::to_string(&failed) {
+            let _ = sink.send(Message::Text(text.into())).await;
+        }
+        return;
+    }
+
+    let user_id = match db::verify_device_token(&state.db, &token).await {
+        Ok(Some(user_id)) => user_id,
+        _ => {
+            let failed = ServerToClient::LoginFailed {
+                reason: "Invalid or revoked token".to_string(),
+            };
+            if let Ok(text) = serde_json::to_string(&failed) {
+                let _ = sink.send(Message::Text(text.into())).await;
+            }
+            return;
+        }
+    };
+
+    let _ = db::update_device_name(&state.db, &token, &device_name).await;
+
+    let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(256);
+    {
+        let mut devices = state.devices.write().await;
+        devices.insert(
+            device_id.clone(),
+            DeviceState {
+                user_id: user_id.clone(),
+                device_name,
+                ws_tx: ws_tx.clone(),
+                tools: Vec::new(),
+                tools_hash: String::new(),
+                last_seen: Instant::now(),
+            },
+        );
+    }
+
+    let writer = tokio::spawn(async move {
+        while let Some(msg) = ws_rx.recv().await {
+            if sink.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let login_success = ServerToClient::LoginSuccess {
+        user_id: user_id.clone(),
+        device_id: device_id.clone(),
+    };
+    let login_success_text = match serde_json::to_string(&login_success) {
+        Ok(text) => text,
+        Err(_) => {
+            writer.abort();
+            {
+                let mut devices = state.devices.write().await;
+                devices.remove(&device_id);
+            }
+            cancel_pending_requests_for_device(&device_id, &state.pending).await;
+            eprintln!("device offline: device_id={device_id}");
+            return;
+        }
+    };
+    if ws_tx
+        .send(Message::Text(login_success_text.into()))
+        .await
+        .is_err()
+    {
+        writer.abort();
+        {
+            let mut devices = state.devices.write().await;
+            devices.remove(&device_id);
+        }
+        cancel_pending_requests_for_device(&device_id, &state.pending).await;
+        eprintln!("device offline: device_id={device_id}");
+        return;
+    }
+
+    println!("device online: device_id={device_id}, user_id={user_id}");
+
+    while let Some(frame) = stream.next().await {
+        let message = match frame {
+            Ok(msg) => msg,
+            Err(_) => break,
+        };
+
+        let text = match message {
+            Message::Text(text) => text.to_string(),
+            Message::Close(_) => break,
+            _ => {
+                eprintln!("warn: non-text frame ignored from device_id={device_id}");
+                continue;
+            }
+        };
+
+        let incoming = match serde_json::from_str::<ClientToServer>(&text) {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("warn: invalid json from device_id={device_id}");
+                continue;
+            }
+        };
+
+        match incoming {
+            ClientToServer::Heartbeat {
+                device_id: incoming_device_id,
+                tools_hash,
+                status: _,
+            } => {
+                if incoming_device_id != device_id {
+                    eprintln!(
+                        "warn: heartbeat device_id mismatch: expected={}, got={}",
+                        device_id, incoming_device_id
+                    );
+                    continue;
+                }
+                let mut devices = state.devices.write().await;
+                if let Some(device) = devices.get_mut(&device_id) {
+                    device.last_seen = Instant::now();
+                    device.tools_hash = tools_hash;
+                }
+            }
+            ClientToServer::RegisterTools {
+                device_id: incoming_device_id,
+                schemas,
+            } => {
+                if incoming_device_id != device_id {
+                    eprintln!(
+                        "warn: register_tools device_id mismatch: expected={}, got={}",
+                        device_id, incoming_device_id
+                    );
+                    continue;
+                }
+                let mut devices = state.devices.write().await;
+                if let Some(device) = devices.get_mut(&device_id) {
+                    device.tools = schemas;
+                }
+            }
+            ClientToServer::ToolExecutionResult(result) => {
+                let sender = {
+                    let mut pending = state.pending.write().await;
+                    pending.remove(&result.request_id)
+                };
+                if let Some(tx) = sender {
+                    let _ = tx.send(result);
+                } else {
+                    eprintln!(
+                        "warn: missing pending sender for request_id from device_id={device_id}"
+                    );
+                }
+            }
+            _ => {
+                eprintln!("warn: unsupported message ignored from device_id={device_id}");
+            }
+        }
+    }
+
+    writer.abort();
+
+    {
+        let mut devices = state.devices.write().await;
+        devices.remove(&device_id);
+    }
+    cancel_pending_requests_for_device(&device_id, &state.pending).await;
+    println!("device offline: device_id={device_id}");
+}

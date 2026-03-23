@@ -207,3 +207,72 @@
 //   从 memory_chunks 表中删除指定记忆片段。
 //   user_id 作为二次校验，防止用户越权删除他人记忆。
 //   调用方：api.rs（Settings 页记忆删除接口）
+
+use sqlx::PgPool;
+
+pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(user_id),
+            device_name TEXT,
+            revoked BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn verify_device_token(
+    pool: &PgPool,
+    token: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT user_id
+        FROM device_tokens
+        WHERE token = $1
+          AND revoked = FALSE
+        "#,
+    )
+    .bind(token)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn update_device_name(
+    pool: &PgPool,
+    token: &str,
+    device_name: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE device_tokens
+        SET device_name = $1
+        WHERE token = $2
+        "#,
+    )
+    .bind(device_name)
+    .bind(token)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}

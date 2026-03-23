@@ -12,8 +12,6 @@
 /// Nexus 抛弃 config.json，纯环境变量，符合十二要素法则（12-factor app）。
 /// 与 nanobot 的 ~100 行 Pydantic 模型相比，Server 端只保留运行必需的最小字段集。
 
-use nexus_common::consts;
-
 /// 全量服务器配置，由 load_config() 构造，在 main.rs 中传给各模块。
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -27,48 +25,6 @@ pub struct ServerConfig {
     /// Admin 注册时的校验 Token，auth.rs 的 /admin/register 端点使用。
     /// 对应 nanobot：无
     pub admin_token: String,
-
-    // ─── LLM Provider（均可选，未配置时 Agent Loop 无法调用 LLM）─────────────
-
-    /// LLM 服务的 API Key。
-    /// None 表示未配置 LLM，Server 启动正常但 Agent Loop 无法运行。
-    /// 对应 nanobot：schema.py ProviderConfig.api_key
-    pub llm_api_key: Option<String>,
-
-    // ─── LLM Provider（有默认值）──────────────────────────────────────────────
-
-    /// LLM API 基础 URL。
-    /// 默认：http://127.0.0.1:1234/v1（指向本地 LM Studio）
-    /// 对应 nanobot：schema.py ProviderConfig.api_base
-    pub llm_api_base: String,
-
-    /// 模型名称。
-    /// 默认：local-model
-    /// 对应 nanobot：schema.py AgentDefaults.model
-    pub llm_model_name: String,
-
-    // ─── Agent 行为控制（有默认值）────────────────────────────────────────────
-
-    /// Agent ReAct 循环最大迭代次数，超限后将最后一次 LLM 文本输出直接返回给用户。
-    /// 默认：40（与 consts::MAX_AGENT_ITERATIONS 对齐）
-    /// 对应 nanobot：schema.py AgentDefaults.max_tool_iterations
-    pub max_agent_iterations: u32,
-
-    /// LLM 上下文窗口大小（token 数）。
-    /// memory.rs 用此值计算整合触发阈值：当 prompt tokens > context_window_tokens * 0.5 时触发整合。
-    /// 默认：128000（对应主流部署规格；nanobot 默认为 65536）
-    /// 对应 nanobot：schema.py AgentDefaults.context_window_tokens
-    pub context_window_tokens: usize,
-
-    /// LLM 单次响应最大 token 数。
-    /// 默认：8192
-    /// 对应 nanobot：schema.py AgentDefaults.max_tokens
-    pub max_tokens: usize,
-
-    /// LLM 采样温度。
-    /// 默认：0.7（nanobot 默认为 0.1，Nexus 用更高值以获得更自然的对话输出）
-    /// 对应 nanobot：schema.py AgentDefaults.temperature
-    pub temperature: f32,
 
     // ─── Server 运行参数（有默认值）───────────────────────────────────────────
 
@@ -101,37 +57,6 @@ pub fn load_config() -> ServerConfig {
     let admin_token = std::env::var("ADMIN_TOKEN")
         .unwrap_or_else(|_| panic!("环境变量 ADMIN_TOKEN 未设置，Server 无法启动。\n  用途：/admin/register 端点的身份校验 Token"));
 
-    // ─── LLM Provider（有默认值；未设置 LLM_API_KEY 时 Agent Loop 无法运行）──
-    let llm_api_key = std::env::var("LLM_API_KEY").ok();
-
-    // ─── LLM Provider（有默认值）─────────────────────────────────────────────
-    let llm_api_base = std::env::var("LLM_API_BASE")
-        .unwrap_or_else(|_| "http://127.0.0.1:1234/v1".to_string());
-
-    let llm_model_name = std::env::var("LLM_MODEL_NAME")
-        .unwrap_or_else(|_| "local-model".to_string());
-
-    // ─── Agent 行为控制（有默认值）───────────────────────────────────────────
-    let max_agent_iterations = std::env::var("MAX_AGENT_ITERATIONS")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(consts::MAX_AGENT_ITERATIONS);
-
-    let context_window_tokens = std::env::var("CONTEXT_WINDOW_TOKENS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(128_000);
-
-    let max_tokens = std::env::var("MAX_TOKENS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(8192);
-
-    let temperature = std::env::var("TEMPERATURE")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(0.7);
-
     // ─── Server 运行参数（有默认值）──────────────────────────────────────────
     let server_port = match std::env::var("SERVER_PORT") {
         Ok(val) => val.parse::<u16>().unwrap_or_else(|_| {
@@ -143,18 +68,11 @@ pub fn load_config() -> ServerConfig {
     let heartbeat_timeout_sec = std::env::var("HEARTBEAT_TIMEOUT_SEC")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(consts::HEARTBEAT_INTERVAL_SEC * 4);
+        .unwrap_or(60);
 
     ServerConfig {
         database_url,
         admin_token,
-        llm_api_key,
-        llm_api_base,
-        llm_model_name,
-        max_agent_iterations,
-        context_window_tokens,
-        max_tokens,
-        temperature,
         server_port,
         heartbeat_timeout_sec,
     }
