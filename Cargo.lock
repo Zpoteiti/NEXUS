@@ -900,6 +900,7 @@ dependencies = [
 name = "nexus-client"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "dotenvy",
  "futures-util",
  "nexus-common",
