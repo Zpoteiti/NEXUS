@@ -6,7 +6,24 @@ use nexus_common::consts::{DEVICE_TOKEN_PREFIX, DEVICE_TOKEN_RANDOM_LEN};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::schema::{ClientConfig, McpServerConfig};
+#[derive(Debug, Clone)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: Option<HashMap<String, String>>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientConfig {
+    pub server_ws_url: String,
+    pub device_id: String,
+    pub device_name: String,
+    pub auth_token: String,
+    pub mcp_servers: Vec<McpServerConfig>,
+    pub skills_dir: PathBuf,
+}
 
 #[derive(Debug, Deserialize)]
 struct McpServerJson {

@@ -101,13 +101,16 @@ async fn connection_manager_loop(
         match connect_async(&config.server_ws_url).await {
             Ok((mut ws_stream, _)) => {
                 info!("connected to server: {}", config.server_ws_url);
-                let run_result =
-                    run_single_connection(&mut ws_stream, &config, &inbound_tx, &mut outbound_rx)
-                        .await;
-                if let Err(err) = run_result {
-                    warn!("websocket loop ended: {}", err);
+                match run_single_connection(&mut ws_stream, &config, &inbound_tx, &mut outbound_rx)
+                    .await
+                {
+                    Ok(()) => {
+                        backoff_sec = 1;
+                    }
+                    Err(err) => {
+                        warn!("websocket loop ended: {}", err);
+                    }
                 }
-                backoff_sec = 1;
             }
             Err(err) => {
                 warn!("failed to connect server: {}", err);
