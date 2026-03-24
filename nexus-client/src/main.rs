@@ -21,7 +21,9 @@
 ///    将执行结果封装为 ClientToServer::ToolExecutionResult 回传 Server。
 
 mod config;
+mod discovery;
 mod session;
+mod tools;
 use tracing::{info, warn};
 
 #[tokio::main]

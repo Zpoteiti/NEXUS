@@ -53,6 +53,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use nexus_common::consts::{HEARTBEAT_INTERVAL_SEC, PROTOCOL_VERSION};
 use nexus_common::protocol::{ClientToServer, ServerToClient};
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
@@ -60,6 +61,13 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use crate::config::ClientConfig;
+use crate::discovery;
+
+fn compute_tools_hash(schemas: &[serde_json::Value]) -> String {
+    let json = serde_json::to_string(schemas).unwrap_or_default();
+    let hash = Sha256::digest(json.as_bytes());
+    format!("{:x}", hash)
+}
 
 pub struct ClientSession {
     outbound_tx: mpsc::Sender<ClientToServer>,
@@ -138,19 +146,26 @@ async fn run_single_connection(
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
+                let schemas = discovery::discover_all_tools();
+                let new_hash = compute_tools_hash(&schemas);
                 let heartbeat_event = ClientToServer::Heartbeat {
                     device_id: config.device_id.clone(),
-                    tools_hash: tools_hash.clone(),
+                    tools_hash: new_hash.clone(),
                     status: "online".to_string(),
                 };
                 send_client_message(ws_stream, &heartbeat_event).await?;
+                if new_hash != tools_hash {
+                    let register = ClientToServer::RegisterTools {
+                        device_id: config.device_id.clone(),
+                        schemas,
+                    };
+                    send_client_message(ws_stream, &register).await?;
+                    tools_hash = new_hash;
+                }
             }
             outbound = outbound_rx.recv() => {
                 match outbound {
                     Some(message) => {
-                        if let ClientToServer::RegisterTools { schemas, .. } = &message {
-                            tools_hash = schemas.len().to_string();
-                        }
                         send_client_message(ws_stream, &message).await?;
                     }
                     None => return Err("outbound channel closed".to_string()),
@@ -232,6 +247,12 @@ async fn perform_handshake(
                 "device login success: device_id={}, server={}",
                 config.device_id, config.server_ws_url
             );
+            let schemas = discovery::discover_all_tools();
+            let register = ClientToServer::RegisterTools {
+                device_id: config.device_id.clone(),
+                schemas,
+            };
+            send_client_message(ws_stream, &register).await?;
             Ok(())
         }
         ServerToClient::LoginFailed { reason } => Err(format!("login failed: {}", reason)),

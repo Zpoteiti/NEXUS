@@ -244,7 +244,9 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 }
                 let mut devices = state.devices.write().await;
                 if let Some(device) = devices.get_mut(&device_id) {
+                    let count = schemas.len();
                     device.tools = schemas;
+                    info!("tools registered: device_id={device_id}, count={count}");
                 }
             }
             ClientToServer::ToolExecutionResult(result) => {
