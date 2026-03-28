@@ -49,6 +49,8 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{info, warn};
 
+use crate::agent_loop;
+use crate::bus::{InboundEvent, MessageBus};
 use crate::db;
 use crate::state::{AppState, DeviceState, cancel_pending_requests_for_device};
 
@@ -141,7 +143,6 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 device_name: device_name.clone(),
                 ws_tx: ws_tx.clone(),
                 tools: Vec::new(),
-                tools_hash: String::new(),
                 last_seen: Instant::now(),
             },
         );
@@ -194,6 +195,26 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
     }
 
     info!("device online: device_id={device_id}, user_id={user_id}");
+
+    // Spawn OutboundEvent consumer — pushes AgentResponse back to client
+    let bus = state.bus.clone();
+    let ws_tx_clone = ws_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            let event = bus.consume_outbound().await;
+            let response = ServerToClient::AgentResponse {
+                channel: event.channel,
+                chat_id: event.chat_id,
+                content: event.content,
+            };
+            if let Ok(text) = serde_json::to_string(&response) {
+                let msg = axum::extract::ws::Message::Text(text.into());
+                if ws_tx_clone.send(msg).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
 
     while let Some(frame) = stream.next().await {
         let message = match frame {
@@ -284,6 +305,40 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                     warn!(
                         "missing pending sender for request_id from device_id={device_id}"
                     );
+                }
+            }
+            ClientToServer::UserMessage {
+                session_id,
+                channel,
+                content,
+            } => {
+                let inbound = InboundEvent {
+                    channel: channel.clone(),
+                    sender_id: user_id.clone(),
+                    chat_id: session_id.clone(),
+                    content,
+                    session_id: session_id.clone(),
+                };
+
+                // 获取或创建 session
+                let (tx, is_new): (tokio::sync::mpsc::Sender<InboundEvent>, bool) =
+                    state.session_manager.get_or_create_session(&session_id).await;
+
+                if is_new {
+                    // 首次创建该 session：spawn agent_loop
+                    let (new_tx, rx) = mpsc::channel(64);
+                    let agent_state = state.clone();
+                    let sid = session_id.clone();
+                    tokio::spawn(async move {
+                        agent_loop::run_session(sid, rx, agent_state).await;
+                    });
+                    // 发到新的 agent_loop
+                    let _ = new_tx.send(inbound).await;
+                } else {
+                    // 已有 session，直接发送
+                    if let Err(_) = tx.send(inbound).await {
+                        tracing::warn!("session {} inbox closed", session_id);
+                    }
                 }
             }
             _ => {
