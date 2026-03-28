@@ -41,12 +41,6 @@
 /// Server 端 ws.rs 会在设备断线时调用 cancel_pending_requests_for_device，
 /// 将对应 oneshot::Sender 全部 drop，agent_loop 收到 Err 后将错误包装为 Tool Result
 /// 喂回 LLM 触发自我纠正，无需 Client 侧做额外处理。
-///
-/// ─────────────────────────────────────────────────────────────────────────────
-/// 参考 nanobot：
-/// ─────────────────────────────────────────────────────────────────────────────
-/// 对应分布式的连接层抽象。nanobot 是单机，无此重连恢复问题；
-/// Nexus 的重连序列是 Nexus 架构独有的复杂性来源。
 
 use std::time::Duration;
 
@@ -61,9 +55,12 @@ use tracing::{info, warn};
 
 use crate::config::ClientConfig;
 
+/// ClientSession 保存与 Server 的会话状态，供 main.rs 访问。
 pub struct ClientSession {
     outbound_tx: mpsc::Sender<ClientToServer>,
     inbound_rx: mpsc::Receiver<ServerToClient>,
+    /// 登录成功后从 Server 回传的 user_id（用于日志和调试）
+    user_id: Option<String>,
 }
 
 impl ClientSession {
@@ -77,6 +74,10 @@ impl ClientSession {
     pub async fn recv(&mut self) -> Option<ServerToClient> {
         self.inbound_rx.recv().await
     }
+
+    pub fn user_id(&self) -> Option<&str> {
+        self.user_id.as_deref()
+    }
 }
 
 pub async fn connect_and_loop(config: ClientConfig) -> ClientSession {
@@ -88,6 +89,7 @@ pub async fn connect_and_loop(config: ClientConfig) -> ClientSession {
     ClientSession {
         outbound_tx,
         inbound_rx,
+        user_id: None,
     }
 }
 
@@ -130,26 +132,62 @@ async fn run_single_connection(
     inbound_tx: &mpsc::Sender<ServerToClient>,
     outbound_rx: &mut mpsc::Receiver<ClientToServer>,
 ) -> Result<(), String> {
-    perform_handshake(ws_stream, config).await?;
+    let device_id = config.device_id.clone();
+    let device_name = config.device_name.clone();
+    perform_handshake(ws_stream, &device_id, &device_name).await?;
+
+    // 步骤 2 — 登录成功后，立即发现并注册工具（重连时也会执行）
+    let schemas = crate::discovery::discover_all_tools(
+        config.mcp_servers.clone(),
+        config.skills_dir.clone(),
+    )
+    .await;
+    let tools_hash = compute_tools_hash(&schemas);
+    let register = ClientToServer::RegisterTools {
+        device_id: device_id.clone(),
+        device_name: device_name.clone(),
+        schemas,
+    };
+    send_client_message(ws_stream, &register).await?;
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SEC));
-    let mut tools_hash = String::new();
+    let mut last_hash = tools_hash;
 
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
+                // 每次心跳重新计算 hash，检测工具是否变更
+                let current_schemas = crate::discovery::discover_all_tools(
+                    config.mcp_servers.clone(),
+                    config.skills_dir.clone(),
+                )
+                .await;
+                let current_hash = compute_tools_hash(&current_schemas);
+
                 let heartbeat_event = ClientToServer::Heartbeat {
-                    device_id: config.device_id.clone(),
-                    tools_hash: tools_hash.clone(),
+                    device_id: device_id.clone(),
+                    device_name: device_name.clone(),
+                    tools_hash: current_hash.clone(),
                     status: "online".to_string(),
                 };
                 send_client_message(ws_stream, &heartbeat_event).await?;
+
+                // 若 hash 变了，说明工具集发生变更，立即重新注册
+                if current_hash != last_hash {
+                    let register = ClientToServer::RegisterTools {
+                        device_id: device_id.clone(),
+                        device_name: device_name.clone(),
+                        schemas: current_schemas,
+                    };
+                    send_client_message(ws_stream, &register).await?;
+                    last_hash = current_hash;
+                }
             }
             outbound = outbound_rx.recv() => {
                 match outbound {
                     Some(message) => {
-                        if let ClientToServer::RegisterTools { schemas, .. } = &message {
-                            tools_hash = schemas.len().to_string();
+                        if let ClientToServer::RegisterTools { schemas: outbound_schemas, .. } = &message {
+                            last_hash = compute_tools_hash(outbound_schemas);
                         }
                         send_client_message(ws_stream, &message).await?;
                     }
@@ -186,7 +224,8 @@ async fn perform_handshake(
     ws_stream: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
-    config: &ClientConfig,
+    device_id: &str,
+    device_name: &str,
 ) -> Result<(), String> {
     let require_login = tokio::time::timeout(Duration::from_secs(30), ws_stream.next())
         .await
@@ -206,9 +245,9 @@ async fn perform_handshake(
     }
 
     let submit = ClientToServer::SubmitToken {
-        token: config.auth_token.clone(),
-        device_id: config.device_id.clone(),
-        device_name: config.device_name.clone(),
+        token: crate::config::load_config().auth_token.clone(),
+        device_id: device_id.to_string(),
+        device_name: device_name.to_string(),
         protocol_version: PROTOCOL_VERSION.to_string(),
     };
     send_client_message(ws_stream, &submit).await?;
@@ -229,14 +268,24 @@ async fn perform_handshake(
     match login_result_msg {
         ServerToClient::LoginSuccess { .. } => {
             info!(
-                "device login success: device_id={}, server={}",
-                config.device_id, config.server_ws_url
+                "device login success: device_id={}",
+                device_id,
             );
             Ok(())
         }
         ServerToClient::LoginFailed { reason } => Err(format!("login failed: {}", reason)),
         _ => Err("unexpected message during login".to_string()),
     }
+}
+
+/// 对工具 Schema 列表计算哈希，用于 tools_hash 字段。
+fn compute_tools_hash(schemas: &[serde_json::Value]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let serialized = serde_json::to_string(schemas).unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    serialized.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
 }
 
 async fn send_client_message(

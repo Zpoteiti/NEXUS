@@ -50,15 +50,17 @@ pub enum ClientToServer {
     /// 新增：客户端连上 MCP 或启动时，主动向 Server 上报当前可用的所有工具 Schema
     RegisterTools {
         device_id: String,
+        device_name: String,
         schemas: Vec<Value>, // 存放 JSON Schema
     },
-    
+
     /// 新增：心跳包，带着当前工具的 Hash，防止 Server 和 Client 状态脱节。
     /// tools_hash 是对【内置工具 + MCP 工具 + Skill 工具】三类工具 Schema 列表
     /// 合并后整体计算的哈希值（例如对 Vec<Value> 序列化后做 SHA256）。
     /// Server 可通过比对上次记录的 hash 来判断工具集是否发生变更。
     Heartbeat {
         device_id: String,
+        device_name: String,
         tools_hash: String,
         /// 合法值："online" | "busy"。M1 阶段 Client 只发送 "online"。
         status: String,

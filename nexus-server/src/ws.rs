@@ -138,13 +138,19 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
             device_id.clone(),
             DeviceState {
                 user_id: user_id.clone(),
-                device_name,
+                device_name: device_name.clone(),
                 ws_tx: ws_tx.clone(),
                 tools: Vec::new(),
                 tools_hash: String::new(),
                 last_seen: Instant::now(),
             },
         );
+        // 维护 devices_by_user 索引：user_id → { device_name → device_id }
+        let mut devices_by_user = state.devices_by_user.write().await;
+        devices_by_user
+            .entry(user_id.clone())
+            .or_default()
+            .insert(device_name.clone(), device_id.clone());
     }
 
     let writer = tokio::spawn(async move {
@@ -215,6 +221,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         match incoming {
             ClientToServer::Heartbeat {
                 device_id: incoming_device_id,
+                device_name: incoming_device_name,
                 tools_hash,
                 status: _,
             } => {
@@ -226,13 +233,23 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                     continue;
                 }
                 let mut devices = state.devices.write().await;
+                let mut devices_by_user = state.devices_by_user.write().await;
                 if let Some(device) = devices.get_mut(&device_id) {
                     device.last_seen = Instant::now();
                     device.tools_hash = tools_hash;
+                    // 若 device_name 变了（重连后用户改了配置），更新索引
+                    if device.device_name != incoming_device_name {
+                        if let Some(user_devices) = devices_by_user.get_mut(&user_id) {
+                            user_devices.retain(|_, v| v != &device_id);
+                            user_devices.insert(incoming_device_name.clone(), device_id.clone());
+                        }
+                        device.device_name = incoming_device_name;
+                    }
                 }
             }
             ClientToServer::RegisterTools {
                 device_id: incoming_device_id,
+                device_name: incoming_device_name,
                 schemas,
             } => {
                 if incoming_device_id != device_id {
@@ -245,6 +262,13 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 let mut devices = state.devices.write().await;
                 if let Some(device) = devices.get_mut(&device_id) {
                     device.tools = schemas;
+                    device.device_name = incoming_device_name.clone();
+                    // 更新 devices_by_user 索引中的 device_name（可能重连后名称变了）
+                    let mut devices_by_user = state.devices_by_user.write().await;
+                    if let Some(user_devices) = devices_by_user.get_mut(&user_id) {
+                        user_devices.retain(|_, v| v != &device_id);
+                        user_devices.insert(incoming_device_name.clone(), device_id.clone());
+                    }
                 }
             }
             ClientToServer::ToolExecutionResult(result) => {
@@ -270,8 +294,17 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
 
     {
         let mut devices = state.devices.write().await;
-        devices.remove(&device_id);
+        if let Some(device_state) = devices.remove(&device_id) {
+            // 从 devices_by_user 中移除该设备
+            let mut devices_by_user = state.devices_by_user.write().await;
+            if let Some(user_devices) = devices_by_user.get_mut(&user_id) {
+                user_devices.retain(|_, v| v != &device_id);
+                if user_devices.is_empty() {
+                    devices_by_user.remove(&user_id);
+                }
+            }
+            info!("device offline: device_id={}, device_name={}", device_id, device_state.device_name);
+        }
     }
     cancel_pending_requests_for_device(&device_id, &state.pending).await;
-    info!("device offline: device_id={device_id}");
 }
