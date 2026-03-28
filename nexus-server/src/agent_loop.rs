@@ -24,8 +24,9 @@ pub async fn run_session(
         info!("agent_session {} received: content={}", session_id, event.content);
 
         // 持有 session 锁（防止不同 channel 同时写数据库）
-        let lock = state.session_manager.get_session_lock(&session_id).await;
-        let _guard = lock.map(|l| l.read().await);
+        let lock = state.session_manager.get_session_lock(&session_id).await
+            .expect("session lock must exist after get_or_create_session");
+        let _guard = lock.read().await;
 
         match run_single_turn(&state, &event).await {
             Ok(response) => {
