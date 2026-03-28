@@ -223,6 +223,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 device_id: incoming_device_id,
                 device_name: incoming_device_name,
                 tools_hash,
+                skills_hash: _,
                 status: _,
             } => {
                 if incoming_device_id != device_id {
@@ -251,6 +252,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 device_id: incoming_device_id,
                 device_name: incoming_device_name,
                 schemas,
+                skill_summaries: _,
             } => {
                 if incoming_device_id != device_id {
                     warn!(

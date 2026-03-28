@@ -9,6 +9,16 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Skill 摘要，仅包含 name/description/always，不包含全文。
+/// Agent 需要时，用 read_file 工具读取 workspace/skills/{name}/SKILL.md。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    /// 是否始终注入 system prompt（由 Server 决定如何处理）
+    pub always: bool,
+}
+
 /// 服务端下发给客户端的指令
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -51,17 +61,21 @@ pub enum ClientToServer {
     RegisterTools {
         device_id: String,
         device_name: String,
-        schemas: Vec<Value>, // 存放 JSON Schema
+        /// 工具 Schema 列表（内置工具 + MCP 工具）
+        schemas: Vec<Value>,
+        /// Skill 摘要列表（不含全文，全文由 Agent 自行通过 read_file 读取）
+        skill_summaries: Vec<SkillSummary>,
     },
 
     /// 新增：心跳包，带着当前工具的 Hash，防止 Server 和 Client 状态脱节。
-    /// tools_hash 是对【内置工具 + MCP 工具 + Skill 工具】三类工具 Schema 列表
-    /// 合并后整体计算的哈希值（例如对 Vec<Value> 序列化后做 SHA256）。
+    /// tools_hash 是对【内置工具 + MCP 工具】Schema 列表合并后计算的哈希。
+    /// skills_hash 是对 Skill name + description 列表计算的哈希。
     /// Server 可通过比对上次记录的 hash 来判断工具集是否发生变更。
     Heartbeat {
         device_id: String,
         device_name: String,
         tools_hash: String,
+        skills_hash: String,
         /// 合法值："online" | "busy"。M1 阶段 Client 只发送 "online"。
         status: String,
     }

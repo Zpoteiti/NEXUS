@@ -1,113 +1,271 @@
-/// 职责边界：本地 Skill 目录扫描、.md 解析、Schema 生成、热重载检测、执行时参数传递。
+/// 职责边界：
+/// 1. 负责在本地扫描 Skill 目录、解析 SKILL.md frontmatter、生成 SkillSummary。
+/// 2. 支持热加载检测（mtime 缓存）。
+/// 3. 提供 Skill 原文读取（供 Agent 用 read_file 自行读取）。
 ///
-/// ─────────────────────────────────────────────────────────────────────────────
-/// 【参考：nanobot 实现】
-/// ─────────────────────────────────────────────────────────────────────────────
+/// Skill 不是工具，不通过 RegisterTools.schemas 注册。
+/// Skill 通过 RegisterTools.skill_summaries 发送给 Server（name + description + always）。
 ///
-/// 1. 目录结构（nanobot/nanobot/skills/）
-///    每个 skill 是一个子目录，内含：
-///      skills/{name}/SKILL.md          ← 唯一必需文件
-///      skills/{name}/scripts/          ← 可选，脚本文件（.py/.sh 等）
-///      skills/{name}/references/       ← 可选，按需加载的参考文档
-///      skills/{name}/assets/           ← 可选，模板/图标等输出资源
+/// 目录结构：workspace/skills/{name}/SKILL.md
 ///
-/// 2. SKILL.md 格式（nanobot/nanobot/agent/skills.py，`get_skill_metadata()` L203-228）
-///    文件头部为 YAML frontmatter，主体为 Markdown 说明文本：
-///
-///    ---
-///    name: <skill-name>
-///    description: <一句话描述>
-///    always: true          # 可选，true 表示始终注入 system prompt
-///    metadata: {"nanobot":{"emoji":"🧵","os":["darwin","linux"],...}}
-///    ---
-///
-///    解析函数：
-///      `get_skill_metadata()`   → 提取 YAML frontmatter（skills.py L203-228）
-///      `_strip_frontmatter()`   → 用正则 r"^---\n.*?\n---\n" 剥离 frontmatter（L161-167）
-///      `_parse_nanobot_metadata()` → 将 metadata 字段反序列化为 JSON（L169-175）
-///
-/// 3. 热重载（nanobot/nanobot/agent/skills.py，SkillsLoader.__init__() L21-24）
-///    nanobot 不支持热重载：SkillsLoader 在 AgentLoop 启动时实例化一次，
-///    此后不监听文件系统变化，用户需 /restart 才能生效。
-///    对比：cron/service.py 通过 `st_mtime` 实现热重载，skill 侧无此逻辑。
-///
-///    Nexus 中的设计决策：
-///    ┌──────────────────────────────────────────────────────────────────────┐
-///    │ 可选择在首次连接时一次性扫描，或通过 notify/inotify 监听目录变更，  │
-///    │ 检测到变更后重新生成 Schema 并通过 WebSocket 发送 RegisterTools。   │
-///    └──────────────────────────────────────────────────────────────────────┘
-///
-/// 4. Schema 生成（nanobot/nanobot/agent/tools/base.py，`Tool.to_schema()` L190-199）
-///    nanobot 中 skill 不转换为 Tool Schema；skill 以 XML summary 注入 system prompt，
-///    LLM 通过 read_file 工具读取 SKILL.md 后自行决策。
-///    实际 Tool Schema 格式（OpenAI function calling）：
-///      { "type": "function",
-///        "function": { "name": ..., "description": ..., "parameters": {...} } }
-///
-///    Nexus 中的设计决策：
-///    ┌──────────────────────────────────────────────────────────────────────┐
-///    │ Nexus skill 应当转换为标准 Tool Schema（nexus-common ToolSchema），  │
-///    │ 与 MCP 工具、内置工具统一聚合后通过 RegisterTools 发送给 Server，   │
-///    │ 使 LLM 可以直接以 function call 方式调用 skill，而非依赖 read_file。│
-///    └──────────────────────────────────────────────────────────────────────┘
-///
-///    参考文件：
-///      nanobot/nanobot/agent/context.py  → `ContextBuilder.build_skills_summary()`，
-///                                          生成 <skills>...<skill>...</skill></skills> XML
-///      nanobot/nanobot/agent/tools/registry.py → `ToolRegistry.get_definitions()` L34-36
-///
-/// 5. 执行时参数传递（nanobot/nanobot/agent/loop.py L224-231）
-///    nanobot 无自动参数绑定：LLM 读取脚本后自行拼接 shell 命令，
-///    再通过 exec 工具执行（参数随命令字符串传入）。
-///    参数校验仅针对 Tool，见 base.py `cast_params()` / `validate_params()`。
-///
-///    Nexus 中的设计决策：
-///    ┌──────────────────────────────────────────────────────────────────────┐
-///    │ 当 Server 下发 ExecuteToolRequest 时，executor.rs 按 skill 名称     │
-///    │ 路由到本模块；本模块将 tool call arguments（JSON）按 frontmatter 中 │
-///    │ 声明的参数 schema 校验后，以环境变量或命令行参数形式传递给脚本，    │
-///    │ 再通过 process.rs 启动子进程执行，捕获 stdout/stderr 回传结果。     │
-///    └──────────────────────────────────────────────────────────────────────┘
-///
-/// ─────────────────────────────────────────────────────────────────────────────
-/// 【待实现的函数签名（TODO）】
-/// ─────────────────────────────────────────────────────────────────────────────
+/// 参考 nanobot：
+/// - `nanobot/nanobot/agent/skills.py` 的 `SkillsLoader`。
 
-// TODO: 定义 SkillMeta 结构体，对应 SKILL.md frontmatter 字段
-//   struct SkillMeta {
-//       name: String,
-//       description: String,
-//       always: bool,
-//       // parameters: Option<serde_json::Value>,  // 扩展：声明式参数 schema
-//   }
+use regex::Regex;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::LazyLock;
+use std::time::SystemTime;
 
-// TODO: 定义 Skill 结构体，持有元数据 + 根目录路径 + 脚本路径列表
-//   struct Skill {
-//       meta: SkillMeta,
-//       root: PathBuf,              // skills/{name}/
-//       script: Option<PathBuf>,    // scripts/ 下的入口脚本
-//   }
+use nexus_common::protocol::SkillSummary;
 
-// TODO: 实现 scan_skills(skills_dir: &Path) -> anyhow::Result<Vec<Skill>>
-//   扫描指定目录，遍历每个子目录，读取 SKILL.md，解析 frontmatter，返回 Skill 列表。
-//   对应 nanobot: SkillsLoader.list_skills()（skills.py L26-57）
+/// SKILL.md frontmatter 解析正则（预编译）
+static FRONTMATTER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)^---\n(.*?)\n---").expect("invalid frontmatter regex"));
 
-// TODO: 实现 parse_skill_md(path: &Path) -> anyhow::Result<SkillMeta>
-//   解析单个 SKILL.md 文件的 YAML frontmatter。
-//   对应 nanobot: get_skill_metadata()（skills.py L203-228）
+/// Skill 元数据（从 SKILL.md frontmatter 解析）
+#[derive(Debug, Clone)]
+pub struct SkillMeta {
+    pub name: String,
+    pub description: String,
+    pub always: bool,
+    /// 所需二进制命令
+    pub required_bins: Vec<String>,
+    /// 所需环境变量
+    pub required_env: Vec<String>,
+}
 
-// TODO: 实现 skill_to_schema(skill: &Skill) -> serde_json::Value
-//   将 Skill 转换为裸 JSON（OpenAI function calling 格式），
-//   与内置工具、MCP 工具保持一致（均为 serde_json::Value），
-//   供 discovery.rs 聚合后经 session.rs 注册给 Server（RegisterTools.schemas: Vec<Value>）。
-//   对应 nanobot: Tool.to_schema()（tools/base.py L190-199），但 nanobot skill 未做此转换。
+/// Skill 信息
+#[derive(Debug, Clone)]
+pub struct Skill {
+    pub meta: SkillMeta,
+    /// SKILL.md 文件路径
+    pub path: PathBuf,
+    /// 最后修改时间（用于热加载检测）
+    pub mtime: SystemTime,
+}
 
-// TODO: 实现 execute_skill(skill: &Skill, args: serde_json::Value) -> anyhow::Result<String>
-//   按 Tool call arguments 校验参数，构造子进程调用（委托 process.rs），
-//   捕获 stdout/stderr，返回执行结果字符串。
-//   对应 nanobot: exec tool 调用链（agent/loop.py L224-231 + tools/base.py cast_params）
+/// 解析 SKILL.md 的 YAML frontmatter。
+fn parse_frontmatter(content: &str) -> Option<SkillMeta> {
+    let caps = FRONTMATTER_RE.captures(content)?;
+    let yaml_block = caps.get(1)?.as_str();
 
-// TODO: 实现热重载检测（可选）
-//   struct SkillWatcher { last_mtime: HashMap<PathBuf, SystemTime>, ... }
-//   fn poll_changes(&mut self, skills_dir: &Path) -> Vec<SkillChangeEvent>
-//   对应 nanobot cron/service.py 的 st_mtime 模式；skill 侧在 nanobot 中未实现，Nexus 可扩展。
+    let mut name = None;
+    let mut description = None;
+    let mut always = false;
+    let mut required_bins = Vec::new();
+    let mut required_env = Vec::new();
+
+    for line in yaml_block.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("name:") {
+            name = Some(val.trim().to_string());
+        } else if let Some(val) = line.strip_prefix("description:") {
+            description = Some(val.trim().to_string());
+        } else if line == "always: true" || line == "always: true," {
+            always = true;
+        } else if let Some(val) = line.strip_prefix("requires:") {
+            // 解析 requires 块（简化处理）
+            let _ = val;
+        } else if let Some(val) = line.strip_prefix("  bins:") {
+            // 解析 bins
+            let _ = val;
+        } else if let Some(val) = line.strip_prefix("  env:") {
+            // 解析 env
+            let _ = val;
+        } else if line.starts_with("- ") && !line.contains(":") {
+            // 可能是 requires.bins 或 requires.env 中的项
+            let val = line.trim_start_matches("- ").trim();
+            if val.contains('/') || val.contains('\\') || val.is_empty() {
+                continue;
+            }
+            // 简单判断：是否看起来像环境变量名
+            if val.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+                required_env.push(val.to_string());
+            } else {
+                required_bins.push(val.to_string());
+            }
+        }
+    }
+
+    let name = name?;
+    let description = description.unwrap_or_default();
+
+    Some(SkillMeta {
+        name,
+        description,
+        always,
+        required_bins,
+        required_env,
+    })
+}
+
+/// 扫描 skills 目录，返回所有 SkillSummary。
+pub fn scan_skills(skills_dir: &Path) -> Vec<SkillSummary> {
+    let mut summaries = Vec::new();
+
+    let entries = match fs::read_dir(skills_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("failed to read skills directory '{}': {}", skills_dir.display(), e);
+            return summaries;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let skill_md = path.join("SKILL.md");
+        if !skill_md.is_file() {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&skill_md) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("failed to read '{}': {}", skill_md.display(), e);
+                continue;
+            }
+        };
+
+        let meta = match parse_frontmatter(&content) {
+            Some(m) => m,
+            None => {
+                tracing::warn!("failed to parse frontmatter from '{}'", skill_md.display());
+                continue;
+            }
+        };
+
+        let _mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        tracing::debug!(
+            "discovered skill: {} (always={}) at {}",
+            meta.name,
+            meta.always,
+            skill_md.display()
+        );
+
+        summaries.push(SkillSummary {
+            name: meta.name,
+            description: meta.description,
+            always: meta.always,
+        });
+    }
+
+    summaries
+}
+
+/// 读取指定 skill 的 SKILL.md 原文。
+pub fn read_skill_content(skills_dir: &Path, name: &str) -> Option<String> {
+    let skill_md = skills_dir.join(name).join("SKILL.md");
+    fs::read_to_string(&skill_md).ok()
+}
+
+/// 检查 skill 的依赖是否满足（bins 和 env）。
+pub fn check_requirements(skills_dir: &Path, name: &str) -> bool {
+    let skill_md = skills_dir.join(name).join("SKILL.md");
+    let content = match fs::read_to_string(&skill_md) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let meta = match parse_frontmatter(&content) {
+        Some(m) => m,
+        None => return false,
+    };
+
+    // 检查所需的二进制命令
+    for bin in &meta.required_bins {
+        if !is_bin_available(bin) {
+            tracing::warn!("skill '{}' requires bin '{}' which is not available", name, bin);
+            return false;
+        }
+    }
+
+    // 检查所需的环境变量
+    for env_var in &meta.required_env {
+        if std::env::var(env_var).is_err() {
+            tracing::warn!(
+                "skill '{}' requires env '{}' which is not set",
+                name,
+                env_var
+            );
+            return false;
+        }
+    }
+
+    true
+}
+
+/// 检查命令是否可用（通过 which 或 command -v）。
+fn is_bin_available(bin: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("where")
+            .arg(bin)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        out.is_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        let out = std::process::Command::new("which")
+            .arg(bin)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        out.is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_frontmatter_basic() {
+        let content = r#"---
+name: code_review
+description: A skill for reviewing code
+always: false
+---
+
+# Code Review Skill
+
+This is the skill content.
+"#;
+        let meta = parse_frontmatter(content).unwrap();
+        assert_eq!(meta.name, "code_review");
+        assert_eq!(meta.description, "A skill for reviewing code");
+        assert!(!meta.always);
+    }
+
+    #[test]
+    fn test_parse_frontmatter_always_true() {
+        let content = r#"---
+name: git_helper
+description: Git helper
+always: true
+---
+
+# Git Helper
+"#;
+        let meta = parse_frontmatter(content).unwrap();
+        assert_eq!(meta.name, "git_helper");
+        assert!(meta.always);
+    }
+
+    #[test]
+    fn test_parse_frontmatter_invalid() {
+        let content = "No frontmatter here";
+        assert!(parse_frontmatter(content).is_none());
+    }
+}

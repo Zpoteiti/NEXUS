@@ -23,8 +23,15 @@
 
 mod config;
 mod discovery;
+mod env;
+mod executor;
+mod guardrails;
+mod mcp_client;
 mod session;
+mod skills;
+pub mod tools;
 
+use nexus_common::protocol::{ClientToServer, ServerToClient};
 use tracing::{info, warn};
 
 #[tokio::main]
@@ -34,8 +41,28 @@ async fn main() {
     let config = config::load_config();
     let mut session = session::connect_and_loop(config).await;
 
+    info!("nexus-client started, waiting for server messages...");
+
     while let Some(message) = session.recv().await {
-        info!("received server message: {:?}", message);
+        match &message {
+            ServerToClient::ExecuteToolRequest(req) => {
+                info!("received ExecuteToolRequest: tool={}", req.tool_name);
+                let result = executor::execute_tool_request(req.clone()).await;
+                let response = ClientToServer::ToolExecutionResult(result);
+                if let Err(e) = session.send(response).await {
+                    warn!("failed to send ToolExecutionResult: {}", e);
+                }
+            }
+            ServerToClient::RequireLogin { message } => {
+                warn!("unexpected RequireLogin during main loop: {}", message);
+            }
+            ServerToClient::LoginSuccess { user_id, device_id } => {
+                info!("unexpected LoginSuccess during main loop: user_id={}, device_id={}", user_id, device_id);
+            }
+            ServerToClient::LoginFailed { reason } => {
+                warn!("unexpected LoginFailed during main loop: {}", reason);
+            }
+        }
     }
 
     warn!("session inbound channel closed");
