@@ -37,6 +37,13 @@ pub enum ServerToClient {
     LoginFailed {
         reason: String,
     },
+
+    /// 新增：AgentLoop 通过 bus 推送的响应
+    AgentResponse {
+        channel: String,
+        chat_id: String,
+        content: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,7 +88,14 @@ pub enum ClientToServer {
         hash: String,
         /// 合法值："online" | "busy"。M1 阶段 Client 只发送 "online"。
         status: String,
-    }
+    },
+
+    /// 新增：模拟 Channel 消息，触发 AgentLoop 处理
+    UserMessage {
+        session_id: String,
+        channel: String,
+        content: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
