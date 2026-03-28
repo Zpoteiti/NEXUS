@@ -204,12 +204,15 @@ impl McpSession {
                 .cloned()
                 .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
 
+            // 规范化 schema，参考 nanobot _normalize_schema_for_openai()
+            let normalized_schema = normalize_schema_for_openai(&input_schema);
+
             let schema = json!({
                 "type": "function",
                 "function": {
                     "name": wrapped_name,
                     "description": description,
-                    "parameters": input_schema
+                    "parameters": normalized_schema
                 }
             });
             schemas.push(schema);
@@ -246,6 +249,122 @@ impl McpSession {
         let output = parse_call_result(&result);
         Ok(output)
     }
+}
+
+/// 从 oneOf/anyOf 的选项列表中提取"单个非 null 分支"。
+/// 参考 nanobot: `_extract_nullable_branch()`
+fn extract_nullable_branch(options: &[Value]) -> Option<(Value, bool)> {
+    let mut non_null_items: Vec<&Value> = Vec::new();
+    let mut saw_null = false;
+
+    for option in options {
+        if let Some(obj) = option.as_object() {
+            if obj.get("type").and_then(|t| t.as_str()) == Some("null") {
+                saw_null = true;
+                continue;
+            }
+            non_null_items.push(option);
+        } else {
+            return None;
+        }
+    }
+
+    if saw_null && non_null_items.len() == 1 {
+        Some((non_null_items[0].clone(), true))
+    } else {
+        None
+    }
+}
+
+/// 规范化 MCP schema 中 LLM 不友好的模式：
+/// - `type: [string, null]` → `type: string, nullable: true`
+/// - `oneOf`/`anyOf` 提取单个非 null 分支并合并，设置 `nullable: true`
+/// - 递归规范化 `properties` 和 `items`
+/// 参考 nanobot: `_normalize_schema_for_openai()`
+fn normalize_schema_for_openai(schema: &Value) -> Value {
+    let mut result = schema.clone();
+
+    // 处理 type 字段为列表的情况: [type, null] → { type, nullable: true }
+    if let Some(arr) = result.get("type").and_then(|t| t.as_array()) {
+        let non_null: Vec<&str> = arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter(|s| *s != "null")
+            .collect();
+        if arr.iter().any(|v| v.as_str() == Some("null")) && non_null.len() == 1 {
+            let single_type = non_null[0].to_string();
+            let nullable = true;
+            // 构建新的对象，替换 type 和添加 nullable
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("type".to_string(), serde_json::Value::String(single_type));
+                obj.insert("nullable".to_string(), serde_json::Value::Bool(nullable));
+            }
+        }
+    }
+
+    // 处理 oneOf / anyOf: 提取单个非 null 分支，合并属性，设置 nullable
+    for key in &["oneOf", "anyOf"] {
+        if let Some(options) = result.get(*key).and_then(|v| v.as_array()) {
+            if let Some((branch, _)) = extract_nullable_branch(options) {
+                if let Some(branch_obj) = branch.as_object() {
+                    // 收集要合并的条目
+                    let mut merged: serde_json::Map<String, Value> = serde_json::Map::new();
+                    // 先复制 result 的现有字段（除了 oneOf/anyOf）
+                    if let Some(result_obj) = result.as_object() {
+                        for (k, v) in result_obj {
+                            if *key != k {
+                                merged.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                    // 再合并 branch 的字段
+                    for (k, v) in branch_obj {
+                        if !merged.contains_key(k) {
+                            merged.insert(k.clone(), v.clone());
+                        }
+                    }
+                    merged.insert("nullable".to_string(), serde_json::Value::Bool(true));
+                    result = serde_json::Value::Object(merged);
+                }
+                break;
+            }
+        }
+    }
+
+    // 递归规范化 properties
+    if let Some(props) = result.get("properties").and_then(|p| p.as_object()) {
+        let mut new_props = serde_json::Map::new();
+        for (name, prop) in props {
+            if prop.is_object() || prop.is_array() {
+                new_props.insert(name.clone(), normalize_schema_for_openai(prop));
+            } else {
+                new_props.insert(name.clone(), prop.clone());
+            }
+        }
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("properties".to_string(), serde_json::Value::Object(new_props));
+        }
+    }
+
+    // 递归规范化 items
+    if let Some(items) = result.get("items") {
+        if items.is_object() || items.is_array() {
+            let normalized_items = normalize_schema_for_openai(items);
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("items".to_string(), normalized_items);
+            }
+        }
+    }
+
+    // 确保 object 类型有 properties 和 required 字段
+    if result.get("type").and_then(|t| t.as_str()) == Some("object") {
+        if let Some(obj) = result.as_object_mut() {
+            obj.entry("properties").or_insert(serde_json::Value::Object(serde_json::Map::new()));
+            obj.entry("required").or_insert(serde_json::Value::Array(Vec::new()));
+        }
+    }
+
+    result
 }
 
 /// 解析 MCP tools/call 结果。
@@ -437,5 +556,96 @@ mod tests {
     fn test_parse_call_result_empty() {
         let result = json!({});
         assert_eq!(parse_call_result(&result), "");
+    }
+
+    #[test]
+    fn test_normalize_nullable_type() {
+        // type: [string, null] → type: string, nullable: true
+        let schema = json!({
+            "type": ["string", "null"]
+        });
+        let normalized = normalize_schema_for_openai(&schema);
+        assert_eq!(normalized.get("type").and_then(|v| v.as_str()), Some("string"));
+        assert_eq!(normalized.get("nullable").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn test_normalize_oneof_nullable() {
+        // oneOf with single non-null branch → merged with nullable: true
+        let schema = json!({
+            "oneOf": [
+                {"type": "null"},
+                {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}}
+                }
+            ]
+        });
+        let normalized = normalize_schema_for_openai(&schema);
+        assert_eq!(normalized.get("nullable").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(normalized.get("type").and_then(|v| v.as_str()), Some("object"));
+        assert!(normalized.get("properties").is_some());
+        assert!(!normalized.get("oneOf").is_some()); // oneOf removed
+    }
+
+    #[test]
+    fn test_normalize_anyof_nullable() {
+        // anyOf with single non-null branch → merged with nullable: true
+        let schema = json!({
+            "anyOf": [
+                {"type": "null"},
+                {"type": "string"}
+            ]
+        });
+        let normalized = normalize_schema_for_openai(&schema);
+        assert_eq!(normalized.get("nullable").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(normalized.get("type").and_then(|v| v.as_str()), Some("string"));
+    }
+
+    #[test]
+    fn test_normalize_nested_properties() {
+        // nested properties should be recursively normalized
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": ["object", "null"],
+                    "properties": {
+                        "enabled": {"type": "boolean"}
+                    }
+                }
+            }
+        });
+        let normalized = normalize_schema_for_openai(&schema);
+        let config = normalized
+            .get("properties")
+            .and_then(|p| p.get("config"))
+            .and_then(|c| c.as_object())
+            .expect("config should be an object");
+        assert_eq!(config.get("type").and_then(|v| v.as_str()), Some("object"));
+        assert_eq!(config.get("nullable").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn test_normalize_object_has_required() {
+        // object types should have required field defaulting to []
+        let schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}}
+        });
+        let normalized = normalize_schema_for_openai(&schema);
+        assert!(normalized.get("required").is_some());
+    }
+
+    #[test]
+    fn test_normalize_passthrough_simple() {
+        // simple schema without nullable/oneOf should pass through unchanged
+        let schema = json!({
+            "type": "string",
+            "description": "a simple string"
+        });
+        let normalized = normalize_schema_for_openai(&schema);
+        assert_eq!(normalized.get("type").and_then(|v| v.as_str()), Some("string"));
+        assert_eq!(normalized.get("description").and_then(|v| v.as_str()), Some("a simple string"));
     }
 }

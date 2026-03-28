@@ -36,8 +36,8 @@ impl ShellTool {
 
     /// 执行 shell 命令（经过 guardrails 检查）。
     async fn run(&self, cmd: &str, timeout_sec: Option<u64>) -> Result<String, ToolError> {
-        // 1. 安全校验（guardrails）
-        guardrails::check_shell_command(cmd).map_err(ToolError::Blocked)?;
+        // 1. 安全校验（guardrails）- 异步 SSRF DNS 解析
+        guardrails::check_shell_command(cmd).await.map_err(ToolError::Blocked)?;
 
         // 2. 超时控制
         let timeout_sec = timeout_sec.unwrap_or(DEFAULT_TIMEOUT_SEC).min(MAX_TIMEOUT_SEC);

@@ -12,6 +12,7 @@ use regex::Regex;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::LazyLock;
+use tokio::net::lookup_host;
 
 /// 高危命令拒绝模式（预编译正则）
 static DENY_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -41,7 +42,7 @@ static URL_REGEX: LazyLock<Regex> =
 ///
 /// 若命令安全，返回 `Ok(())`。
 /// 若命令被拦截，返回 `Err(reason)`。
-pub fn check_shell_command(cmd: &str) -> Result<(), String> {
+pub async fn check_shell_command(cmd: &str) -> Result<(), String> {
     // 1. 正则拦截高危命令
     for re in DENY_REGEXES.iter() {
         if re.is_match(cmd) {
@@ -49,8 +50,8 @@ pub fn check_shell_command(cmd: &str) -> Result<(), String> {
         }
     }
 
-    // 2. SSRF URL 检测
-    if contains_internal_url(cmd) {
+    // 2. SSRF URL 检测（异步 DNS 解析）
+    if contains_internal_url(cmd).await {
         return Err("command blocked: contains URL pointing to internal network".to_string());
     }
 
@@ -58,10 +59,10 @@ pub fn check_shell_command(cmd: &str) -> Result<(), String> {
 }
 
 /// 从命令字符串中提取 URL，并检查是否有指向内网的目标。
-pub fn contains_internal_url(command: &str) -> bool {
+pub async fn contains_internal_url(command: &str) -> bool {
     for cap in URL_REGEX.find_iter(command) {
         let url = cap.as_str();
-        if validate_url_target(url).is_err() {
+        if validate_url_target(url).await.is_err() {
             return true;
         }
     }
@@ -81,12 +82,14 @@ pub fn contains_internal_url(command: &str) -> bool {
 /// - ::1/128
 /// - fc00::/7
 /// - fe80::/10
-pub fn validate_url_target(url: &str) -> Result<(), String> {
+///
+/// 若 URL 中的 hostname 无法解析为 IP，保守地认为其可能指向内网而拒绝。
+pub async fn validate_url_target(url: &str) -> Result<(), String> {
     // 解析 URL 获取 host
     let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {}", e))?;
     let host = parsed.host_str().ok_or_else(|| "URL has no host".to_string())?;
 
-    // 检查是否是 IP 地址
+    // 检查是否是 IP 地址（直接检查）
     if let Ok(ip) = IpAddr::from_str(host) {
         if is_blocked_ip(ip) {
             return Err(format!("URL host {} is in blocked private network", host));
@@ -94,18 +97,28 @@ pub fn validate_url_target(url: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // host 是域名，尝试 DNS 解析
-    // 注意：实际生产中可能需要异步 DNS 解析，但此处为简化实现
-    // 若无法解析，跳过（保守策略：认为可能指向内网）
+    // host 是域名，尝试 DNS 解析（异步）
+    // 参考 nanobot: socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    let addr_string = format!("{}:80", host);
+    let addrs: Vec<_> = lookup_host(&addr_string)
+        .await
+        .map_err(|_| format!("cannot resolve hostname: {}", host))?
+        .collect();
 
-    // 简化处理：如果是 localhost 或常见内网域名，直接拒绝
-    let lower_host = host.to_lowercase();
-    if lower_host == "localhost"
-        || lower_host == "127.0.0.1"
-        || lower_host == "::1"
-        || lower_host.ends_with(".local")
-    {
-        return Err(format!("URL host {} is in blocked private network", host));
+    if addrs.is_empty() {
+        // 无法解析，保守策略：拒绝
+        return Err(format!("cannot resolve hostname: {}", host));
+    }
+
+    // 检查所有解析出的 IP 地址
+    for addr in addrs {
+        let ip = addr.ip();
+        if is_blocked_ip(ip) {
+            return Err(format!(
+                "URL host {} resolves to private/internal address {}",
+                host, ip
+            ));
+        }
     }
 
     Ok(())
@@ -171,48 +184,60 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_deny_rm_rf() {
-        assert!(check_shell_command("rm -rf /").is_err());
-        assert!(check_shell_command("rm -rf ./dir").is_err());
-        assert!(check_shell_command("rm -r /var/log").is_err());
+    #[tokio::test]
+    async fn test_deny_rm_rf() {
+        assert!(check_shell_command("rm -rf /").await.is_err());
+        assert!(check_shell_command("rm -rf ./dir").await.is_err());
+        assert!(check_shell_command("rm -r /var/log").await.is_err());
     }
 
-    #[test]
-    fn test_deny_fork_bomb() {
+    #[tokio::test]
+    async fn test_deny_fork_bomb() {
         // Fork bomb pattern: :(){ |:& };:
-        assert!(check_shell_command(":(){ |:& };:").is_err());
+        assert!(check_shell_command(":(){ |:& };:").await.is_err());
     }
 
-    #[test]
-    fn test_deny_shutdown() {
-        assert!(check_shell_command("shutdown -h now").is_err());
-        assert!(check_shell_command("reboot").is_err());
+    #[tokio::test]
+    async fn test_deny_shutdown() {
+        assert!(check_shell_command("shutdown -h now").await.is_err());
+        assert!(check_shell_command("reboot").await.is_err());
     }
 
-    #[test]
-    fn test_allow_safe_commands() {
-        assert!(check_shell_command("ls -la").is_ok());
-        assert!(check_shell_command("echo hello").is_ok());
-        assert!(check_shell_command("git status").is_ok());
+    #[tokio::test]
+    async fn test_allow_safe_commands() {
+        assert!(check_shell_command("ls -la").await.is_ok());
+        assert!(check_shell_command("echo hello").await.is_ok());
+        assert!(check_shell_command("git status").await.is_ok());
     }
 
-    #[test]
-    fn test_blocked_ip_localhost() {
-        assert!(validate_url_target("http://127.0.0.1/").is_err());
-        assert!(validate_url_target("http://localhost/api").is_err());
+    #[tokio::test]
+    async fn test_blocked_ip_localhost() {
+        // 127.0.0.1 是 IP，直接被拦截
+        assert!(validate_url_target("http://127.0.0.1/").await.is_err());
+        // localhost 通过 DNS 解析会得到 127.0.0.1，也被拦截
+        assert!(validate_url_target("http://localhost/api").await.is_err());
     }
 
-    #[test]
-    fn test_blocked_ip_private_ranges() {
-        assert!(validate_url_target("http://10.0.0.1/").is_err());
-        assert!(validate_url_target("http://192.168.1.1/").is_err());
-        assert!(validate_url_target("http://172.16.0.1/").is_err());
+    #[tokio::test]
+    async fn test_blocked_ip_private_ranges() {
+        assert!(validate_url_target("http://10.0.0.1/").await.is_err());
+        assert!(validate_url_target("http://192.168.1.1/").await.is_err());
+        assert!(validate_url_target("http://172.16.0.1/").await.is_err());
     }
 
-    #[test]
-    fn test_allowed_public_url() {
-        assert!(validate_url_target("https://api.github.com/").is_ok());
-        assert!(validate_url_target("https://httpbin.org/get").is_ok());
+    #[tokio::test]
+    async fn test_allowed_public_url() {
+        // 公网 URL 应该能通过（DNS 解析后检查）
+        assert!(validate_url_target("https://api.github.com/").await.is_ok());
+        assert!(validate_url_target("https://httpbin.org/get").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_domain_resolves_to_private() {
+        // 模拟攻击场景：如果域名被 DNS 解析到私网段，应该被拦截
+        // 这个测试无法依赖具体域名，但我们可以测试无效域名返回错误
+        let result = validate_url_target("http://this-domain-does-not-exist-xyz123.invalid/").await;
+        // 无法解析的域名，保守地拒绝
+        assert!(result.is_err());
     }
 }
