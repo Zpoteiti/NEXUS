@@ -1,7 +1,7 @@
 # M1 Client 收尾计划
 
 **最后更新**: 2026-03-28
-**状态**: Client freeze 前剩余工作
+**状态**: ✅ P1 全部完成 — Client 可进入 freeze
 
 ---
 
@@ -21,6 +21,7 @@
 | 配置加载 | `config.rs` | env var 解析 |
 | 协议定义 | `nexus-common/protocol.rs` | ClientToServer / ServerToClient 消息 |
 | 主循环 | `main.rs` | 连接 → 注册 → 主循环 |
+| 文件系统工具 | `tools/fs.rs` | read_file / write_file / list_dir / stat + workspace 限制 |
 
 ---
 
@@ -140,7 +141,7 @@ DiscordAdapter.send_file(path="/tmp/chart.png")
 
 ```
 P1:
-  ☐ tools/fs.rs — read_file, write_file, list_dir, stat
+  ✅ tools/fs.rs — read_file, write_file, list_dir, stat (2026-03-28)
 
 P2 (freeze 后):
   ☐ MCP Sse/StreamableHttp 传输

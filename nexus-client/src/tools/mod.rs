@@ -57,4 +57,5 @@ impl ToolError {
     }
 }
 
+pub mod fs;
 pub mod shell;

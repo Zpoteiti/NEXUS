@@ -11,12 +11,13 @@
 /// - MCP 和 Skills 的热加载检测在同一处管理
 
 use nexus_common::protocol::SkillSummary;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use tokio::sync::RwLock;
 
 use crate::config::McpServerConfig;
+use crate::executor::LOCAL_TOOL_REGISTRY;
 use crate::mcp_client::McpClientManager;
 use crate::skills;
 
@@ -34,7 +35,7 @@ pub async fn discover_all(
     let mut all_schemas = Vec::new();
 
     // 1. 内置工具
-    all_schemas.extend(discover_builtin_tools());
+    all_schemas.extend(discover_builtin_tools().iter().cloned());
 
     // 2. MCP 工具
     let mcp_tools = discover_mcp_tools_internal().await;
@@ -82,37 +83,15 @@ pub async fn discover_mcp_tools(_mcp_servers: &[McpServerConfig]) -> Vec<Value> 
     Vec::new()
 }
 
-/// 内置工具 Schema 发现。
-///
-/// 当前只有一个 `shell` 工具。
-fn discover_builtin_tools() -> Vec<Value> {
-    vec![json!({
-        "type": "function",
-        "function": {
-            "name": "shell",
-            "description": "Execute a shell command on this device and return its stdout/stderr output.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The shell command to execute."
-                    },
-                    "timeout_sec": {
-                        "type": "integer",
-                        "description": "Optional execution timeout in seconds. Defaults to 60, max 600.",
-                        "minimum": 1,
-                        "maximum": 600
-                    },
-                    "working_dir": {
-                        "type": "string",
-                        "description": "Optional working directory for the command. Must be within workspace."
-                    }
-                },
-                "required": ["command"]
-            }
-        }
-    })]
+/// 内置工具 Schema 发现（缓存结果）。
+fn discover_builtin_tools() -> &'static [Value] {
+    static CACHED: LazyLock<Vec<Value>> = LazyLock::new(|| {
+        LOCAL_TOOL_REGISTRY
+            .values()
+            .map(|t| t.schema())
+            .collect()
+    });
+    &*CACHED
 }
 
 /// 计算任意可序列化对象的哈希。

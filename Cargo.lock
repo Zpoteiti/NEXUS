@@ -972,6 +972,7 @@ name = "nexus-client"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "dotenvy",
  "futures-util",
  "nexus-common",
@@ -980,6 +981,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",

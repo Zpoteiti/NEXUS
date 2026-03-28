@@ -17,3 +17,5 @@ async-trait = "0.1"
 thiserror = "2"
 regex = "1"
 url = "2"
+tokio-stream = "0.1"
+chrono = { version = "0.4", features = ["std"] }

@@ -1,18 +1,33 @@
 /// 职责边界：
 /// 1. 接收 `protocol::ExecuteToolRequest`。
 /// 2. 扮演"路由器"角色：
-///    - 如果 tool_name == "shell"，则调用 shell 工具执行。
+///    - 通过 `LOCAL_TOOL_REGISTRY` 查找内置工具并执行。
 ///    - 如果 tool_name 以 "mcp_" 开头，解析出 server_name 和 tool_name，转发给 MCP 会话。
 /// 3. 将任何模块返回的 Ok(String) 或 Err(String) 统一包装为 `protocol::ToolExecutionResult` 向上层返回。
 
 use nexus_common::consts::EXIT_CODE_SUCCESS;
 use nexus_common::protocol::{ExecuteToolRequest, ToolExecutionResult};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use crate::discovery;
 use crate::mcp_client::parse_mcp_tool_name;
+use crate::tools::fs::{ListDirTool, ReadFileTool, StatTool, WriteFileTool};
 use crate::tools::shell::ShellTool;
 use crate::tools::{LocalTool, ToolError};
+
+/// 本地工具注册表 — executor.rs 和 discovery.rs 共用的单一样本来源。
+pub static LOCAL_TOOL_REGISTRY: LazyLock<HashMap<&'static str, Box<dyn LocalTool>>> =
+    LazyLock::new(|| {
+        HashMap::from_iter([
+            ("shell", Box::new(ShellTool::new()) as Box<dyn LocalTool>),
+            ("read_file", Box::new(ReadFileTool::new())),
+            ("write_file", Box::new(WriteFileTool::new())),
+            ("list_dir", Box::new(ListDirTool::new())),
+            ("stat", Box::new(StatTool::new())),
+        ])
+    });
 
 /// 执行工具调用请求。
 pub async fn execute_tool_request(req: ExecuteToolRequest) -> ToolExecutionResult {
@@ -21,10 +36,8 @@ pub async fn execute_tool_request(req: ExecuteToolRequest) -> ToolExecutionResul
     let arguments = req.arguments;
 
     // 路由到对应工具
-    let result = if tool_name == "shell" {
-        // shell 工具
-        let shell = ShellTool::new();
-        shell.execute(arguments).await
+    let result = if let Some(tool) = LOCAL_TOOL_REGISTRY.get(tool_name.as_str()) {
+        tool.execute(arguments).await
     } else if let Some((server_name, _tool_name)) = parse_mcp_tool_name(&tool_name) {
         // MCP 工具
         let mut manager = discovery::get_mcp_manager().await;
