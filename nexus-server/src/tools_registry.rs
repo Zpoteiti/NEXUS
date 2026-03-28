@@ -124,7 +124,7 @@ fn inject_device_name_param(schema: Value, device_enum: &[String]) -> Value {
                     .entry("properties")
                     .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
-                if let Value::Object(ref mut props_obj) = props {
+                if let Value::Object(props_obj) = props {
                     props_obj.insert(
                         "device_name".to_string(),
                         json!({
@@ -164,7 +164,7 @@ fn inject_device_name_param(schema: Value, device_enum: &[String]) -> Value {
                 if let Some(d) = description {
                     new_func.insert("description".to_string(), d);
                 }
-                new_func.insert("parameters".to_string(), params);
+                new_func.insert("parameters".to_string(), Value::Object(params));
 
                 m.insert("function".to_string(), Value::Object(new_func));
             }
@@ -247,14 +247,14 @@ pub async fn route_tool(
     let msg = axum::extract::ws::Message::Text(msg_text.into());
 
     ws_tx.send(msg)
+        .await
         .map_err(|_| RouteError::SendFailed(device_name.clone()))?;
 
     // 7. 挂起等待结果
     rx.await
-        .map_err(|_| RouteError::SendFailed(device_name))?
-        .map(|result| {
-            // 将 ToolExecutionResult 转为 JSON Value 返回
+        .map_err(|_| RouteError::SendFailed(device_name.clone()))
+        .and_then(|result| {
             serde_json::to_value(result)
-                .unwrap_or_else(|_| json!({ "error": "failed to serialize result" }))
+                .map_err(|_| RouteError::SendFailed(device_name))
         })
 }

@@ -37,6 +37,7 @@
 ///
 /// 若不执行步骤 2，agent_loop 将永久 .await 挂起，该 session 的 LLM 调用链永远无法继续。
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -327,7 +328,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 if is_new {
                     // 首次创建该 session：spawn agent_loop
                     let (new_tx, rx) = mpsc::channel(64);
-                    let agent_state = state.clone();
+                    let agent_state = Arc::new(state.clone());
                     let sid = session_id.clone();
                     tokio::spawn(async move {
                         agent_loop::run_session(sid, rx, agent_state).await;

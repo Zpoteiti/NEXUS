@@ -5,14 +5,14 @@
 /// 4. 绝对不要在这里写具体的 WebSocket 收发逻辑或 LLM 提示词逻辑。
 
 mod agent_loop;
-mod api;
-mod auth;
+// mod api;
+// mod auth;
 mod bus;
-mod channels;
+// mod channels;
 mod config;
 mod context;
 mod db;
-mod memory;
+// mod memory;
 mod providers;
 mod session;
 mod state;
