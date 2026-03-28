@@ -9,7 +9,6 @@
 ///   - device_name: String     — 客户端上报的人类可读设备名称
 ///   - ws_tx: Sender           — 向该设备推送 ServerToClient 消息的 WebSocket Sender
 ///   - tools: Vec<Value>       — 该设备当前注册的工具 Schema 列表（JSON Array）
-///   - tools_hash: String      — 工具列表的哈希值，用于心跳时快速比对工具是否变更
 ///   - last_seen: Instant      — 最后一次收到该设备心跳的时刻，用于超时剔除
 ///
 /// 【第二张】设备名称索引（O(1) 路由查找）
@@ -39,14 +38,15 @@ use nexus_common::protocol::ToolExecutionResult;
 use sqlx::PgPool;
 use tokio::sync::{RwLock, mpsc, oneshot};
 
+use crate::bus::MessageBus;
 use crate::config::ServerConfig;
+use crate::session::SessionManager;
 
 pub struct DeviceState {
     pub user_id: String,
     pub device_name: String,
     pub ws_tx: mpsc::Sender<Message>,
     pub tools: Vec<serde_json::Value>,
-    pub tools_hash: String,
     pub last_seen: Instant,
 }
 
@@ -60,16 +60,20 @@ pub struct AppState {
     pub devices_by_user: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
     /// 工具调用挂起等待表：request_id → oneshot::Sender
     pub pending: Arc<RwLock<HashMap<String, oneshot::Sender<ToolExecutionResult>>>>,
+    pub bus: Arc<MessageBus>,
+    pub session_manager: Arc<SessionManager>,
 }
 
 impl AppState {
-    pub fn new(db: PgPool, config: ServerConfig) -> Self {
+    pub fn new(db: PgPool, config: ServerConfig, bus: Arc<MessageBus>, session_manager: Arc<SessionManager>) -> Self {
         Self {
             config,
             db,
             devices: Arc::new(RwLock::new(HashMap::new())),
             devices_by_user: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(HashMap::new())),
+            bus,
+            session_manager,
         }
     }
 }
