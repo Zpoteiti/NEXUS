@@ -4,18 +4,19 @@
 /// 3. 挂载 Axum 的路由（HTTP API 路由来自 api.rs，WebSocket 路由来自 ws.rs）。
 /// 4. 绝对不要在这里写具体的 WebSocket 收发逻辑或 LLM 提示词逻辑。
 
-// mod agent_loop;
-// mod api;
-// mod auth;
-// mod bus;
-// mod channels;
+mod agent_loop;
+mod api;
+mod auth;
+mod bus;
+mod channels;
 mod config;
-// mod context;
+mod context;
 mod db;
-// mod memory;
-// mod providers;
+mod memory;
+mod providers;
+mod session;
 mod state;
-// mod tools_registry;
+mod tools_registry;
 mod ws;
 
 use axum::Router;
@@ -23,7 +24,11 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use sqlx::PgPool;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::info;
+
+use bus::MessageBus;
+use session::SessionManager;
 
 #[tokio::main]
 async fn main() {
@@ -39,7 +44,14 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("Failed to initialize database: {e}"));
 
-    let state = state::AppState::new(pool, config.clone());
+    // 创建 MessageBus
+    let bus = Arc::new(MessageBus::new());
+
+    // 创建 SessionManager
+    let session_manager = Arc::new(SessionManager::new());
+
+    // 创建 AppState with all 4 arguments
+    let state = state::AppState::new(pool, config.clone(), bus, session_manager);
 
     let app = Router::new()
         .route("/ws", get(ws::ws_handler))
