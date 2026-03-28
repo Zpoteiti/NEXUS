@@ -33,25 +33,23 @@ impl SessionManager {
     /// - 新 session：创建 channel，返回 tx，调用方 spawn agent_loop 时使用返回的 rx
     /// - 已有 session：直接返回已存在的 tx
     pub async fn get_or_create_session(&self, session_id: &str) -> (mpsc::Sender<InboundEvent>, bool) {
-        // 快速路径：已有则返回
-        {
-            let sessions = self.sessions.read().await;
-            if let Some(handle) = sessions.get(session_id) {
-                return (handle.inbox_tx.clone(), false);
-            }
+        // Always acquire write lock first — prevents race between concurrent creates
+        let mut sessions = self.sessions.write().await;
+
+        // Check if already exists (now safe from races)
+        if let Some(handle) = sessions.get(session_id) {
+            return (handle.inbox_tx.clone(), false);
         }
 
-        // 未找到，创建新的 session channel
+        // Create new session
         let (inbox_tx, _inbox_rx) = mpsc::channel(64);
         let handle = SessionHandle {
             inbox_tx: inbox_tx.clone(),
             lock: Arc::new(RwLock::new(())),
         };
-
-        let mut sessions = self.sessions.write().await;
         sessions.insert(session_id.to_string(), handle);
 
-        (inbox_tx, true)  // true = 新创建，调用方应用返回的 _inbox_rx spawn agent_loop
+        (inbox_tx, true) // true = 新创建，调用方应用返回的 _inbox_rx spawn agent_loop
     }
 
     /// 获取 session 的锁（用于 DB 写操作）
