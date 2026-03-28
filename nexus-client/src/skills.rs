@@ -18,7 +18,7 @@ use std::process::Stdio;
 use std::sync::LazyLock;
 use std::time::SystemTime;
 
-use nexus_common::protocol::SkillSummary;
+use nexus_common::protocol::SkillFull;
 
 /// SKILL.md frontmatter 解析正则（预编译）
 static FRONTMATTER_RE: LazyLock<Regex> =
@@ -101,15 +101,18 @@ fn parse_frontmatter(content: &str) -> Option<SkillMeta> {
     })
 }
 
-/// 扫描 skills 目录，返回所有 SkillSummary。
-pub fn scan_skills(skills_dir: &Path) -> Vec<SkillSummary> {
-    let mut summaries = Vec::new();
+/// 扫描 skills 目录，返回所有 SkillFull。
+///
+/// always=false: content = None（正文由 Agent 自行 read_file）
+/// always=true:  content = Some(正文)
+pub fn scan_skills(skills_dir: &Path) -> Vec<SkillFull> {
+    let mut skills = Vec::new();
 
     let entries = match fs::read_dir(skills_dir) {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!("failed to read skills directory '{}': {}", skills_dir.display(), e);
-            return summaries;
+            return skills;
         }
     };
 
@@ -145,6 +148,17 @@ pub fn scan_skills(skills_dir: &Path) -> Vec<SkillSummary> {
             .and_then(|m| m.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
 
+        // always=true 时，content 参与 hash 且发送给服务端；always=false 时不读正文
+        let skill_content = if meta.always {
+            // 去掉 frontmatter，只保留正文
+            let body = content
+                .split_once("---")
+                .and_then(|(_, rest)| rest.split_once("---").map(|(_, body)| body.trim()));
+            body.map(String::from)
+        } else {
+            None
+        };
+
         tracing::debug!(
             "discovered skill: {} (always={}) at {}",
             meta.name,
@@ -152,14 +166,15 @@ pub fn scan_skills(skills_dir: &Path) -> Vec<SkillSummary> {
             skill_md.display()
         );
 
-        summaries.push(SkillSummary {
+        skills.push(SkillFull {
             name: meta.name,
             description: meta.description,
             always: meta.always,
+            content: skill_content,
         });
     }
 
-    summaries
+    skills
 }
 
 /// 读取指定 skill 的 SKILL.md 原文。

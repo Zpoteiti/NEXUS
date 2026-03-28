@@ -222,8 +222,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
             ClientToServer::Heartbeat {
                 device_id: incoming_device_id,
                 device_name: incoming_device_name,
-                tools_hash,
-                skills_hash: _,
+                hash: _,
                 status: _,
             } => {
                 if incoming_device_id != device_id {
@@ -237,7 +236,8 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 let mut devices_by_user = state.devices_by_user.write().await;
                 if let Some(device) = devices.get_mut(&device_id) {
                     device.last_seen = Instant::now();
-                    device.tools_hash = tools_hash;
+                    // TODO: 存储 unified hash，检测变更时触发重新注册
+                    // device.tools_hash = hash;
                     // 若 device_name 变了（重连后用户改了配置），更新索引
                     if device.device_name != incoming_device_name {
                         if let Some(user_devices) = devices_by_user.get_mut(&user_id) {
@@ -252,7 +252,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 device_id: incoming_device_id,
                 device_name: incoming_device_name,
                 schemas,
-                skill_summaries: _,
+                skills: _,
             } => {
                 if incoming_device_id != device_id {
                     warn!(

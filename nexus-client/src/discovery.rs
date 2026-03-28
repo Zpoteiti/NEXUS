@@ -10,7 +10,7 @@
 /// - discovery.rs 统一调用链：discover_all() → 内置工具 + MCP 工具 + Skills
 /// - MCP 和 Skills 的热加载检测在同一处管理
 
-use nexus_common::protocol::SkillSummary;
+use nexus_common::protocol::SkillFull;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -25,13 +25,14 @@ use crate::skills;
 static MCP_MANAGER: LazyLock<RwLock<McpClientManager>> =
     LazyLock::new(|| RwLock::new(McpClientManager::new()));
 
-/// 发现并聚合所有可用工具的 Schema 和 Skill 摘要。
+/// 发现并聚合所有可用工具的 Schema 和 Skill 全量信息。
 ///
-/// 返回: (tools schemas, skill summaries, tools_hash, skills_hash)
+/// 返回: (tools schemas, skills 全量列表, unified_hash)
+/// unified_hash = hash(工具 schemas + 所有 Skill 的 name/description/content/always)
 pub async fn discover_all(
     _mcp_servers: &[McpServerConfig],
     skills_dir: &PathBuf,
-) -> (Vec<Value>, Vec<SkillSummary>, String, String) {
+) -> (Vec<Value>, Vec<SkillFull>, String) {
     let mut all_schemas = Vec::new();
 
     // 1. 内置工具
@@ -41,13 +42,13 @@ pub async fn discover_all(
     let mcp_tools = discover_mcp_tools_internal().await;
     all_schemas.extend(mcp_tools);
 
-    // 3. Skills
-    let skill_summaries = skills::scan_skills(skills_dir);
+    // 3. Skills（全量：always=true 带正文，always=false 不带正文）
+    let skills_full = skills::scan_skills(skills_dir);
 
-    let tools_hash = compute_hash(&all_schemas);
-    let skills_hash = compute_hash(&skill_summaries);
+    // 单一 unified hash：工具 schemas + 所有 skill 的 name/description/content/always
+    let hash = compute_hash(&(&all_schemas, &skills_full));
 
-    (all_schemas, skill_summaries, tools_hash, skills_hash)
+    (all_schemas, skills_full, hash)
 }
 
 /// 发现并聚合所有可用工具的 Schema（不含 Skills）。
@@ -56,7 +57,7 @@ pub async fn discover_tools(
     mcp_servers: &[McpServerConfig],
     skills_dir: &PathBuf,
 ) -> Vec<Value> {
-    let (schemas, _, _, _) = discover_all(mcp_servers, skills_dir).await;
+    let (schemas, _, _) = discover_all(mcp_servers, skills_dir).await;
     schemas
 }
 

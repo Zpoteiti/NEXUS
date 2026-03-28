@@ -9,14 +9,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Skill 摘要，仅包含 name/description/always，不包含全文。
-/// Agent 需要时，用 read_file 工具读取 workspace/skills/{name}/SKILL.md。
+/// Skill 全量信息，用于 Client → Server 注册。
+///
+/// - always=false: content = None（服务端只有摘要，正文由 Agent 自行 read_file）
+/// - always=true:  content = Some(正文)（服务端存储，用于注入 system prompt）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillSummary {
+pub struct SkillFull {
     pub name: String,
     pub description: String,
-    /// 是否始终注入 system prompt（由 Server 决定如何处理）
     pub always: bool,
+    /// always=true 时为 Some(正文)，always=false 时为 None
+    pub content: Option<String>,
 }
 
 /// 服务端下发给客户端的指令
@@ -63,19 +66,19 @@ pub enum ClientToServer {
         device_name: String,
         /// 工具 Schema 列表（内置工具 + MCP 工具）
         schemas: Vec<Value>,
-        /// Skill 摘要列表（不含全文，全文由 Agent 自行通过 read_file 读取）
-        skill_summaries: Vec<SkillSummary>,
+        /// Skill 全量列表。
+        /// always=false: content=None（服务端只存摘要）
+        /// always=true:  content=Some(正文)（服务端存储，用于注入 system prompt）
+        skills: Vec<SkillFull>,
     },
 
     /// 新增：心跳包，带着当前工具的 Hash，防止 Server 和 Client 状态脱节。
-    /// tools_hash 是对【内置工具 + MCP 工具】Schema 列表合并后计算的哈希。
-    /// skills_hash 是对 Skill name + description 列表计算的哈希。
+    /// hash 是对【内置工具 + MCP 工具 Schema 列表 + 所有 Skill 的 name/description/content/always】计算的统一哈希。
     /// Server 可通过比对上次记录的 hash 来判断工具集是否发生变更。
     Heartbeat {
         device_id: String,
         device_name: String,
-        tools_hash: String,
-        skills_hash: String,
+        hash: String,
         /// 合法值："online" | "busy"。M1 阶段 Client 只发送 "online"。
         status: String,
     }

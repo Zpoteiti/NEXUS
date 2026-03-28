@@ -102,48 +102,45 @@ async fn run_single_connection(
     perform_handshake(ws_stream, &device_id, &device_name).await?;
 
     // 步骤 2 — 登录成功后，立即发现并注册工具（重连时也会执行）
-    let (schemas, skill_summaries, tools_hash, skills_hash) =
+    let (schemas, skills, hash) =
         crate::discovery::discover_all(&config.mcp_servers, &config.skills_dir).await;
 
     let register = ClientToServer::RegisterTools {
         device_id: device_id.clone(),
         device_name: device_name.clone(),
         schemas,
-        skill_summaries,
+        skills,
     };
     send_client_message(ws_stream, &register).await?;
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SEC));
-    let mut last_tools_hash = tools_hash;
-    let mut last_skills_hash = skills_hash;
+    let mut last_hash = hash;
 
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                // 每次心跳重新计算 hash，检测工具或 skills 是否变更
-                let (current_schemas, current_skill_summaries, current_tools_hash, current_skills_hash) =
+                // 每次心跳重新计算 unified hash，检测工具或 skills 是否变更
+                let (current_schemas, current_skills, current_hash) =
                     crate::discovery::discover_all(&config.mcp_servers, &config.skills_dir).await;
 
                 let heartbeat_event = ClientToServer::Heartbeat {
                     device_id: device_id.clone(),
                     device_name: device_name.clone(),
-                    tools_hash: current_tools_hash.clone(),
-                    skills_hash: current_skills_hash.clone(),
+                    hash: current_hash.clone(),
                     status: "online".to_string(),
                 };
                 send_client_message(ws_stream, &heartbeat_event).await?;
 
-                // 若 tools_hash 或 skills_hash 变了，说明工具集发生变更，立即重新注册
-                if current_tools_hash != last_tools_hash || current_skills_hash != last_skills_hash {
+                // 若 unified hash 变了，说明工具集发生变更，立即重新注册全量
+                if current_hash != last_hash {
                     let register = ClientToServer::RegisterTools {
                         device_id: device_id.clone(),
                         device_name: device_name.clone(),
                         schemas: current_schemas,
-                        skill_summaries: current_skill_summaries,
+                        skills: current_skills,
                     };
                     send_client_message(ws_stream, &register).await?;
-                    last_tools_hash = current_tools_hash;
-                    last_skills_hash = current_skills_hash;
+                    last_hash = current_hash;
                 }
             }
             outbound = outbound_rx.recv() => {
