@@ -8,7 +8,7 @@ pub struct SessionHandle {
     pub lock: Arc<RwLock<()>>,    // 防止并发写数据库
 }
 
-/// 用户消息事件（暂时放在这里，后面 Task 1 会移到 bus.rs）
+/// 用户消息事件
 #[derive(Debug, Clone)]
 pub struct InboundEvent {
     pub channel: String,
