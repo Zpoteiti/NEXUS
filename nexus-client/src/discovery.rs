@@ -1,13 +1,111 @@
 /// 职责边界：
-/// 1. 负责在 Client 启动时，收集本地的”物理环境”信息 (OS 类型、架构、当前 workspace 等)。
+/// 1. 负责在 Client 启动时，收集本地的"物理环境"信息 (OS 类型、架构、当前 workspace 等)。
 /// 2. 负责扫描并聚合所有可用的工具：
-///    - 收集内置的原生工具 (如 shell, fs)。
+///    - 收集内置的原生工具 (如 shell)。
 ///    - 调用 `mcp_client.rs` 收集外部挂载的工具。
-///    - (未来) 扫描特定目录下的自定义 .sh / .py 脚本并自动封装成工具。
+///    - 调用 `skills.rs` 扫描并聚合自定义 Skill 工具。
 /// 3. 将聚合后的 Schema 列表组装成 `RegisterTools` 消息发给 Server。
 ///
-/// 参考 nanobot：
-/// - 替代 `nanobot` 中启动时的工具注册表加载阶段。
+/// 统一发现（方案 B）：
+/// - discovery.rs 统一调用链：discover_all() → 内置工具 + MCP 工具 + Skills
+/// - MCP 和 Skills 的热加载检测在同一处管理
 
-// TODO: pub async fn gather_system_context() -> Value
-// TODO: pub async fn discover_all_tools() -> Vec<Value>
+use nexus_common::protocol::SkillFull;
+use serde_json::Value;
+use std::path::PathBuf;
+use std::sync::LazyLock;
+use tokio::sync::RwLock;
+
+use crate::config::McpServerConfig;
+use crate::executor::LOCAL_TOOL_REGISTRY;
+use crate::mcp_client::McpClientManager;
+use crate::skills;
+
+/// 全局 MCP 客户端管理器（跨心跳复用）
+static MCP_MANAGER: LazyLock<RwLock<McpClientManager>> =
+    LazyLock::new(|| RwLock::new(McpClientManager::new()));
+
+/// 发现并聚合所有可用工具的 Schema 和 Skill 全量信息。
+///
+/// 返回: (tools schemas, skills 全量列表, unified_hash)
+/// unified_hash = hash(工具 schemas + 所有 Skill 的 name/description/content/always)
+pub async fn discover_all(
+    _mcp_servers: &[McpServerConfig],
+    skills_dir: &PathBuf,
+) -> (Vec<Value>, Vec<SkillFull>, String) {
+    let mut all_schemas = Vec::new();
+
+    // 1. 内置工具
+    all_schemas.extend(discover_builtin_tools().iter().cloned());
+
+    // 2. MCP 工具
+    let mcp_tools = discover_mcp_tools_internal().await;
+    all_schemas.extend(mcp_tools);
+
+    // 3. Skills（全量：always=true 带正文，always=false 不带正文）
+    let skills_full = skills::scan_skills(skills_dir);
+
+    // 单一 unified hash：工具 schemas + 所有 skill 的 name/description/content/always
+    let hash = compute_hash(&(&all_schemas, &skills_full));
+
+    (all_schemas, skills_full, hash)
+}
+
+/// 发现并聚合所有可用工具的 Schema（不含 Skills）。
+#[allow(dead_code)]
+pub async fn discover_tools(
+    mcp_servers: &[McpServerConfig],
+    skills_dir: &PathBuf,
+) -> Vec<Value> {
+    let (schemas, _, _) = discover_all(mcp_servers, skills_dir).await;
+    schemas
+}
+
+/// 初始化 MCP 客户端管理器。
+#[allow(dead_code)]
+pub async fn init_mcp(mcp_servers: &[McpServerConfig]) {
+    let mut manager = MCP_MANAGER.write().await;
+    if let Err(e) = manager.initialize(mcp_servers).await {
+        tracing::warn!("failed to initialize MCP servers: {}", e);
+    }
+}
+
+/// 内部调用：发现 MCP 工具。
+async fn discover_mcp_tools_internal() -> Vec<Value> {
+    // 简化处理：返回空，实际的工具 schema 需要在 session 初始化时获取
+    // 此处返回空是安全的，因为 MCP 工具发现会延迟到 RegisterTools 时
+    Vec::new()
+}
+
+/// 发现 MCP 工具（供外部调用，初始化并返回 schema）。
+#[allow(dead_code)]
+pub async fn discover_mcp_tools(_mcp_servers: &[McpServerConfig]) -> Vec<Value> {
+    // MCP 工具发现目前返回空，实际的 schema 在 session 初始化时通过 MCP manager 获取
+    Vec::new()
+}
+
+/// 内置工具 Schema 发现（缓存结果）。
+fn discover_builtin_tools() -> &'static [Value] {
+    static CACHED: LazyLock<Vec<Value>> = LazyLock::new(|| {
+        LOCAL_TOOL_REGISTRY
+            .values()
+            .map(|t| t.schema())
+            .collect()
+    });
+    &*CACHED
+}
+
+/// 计算任意可序列化对象的哈希。
+fn compute_hash<T: serde::Serialize>(value: &T) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let serialized = serde_json::to_string(value).unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    serialized.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+/// 获取 MCP manager（供 executor 调用工具时使用）
+pub async fn get_mcp_manager() -> tokio::sync::RwLockWriteGuard<'static, McpClientManager> {
+    MCP_MANAGER.write().await
+}

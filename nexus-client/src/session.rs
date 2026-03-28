@@ -7,46 +7,12 @@
 /// ─────────────────────────────────────────────────────────────────────────────
 /// 【心跳与工具热拔插流程】
 /// ─────────────────────────────────────────────────────────────────────────────
-/// - Client 每次发送心跳前，重新聚合【内置工具 + MCP 工具 + Skill 工具】的完整 Schema 列表，
-///   计算其 tools_hash（对合并后的 Vec<Value> 序列化后哈希）。
-/// - 若本次 tools_hash 与上次心跳记录的 hash 不同，说明工具集发生了变更
-///   （例如用户挂载了新的 MCP Server，或在 skill 目录下新增/删除了 Skill）：
-///   则在发出本次 Heartbeat 后，立即再发送一条 ClientToServer::RegisterTools，
-///   其 schemas 字段包含三类工具的完整最新列表。
-/// - Server 收到新的 RegisterTools 后，更新 AppState 中该设备的工具快照，
-///   后续对该设备下发的 ExecuteToolRequest 将基于最新工具列表路由。
-///
-/// ─────────────────────────────────────────────────────────────────────────────
-/// 【重连后恢复流程（断线重连 → 状态恢复）】
-/// ─────────────────────────────────────────────────────────────────────────────
-/// 断线重连成功（WebSocket TCP 连接重新建立）后，不能直接恢复心跳，
-/// 必须按以下顺序重走完整握手序列：
-///
-/// 步骤 1 — 重新完成登录认证：
-///   等待 Server 发出 ServerToClient::RequireLogin，
-///   回复 ClientToServer::SubmitToken（使用 config.auth_token）。
-///   Server 断线时已从 AppState 注销该设备，重连后视为全新连接，必须重新认证。
-///
-/// 步骤 2 — 重新注册工具：
-///   收到 ServerToClient::LoginSuccess 后，立即发送一条完整的
-///   ClientToServer::RegisterTools（含内置工具 + MCP 工具 + Skill 工具的最新列表），
-///   重建 AppState 中该设备的工具快照。
-///   （不能等心跳 hash 变更触发，因为 Server 侧工具列表已清空）
-///
-/// 步骤 3 — 恢复心跳循环：
-///   RegisterTools 发送完成后，启动心跳定时器，进入正常运行状态。
-///
-/// 【重连期间的 ExecuteToolRequest 处理】
-/// 重连期间 Server 若有待处理的 ExecuteToolRequest（来自重连前仍在运行的 agent_loop），
-/// Server 端 ws.rs 会在设备断线时调用 cancel_pending_requests_for_device，
-/// 将对应 oneshot::Sender 全部 drop，agent_loop 收到 Err 后将错误包装为 Tool Result
-/// 喂回 LLM 触发自我纠正，无需 Client 侧做额外处理。
-///
-/// ─────────────────────────────────────────────────────────────────────────────
-/// 参考 nanobot：
-/// ─────────────────────────────────────────────────────────────────────────────
-/// 对应分布式的连接层抽象。nanobot 是单机，无此重连恢复问题；
-/// Nexus 的重连序列是 Nexus 架构独有的复杂性来源。
+/// - Client 每次发送心跳前，调用 `discovery::discover_all()` 重新扫描：
+///   - 内置工具 + MCP 工具 → tools_schema
+///   - Skills → skill_summaries
+/// - 计算 tools_hash 和 skills_hash
+/// - 若任一 hash 与上次不同，说明工具集发生了变更，则发送 RegisterTools 更新 Server
+/// - Server 收到新的 RegisterTools 后，更新 AppState 中该设备的工具快照。
 
 use std::time::Duration;
 
@@ -61,6 +27,7 @@ use tracing::{info, warn};
 
 use crate::config::ClientConfig;
 
+/// ClientSession 保存与 Server 的会话状态，供 main.rs 访问。
 pub struct ClientSession {
     outbound_tx: mpsc::Sender<ClientToServer>,
     inbound_rx: mpsc::Receiver<ServerToClient>,
@@ -130,27 +97,55 @@ async fn run_single_connection(
     inbound_tx: &mpsc::Sender<ServerToClient>,
     outbound_rx: &mut mpsc::Receiver<ClientToServer>,
 ) -> Result<(), String> {
-    perform_handshake(ws_stream, config).await?;
+    let device_id = config.device_id.clone();
+    let device_name = config.device_name.clone();
+    perform_handshake(ws_stream, &device_id, &device_name).await?;
+
+    // 步骤 2 — 登录成功后，立即发现并注册工具（重连时也会执行）
+    let (schemas, skills, hash) =
+        crate::discovery::discover_all(&config.mcp_servers, &config.skills_dir).await;
+
+    let register = ClientToServer::RegisterTools {
+        device_id: device_id.clone(),
+        device_name: device_name.clone(),
+        schemas,
+        skills,
+    };
+    send_client_message(ws_stream, &register).await?;
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SEC));
-    let mut tools_hash = String::new();
+    let mut last_hash = hash;
 
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
+                // 每次心跳重新计算 unified hash，检测工具或 skills 是否变更
+                let (current_schemas, current_skills, current_hash) =
+                    crate::discovery::discover_all(&config.mcp_servers, &config.skills_dir).await;
+
                 let heartbeat_event = ClientToServer::Heartbeat {
-                    device_id: config.device_id.clone(),
-                    tools_hash: tools_hash.clone(),
+                    device_id: device_id.clone(),
+                    device_name: device_name.clone(),
+                    hash: current_hash.clone(),
                     status: "online".to_string(),
                 };
                 send_client_message(ws_stream, &heartbeat_event).await?;
+
+                // 若 unified hash 变了，说明工具集发生变更，立即重新注册全量
+                if current_hash != last_hash {
+                    let register = ClientToServer::RegisterTools {
+                        device_id: device_id.clone(),
+                        device_name: device_name.clone(),
+                        schemas: current_schemas,
+                        skills: current_skills,
+                    };
+                    send_client_message(ws_stream, &register).await?;
+                    last_hash = current_hash;
+                }
             }
             outbound = outbound_rx.recv() => {
                 match outbound {
                     Some(message) => {
-                        if let ClientToServer::RegisterTools { schemas, .. } = &message {
-                            tools_hash = schemas.len().to_string();
-                        }
                         send_client_message(ws_stream, &message).await?;
                     }
                     None => return Err("outbound channel closed".to_string()),
@@ -186,7 +181,8 @@ async fn perform_handshake(
     ws_stream: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
-    config: &ClientConfig,
+    device_id: &str,
+    device_name: &str,
 ) -> Result<(), String> {
     let require_login = tokio::time::timeout(Duration::from_secs(30), ws_stream.next())
         .await
@@ -206,9 +202,9 @@ async fn perform_handshake(
     }
 
     let submit = ClientToServer::SubmitToken {
-        token: config.auth_token.clone(),
-        device_id: config.device_id.clone(),
-        device_name: config.device_name.clone(),
+        token: crate::config::load_config().auth_token.clone(),
+        device_id: device_id.to_string(),
+        device_name: device_name.to_string(),
         protocol_version: PROTOCOL_VERSION.to_string(),
     };
     send_client_message(ws_stream, &submit).await?;
@@ -229,8 +225,8 @@ async fn perform_handshake(
     match login_result_msg {
         ServerToClient::LoginSuccess { .. } => {
             info!(
-                "device login success: device_id={}, server={}",
-                config.device_id, config.server_ws_url
+                "device login success: device_id={}",
+                device_id,
             );
             Ok(())
         }
