@@ -51,7 +51,6 @@ use tokio::time::timeout;
 use tracing::{info, warn};
 
 use crate::agent_loop;
-use crate::bus::InboundEvent;
 use crate::db;
 use crate::state::{AppState, DeviceState, cancel_pending_requests_for_device};
 
@@ -284,43 +283,6 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                     warn!(
                         "missing pending sender for request_id from device_id={device_id}"
                     );
-                }
-            }
-            ClientToServer::UserMessage {
-                session_id,
-                channel,
-                content,
-            } => {
-                let inbound = InboundEvent {
-                    channel: channel.clone(),
-                    sender_id: user_id.clone(),
-                    chat_id: session_id.clone(),
-                    content,
-                    session_id: session_id.clone(),
-                };
-
-                // 获取或创建 session
-                let (tx, is_new): (tokio::sync::mpsc::Sender<InboundEvent>, bool) =
-                    state.session_manager.get_or_create_session(&session_id).await;
-
-                if is_new {
-                    // 首次创建该 session：spawn agent_loop
-                    let (new_tx, rx) = mpsc::channel(64);
-                    let agent_state = Arc::new(state.clone());
-                    let sid = session_id.clone();
-                    let inbound = inbound;
-                    tokio::spawn(async move {
-                        // 先发送初始化消息，然后进入循环
-                        if new_tx.send(inbound).await.is_err() {
-                            return;
-                        }
-                        agent_loop::run_session(sid, rx, agent_state).await;
-                    });
-                } else {
-                    // 已有 session，直接发送
-                    if let Err(_) = tx.send(inbound).await {
-                        tracing::warn!("session {} inbox closed", session_id);
-                    }
                 }
             }
             _ => {
