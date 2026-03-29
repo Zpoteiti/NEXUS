@@ -1,14 +1,21 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast};
+use std::time::Duration;
+use tokio::sync::{broadcast, mpsc, Mutex};
+use dashmap::DashMap;
+use chrono::{DateTime, Utc};
 
 /// 用户消息事件（来自任意 Channel）
 #[derive(Debug, Clone)]
 pub struct InboundEvent {
-    pub channel: String,      // "webui" | "discord" | "telegram" | ...
-    pub sender_id: String,   // 发消息的用户 ID
-    pub chat_id: String,     // 会话 ID
-    pub content: String,      // 消息内容
-    pub session_id: String,  // Nexus 内部 session 标识
+    pub channel: String,                                      // "webui" | "discord" | "telegram"
+    pub sender_id: String,                                    // 用户 ID
+    pub chat_id: String,                                      // 会话 ID
+    pub content: String,                                       // 消息内容
+    pub session_id: String,                                    // Nexus 内部 session 标识
+    pub timestamp: Option<DateTime<Utc>>,                    // 消息时间戳
+    pub media: Vec<String>,                                    // 媒体 URL 列表
+    pub metadata: HashMap<String, serde_json::Value>,         // 运行时控制字段
 }
 
 /// Agent 响应事件（发往任意 Channel）
@@ -17,83 +24,87 @@ pub struct OutboundEvent {
     pub channel: String,
     pub chat_id: String,
     pub content: String,
+    pub media: Vec<String>,
+    pub metadata: HashMap<String, serde_json::Value>,
 }
 
-/// 简化的 MessageBus：用 Vec + RwLock 替代 async Queue
-/// inbound: 待处理的 inbound 事件队列
-/// outbound: 待发送的 outbound 事件队列
+/// MessageBus - 进程内异步消息总线
+///
+/// inbound: session 隔离路由。通过 `register_session` 注册后，
+///          `publish_inbound` 根据 session_id 路由到对应 session 的 inbox。
+/// outbound: 全局队列，ChannelManager 单消费者。
 pub struct MessageBus {
-    pub inbound: Arc<RwLock<Vec<InboundEvent>>>,
-    pub outbound: Arc<RwLock<Vec<OutboundEvent>>>,
+    /// session_id → 该 session 的 inbox sender（用于路由）
+    inbound_routes: Arc<DashMap<String, mpsc::Sender<InboundEvent>>>,
+    /// outbound 队列（ChannelManager 单消费者）
+    outbound_tx: Arc<mpsc::Sender<OutboundEvent>>,
+    outbound_rx: Arc<Mutex<mpsc::Receiver<OutboundEvent>>>,
     shutdown_tx: broadcast::Sender<()>,
 }
 
 impl MessageBus {
+    /// 创建新的 MessageBus
     pub fn new() -> Self {
+        let (outbound_tx, outbound_rx) = mpsc::channel(256);
         let (shutdown_tx, _) = broadcast::channel(1);
         Self {
-            inbound: Arc::new(RwLock::new(Vec::new())),
-            outbound: Arc::new(RwLock::new(Vec::new())),
+            inbound_routes: Arc::new(DashMap::new()),
+            outbound_tx: Arc::new(outbound_tx),
+            outbound_rx: Arc::new(Mutex::new(outbound_rx)),
             shutdown_tx,
         }
     }
 
-    /// 发布一个 inbound 事件到队列尾部
-    pub async fn publish_inbound(&self, event: InboundEvent) {
-        self.inbound.write().await.push(event);
+    /// 注册一个 session 的 inbox sender 到路由表
+    /// 由 session_manager 在创建新 session 时调用
+    pub fn register_session(&self, session_id: String, tx: mpsc::Sender<InboundEvent>) {
+        self.inbound_routes.insert(session_id, tx);
     }
 
-    /// 消费一个 inbound 事件（从队列头部取）
-    pub async fn consume_inbound(&self) -> InboundEvent {
-        loop {
-            let event = {
-                let mut inbound = self.inbound.write().await;
-                if !inbound.is_empty() {
-                    Some(inbound.remove(0))
-                } else {
-                    None
-                }
-            };
-            if let Some(e) = event {
-                return e;
-            }
-            // 队列空，短暂休眠后重试
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    /// 从路由表移除一个 session
+    /// 由 session 结束时调用
+    pub fn unregister_session(&self, session_id: &str) {
+        self.inbound_routes.remove(session_id);
+    }
+
+    /// 发布一个 inbound 事件——根据 session_id 路由到对应 session 的 inbox
+    pub async fn publish_inbound(&self, event: InboundEvent) {
+        let session_id = event.session_id.clone();
+        if let Some(tx) = self.inbound_routes.get(&session_id) {
+            // 路由到对应 session 的 inbox；如果 sender 已 drop（session 结束），忽略
+            let _: Result<(), tokio::sync::mpsc::error::SendError<InboundEvent>> = tx.send(event).await;
         }
     }
 
-    /// 发布一个 outbound 事件到队列尾部
+    /// 发布一个 outbound 事件到队列
     pub async fn publish_outbound(&self, event: OutboundEvent) {
-        self.outbound.write().await.push(event);
+        // ChannelManager 消费端已关闭时，send 会失败，忽略即可
+        let _ = self.outbound_tx.send(event).await;
     }
 
-    /// 消费一个 outbound 事件（从队列头部取），支持 shutdown 信号
+    /// 消费一个 outbound 事件（阻塞直到有事件或收到 shutdown）
+    /// 返回 None 表示收到 shutdown 信号
     pub async fn consume_outbound(&self) -> Option<OutboundEvent> {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+
         loop {
-            // 先检查是否有事件
+            // 先尝试非阻塞获取
             let event = {
-                let mut outbound = self.outbound.write().await;
-                if !outbound.is_empty() {
-                    Some(outbound.remove(0))
-                } else {
-                    None
-                }
+                let mut rx = self.outbound_rx.lock().await;
+                rx.try_recv().ok()
             };
-            if let Some(e) = event {
-                return Some(e);
+            if let Some(event) = event {
+                return Some(event);
             }
             // 队列空，等待事件或 shutdown 信号
             tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
-                _ = shutdown_rx.recv() => {
-                    return None;
-                }
+                _ = shutdown_rx.recv() => return None,
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {},
             }
         }
     }
 
-    /// 触发 shutdown，所有 consumer 的 consume_outbound 会返回 None
+    /// 触发 shutdown，所有 consume_outbound 调用返回 None
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(());
     }

@@ -35,6 +35,8 @@ pub async fn run_session(
                     channel: event.channel.clone(),
                     chat_id: event.chat_id.clone(),
                     content: response,
+                    media: vec![],
+                    metadata: HashMap::new(),
                 };
                 state.bus.publish_outbound(outbound).await;
             }
@@ -44,6 +46,8 @@ pub async fn run_session(
                     channel: event.channel.clone(),
                     chat_id: event.chat_id.clone(),
                     content: format!("Error: {}", e),
+                    media: vec![],
+                    metadata: HashMap::new(),
                 };
                 state.bus.publish_outbound(outbound).await;
             }
