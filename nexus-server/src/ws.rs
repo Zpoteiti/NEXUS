@@ -258,8 +258,6 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 let mut devices_by_user = state.devices_by_user.write().await;
                 if let Some(device) = devices.get_mut(&device_id) {
                     device.last_seen = Instant::now();
-                    // TODO: 存储 unified hash，检测变更时触发重新注册
-                    // device.tools_hash = hash;
                     // 若 device_name 变了（重连后用户改了配置），更新索引
                     if device.device_name != incoming_device_name {
                         if let Some(user_devices) = devices_by_user.get_mut(&user_id) {
