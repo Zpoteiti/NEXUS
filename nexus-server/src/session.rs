@@ -6,7 +6,6 @@ use crate::bus::InboundEvent;
 
 /// 每个 session 的句柄
 pub struct SessionHandle {
-    pub inbox_tx: mpsc::Sender<InboundEvent>,
     pub lock: Arc<RwLock<()>>,    // 防止并发写数据库
 }
 
@@ -21,33 +20,39 @@ impl SessionManager {
         }
     }
 
-    /// 获取或创建 session 的 inbox sender。
-    /// - 新 session：创建 channel，返回 tx，调用方 spawn agent_loop 时使用返回的 rx
-    /// - 已有 session：直接返回已存在的 tx
-    pub async fn get_or_create_session(&self, session_id: &str) -> (mpsc::Sender<InboundEvent>, bool) {
-        // Always acquire write lock first — prevents race between concurrent creates
+    /// 获取或创建 session。
+    /// - 新 session：返回 (true, Some((inbox_tx, inbox_rx)))
+    ///   - tx 由调用方注册到 Bus
+    ///   - rx 传给 spawn 的 agent_loop
+    /// - 已有 session：返回 (false, None)
+    pub async fn get_or_create_session(&self, session_id: &str) -> (bool, Option<(mpsc::Sender<InboundEvent>, mpsc::Receiver<InboundEvent>)>) {
         let mut sessions = self.sessions.write().await;
 
-        // Check if already exists (now safe from races)
         if let Some(handle) = sessions.get(session_id) {
-            return (handle.inbox_tx.clone(), false);
+            let _ = handle;
+            return (false, None);
         }
 
-        // Create new session
-        let (inbox_tx, _inbox_rx) = mpsc::channel(64);
+        // 创建新 session
+        let (inbox_tx, inbox_rx) = mpsc::channel(64);
         let handle = SessionHandle {
-            inbox_tx: inbox_tx.clone(),
             lock: Arc::new(RwLock::new(())),
         };
         sessions.insert(session_id.to_string(), handle);
 
-        (inbox_tx, true) // true = 新创建，调用方应用返回的 _inbox_rx spawn agent_loop
+        (true, Some((inbox_tx, inbox_rx)))
     }
 
     /// 获取 session 的锁（用于 DB 写操作）
     pub async fn get_session_lock(&self, session_id: &str) -> Option<Arc<RwLock<()>>> {
         let sessions = self.sessions.read().await;
         sessions.get(session_id).map(|h| h.lock.clone())
+    }
+
+    /// 移除 session
+    pub async fn remove_session(&self, session_id: &str) {
+        let mut sessions = self.sessions.write().await;
+        sessions.remove(session_id);
     }
 
     /// 获取所有活跃 session ids
