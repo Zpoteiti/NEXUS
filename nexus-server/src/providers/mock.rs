@@ -1,18 +1,44 @@
 //! Mock LLM Provider — 两轮状态机，输出标准 OpenAI Chat Completions 格式。
-//!
-//! Mock 行为：
-//! - 第1轮（无 tool_result）：如果 tools schema 非空，从 schema 中提取 device_name enum，选第一个设备，返回 tool_call
-//! - 第1轮（tools 为空）：返回文本响应，不尝试 tool_call
-//! - 第2轮（带 tool_result）：返回 stop，显示工具执行结果
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Module-level counter for simulating 429 / rate-limit errors in tests.
+/// When > 0, that many calls to `chat_completion` will return a 429 error response.
+/// Use `set_mock_transient_errors(n)` to set, `clear_mock_transient_errors()` to reset.
+static TRANSIENT_ERRORS_REMAINING: AtomicUsize = AtomicUsize::new(0);
+
+/// 设置接下来 N 次调用返回 429 错误（用于测试重试逻辑）
+pub fn set_mock_transient_errors(n: usize) {
+    TRANSIENT_ERRORS_REMAINING.store(n, Ordering::SeqCst);
+}
+
+/// 清除 429 模拟，恢复正常调用
+pub fn clear_mock_transient_errors() {
+    TRANSIENT_ERRORS_REMAINING.store(0, Ordering::SeqCst);
+}
+
+/// 尝试消耗一次 429 模拟机会，返回是否应返回 429 错误
+fn consume_transient_error() -> bool {
+    loop {
+        let current = TRANSIENT_ERRORS_REMAINING.load(Ordering::SeqCst);
+        if current == 0 {
+            return false;
+        }
+        match TRANSIENT_ERRORS_REMAINING.compare_exchange(
+            current, current - 1, Ordering::SeqCst, Ordering::SeqCst,
+        ) {
+            Ok(_) => return current > 0,
+            Err(_) => continue,
+        }
+    }
+}
+
 /// OpenAI Chat Completions 请求（agents 调用时构造）
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionRequest {
     pub messages: Vec<Value>,
     pub tools: Vec<Value>,
@@ -112,8 +138,37 @@ fn next_call_id() -> String {
     format!("call_{}", uuid::Uuid::new_v4().to_string().replace("-", ""))
 }
 
+/// 构造一个 429 Too Many Requests 错误响应
+fn make_429_response(model: &str) -> ChatCompletionResponse {
+    let call_num = CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+    ChatCompletionResponse {
+        id: format!("chatcmpl-mock-{}", call_num + 1),
+        model: model.to_string(),
+        choices: vec![Choice {
+            index: 0,
+            message: AssistantMessage {
+                role: "assistant".to_string(),
+                content: Some("Error: 429 Too Many Requests — rate limit exceeded, please retry after a short wait.".to_string()),
+                tool_calls: None,
+            },
+            finish_reason: "error".to_string(),
+            tool_calls: None,
+        }],
+        usage: Some(json!({
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30
+        })),
+    }
+}
+
 /// 处理一轮 Chat Completions 请求
 pub fn chat_completion(request: ChatCompletionRequest) -> ChatCompletionResponse {
+    // 模拟 429 错误（用于测试重试逻辑）
+    if consume_transient_error() {
+        return make_429_response(&request.model);
+    }
+
     let call_num = CALL_COUNT.fetch_add(1, Ordering::SeqCst);
     let response_id = format!("chatcmpl-mock-{}", call_num + 1);
 
@@ -245,11 +300,9 @@ pub fn chat_completion(request: ChatCompletionRequest) -> ChatCompletionResponse
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_first_round_with_tools_returns_tool_call_with_device_name() {
-        // 模拟已注入 device_name enum 的 tools schema
         let tools = vec![
             json!({
                 "type": "function",
@@ -286,14 +339,12 @@ mod tests {
         assert_eq!(response.choices[0].finish_reason, "tool_calls");
         let tc = &response.choices[0].tool_calls.as_ref().unwrap()[0];
         assert_eq!(tc.function.name, "shell");
-        // 验证 device_name 被注入到 arguments
         let args: serde_json::Value = serde_json::from_str(&tc.function.arguments).unwrap();
         assert_eq!(args.get("device_name").and_then(|v| v.as_str()), Some("DASHU"));
     }
 
     #[test]
     fn test_first_round_without_tools_returns_text() {
-        // tools 为空时，返回文本而非 tool_call
         let request = ChatCompletionRequest {
             messages: vec![
                 json!({"role": "system", "content": "You are a helpful assistant."}),
@@ -325,5 +376,23 @@ mod tests {
         let response = chat_completion(request);
         assert_eq!(response.choices[0].finish_reason, "stop");
         assert!(response.choices[0].message.content.as_ref().unwrap().starts_with("已执行工具"));
+    }
+
+    #[test]
+    fn test_429_error_response() {
+        set_mock_transient_errors(1);
+        let request = ChatCompletionRequest {
+            messages: vec![],
+            tools: vec![],
+            model: "mock".to_string(),
+        };
+        let request2 = request.clone();
+        let response = chat_completion(request);
+        assert_eq!(response.choices[0].finish_reason, "error");
+        assert!(response.choices[0].message.content.as_ref().unwrap().contains("429"));
+        // Next call should be normal
+        let response2 = chat_completion(request2);
+        assert_eq!(response2.choices[0].finish_reason, "stop");
+        clear_mock_transient_errors();
     }
 }
