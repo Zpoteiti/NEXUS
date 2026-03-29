@@ -37,6 +37,7 @@ use axum::extract::ws::Message;
 use nexus_common::protocol::ToolExecutionResult;
 use sqlx::PgPool;
 use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::bus::MessageBus;
 use crate::config::ServerConfig;
@@ -62,6 +63,9 @@ pub struct AppState {
     pub pending: Arc<RwLock<HashMap<String, oneshot::Sender<ToolExecutionResult>>>>,
     pub bus: Arc<MessageBus>,
     pub session_manager: Arc<SessionManager>,
+    /// ChannelManager 的 dispatch task handle，用于 graceful shutdown
+    /// 使用 Mutex<Option<JoinHandle>> 而非直接存储 JoinHandle，因为 JoinHandle 不是 Clone
+    pub channel_manager_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
 }
 
 impl AppState {
@@ -74,6 +78,7 @@ impl AppState {
             pending: Arc::new(RwLock::new(HashMap::new())),
             bus,
             session_manager,
+            channel_manager_handle: Arc::new(RwLock::new(None)),
         }
     }
 }

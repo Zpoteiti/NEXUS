@@ -51,7 +51,7 @@ use tokio::time::timeout;
 use tracing::{info, warn};
 
 use crate::agent_loop;
-use crate::bus::{InboundEvent, MessageBus};
+use crate::bus::InboundEvent;
 use crate::db;
 use crate::state::{AppState, DeviceState, cancel_pending_requests_for_device};
 
@@ -196,26 +196,6 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
     }
 
     info!("device online: device_id={device_id}, user_id={user_id}");
-
-    // Spawn OutboundEvent consumer — pushes AgentResponse back to client
-    let bus = state.bus.clone();
-    let ws_tx_clone = ws_tx.clone();
-    tokio::spawn(async move {
-        loop {
-            let event = bus.consume_outbound().await;
-            let response = ServerToClient::AgentResponse {
-                channel: event.channel,
-                chat_id: event.chat_id,
-                content: event.content,
-            };
-            if let Ok(text) = serde_json::to_string(&response) {
-                let msg = axum::extract::ws::Message::Text(text.into());
-                if ws_tx_clone.send(msg).await.is_err() {
-                    break;
-                }
-            }
-        }
-    });
 
     while let Some(frame) = stream.next().await {
         let message = match frame {
