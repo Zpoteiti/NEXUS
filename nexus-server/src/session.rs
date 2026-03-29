@@ -2,20 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
+use crate::bus::InboundEvent;
+
 /// 每个 session 的句柄
 pub struct SessionHandle {
     pub inbox_tx: mpsc::Sender<InboundEvent>,
     pub lock: Arc<RwLock<()>>,    // 防止并发写数据库
-}
-
-/// 用户消息事件
-#[derive(Debug, Clone)]
-pub struct InboundEvent {
-    pub channel: String,
-    pub sender_id: String,
-    pub chat_id: String,
-    pub content: String,
-    pub session_id: String,
 }
 
 pub struct SessionManager {
