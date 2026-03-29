@@ -37,7 +37,6 @@
 ///
 /// 若不执行步骤 2，agent_loop 将永久 .await 挂起，该 session 的 LLM 调用链永远无法继续。
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -50,7 +49,6 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{info, warn};
 
-use crate::agent_loop;
 use crate::db;
 use crate::state::{AppState, DeviceState, cancel_pending_requests_for_device};
 
