@@ -28,8 +28,7 @@ impl SessionManager {
     pub async fn get_or_create_session(&self, session_id: &str) -> (bool, Option<(mpsc::Sender<InboundEvent>, mpsc::Receiver<InboundEvent>)>) {
         let mut sessions = self.sessions.write().await;
 
-        if let Some(handle) = sessions.get(session_id) {
-            let _ = handle;
+        if sessions.contains_key(session_id) {
             return (false, None);
         }
 

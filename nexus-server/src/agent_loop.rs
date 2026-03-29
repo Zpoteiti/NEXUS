@@ -13,6 +13,16 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+fn make_outbound(event: &InboundEvent, content: String) -> OutboundEvent {
+    OutboundEvent {
+        channel: event.channel.clone(),
+        chat_id: event.chat_id.clone(),
+        content,
+        media: Vec::new(),
+        metadata: HashMap::new(),
+    }
+}
+
 /// Per-Session AgentLoop：消费 session inbox，处理 ReAct 循环
 pub async fn run_session(
     session_id: String,
@@ -31,25 +41,11 @@ pub async fn run_session(
 
         match run_single_turn(&state, &event).await {
             Ok(response) => {
-                let outbound = OutboundEvent {
-                    channel: event.channel.clone(),
-                    chat_id: event.chat_id.clone(),
-                    content: response,
-                    media: vec![],
-                    metadata: HashMap::new(),
-                };
-                state.bus.publish_outbound(outbound).await;
+                state.bus.publish_outbound(make_outbound(&event, response)).await;
             }
             Err(e) => {
                 error!("agent_session {} error: {}", session_id, e);
-                let outbound = OutboundEvent {
-                    channel: event.channel.clone(),
-                    chat_id: event.chat_id.clone(),
-                    content: format!("Error: {}", e),
-                    media: vec![],
-                    metadata: HashMap::new(),
-                };
-                state.bus.publish_outbound(outbound).await;
+                state.bus.publish_outbound(make_outbound(&event, format!("Error: {}", e))).await;
             }
         }
     }

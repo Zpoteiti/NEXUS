@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use dashmap::DashMap;
 use chrono::{DateTime, Utc};
@@ -86,21 +85,11 @@ impl MessageBus {
     /// 返回 None 表示收到 shutdown 信号
     pub async fn consume_outbound(&self) -> Option<OutboundEvent> {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let mut rx = self.outbound_rx.lock().await;
 
-        loop {
-            // 先尝试非阻塞获取
-            let event = {
-                let mut rx = self.outbound_rx.lock().await;
-                rx.try_recv().ok()
-            };
-            if let Some(event) = event {
-                return Some(event);
-            }
-            // 队列空，等待事件或 shutdown 信号
-            tokio::select! {
-                _ = shutdown_rx.recv() => return None,
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {},
-            }
+        tokio::select! {
+            event = rx.recv() => event,
+            _ = shutdown_rx.recv() => None,
         }
     }
 
