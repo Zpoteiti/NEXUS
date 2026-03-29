@@ -74,18 +74,24 @@ async fn run_single_turn(
     ];
 
     // 4. 调用 Mock LLM
+    info!("agent_session {} calling mock LLM with {} tools", session_id, tools.len());
     let request = ChatCompletionRequest {
         messages: messages.clone(),
         tools,
         model: "mock".to_string(),
     };
     let response = chat_completion(request);
+    info!("agent_session {} mock LLM returned: finish_reason={}", session_id, response.choices[0].finish_reason);
     let llm_response = openai_to_llm_response(response);
 
     // 5. 处理 LLM 返回
     match llm_response.finish_reason.as_str() {
-        "stop" => Ok(llm_response.content.unwrap_or_default()),
+        "stop" => {
+            info!("agent_session {} returning stop: {}", session_id, llm_response.content.as_ref().unwrap_or(&"<empty>".to_string()));
+            Ok(llm_response.content.unwrap_or_default())
+        }
         "tool_calls" => {
+            info!("agent_session {} calling execute_tool_calls_loop with {} tool_calls", session_id, llm_response.tool_calls.len());
             execute_tool_calls_loop(state, user_id, messages, llm_response.tool_calls).await
         }
         _ => Err(format!("unknown finish_reason: {}", llm_response.finish_reason)),
@@ -159,15 +165,18 @@ async fn execute_single_tool(
     user_id: &str,
     tc: &ToolCallRequest,
 ) -> Result<String, String> {
+    info!("execute_single_tool: tool_name={}, arguments={}", tc.name, tc.arguments);
     let device_name = tc.arguments
         .get("device_name")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "device_name not found in tool call arguments".to_string())?
         .to_string();
+    info!("execute_single_tool: resolved device_name={}", device_name);
 
     let params = tc.arguments.clone();
     let request_id = tc.id.clone();
 
+    info!("execute_single_tool: calling route_tool for device={}", device_name);
     match route_tool(state, user_id, &tc.name, params, &request_id).await {
         Ok(result) => {
             let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(1);

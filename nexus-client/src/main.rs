@@ -53,7 +53,8 @@ async fn main() {
                     warn!("failed to send ToolExecutionResult: {}", e);
                 }
             }
-            ServerToClient::RequireLogin { message } => {
+            ServerToClient::RequireLogin {
+                message } => {
                 warn!("unexpected RequireLogin during main loop: {}", message);
             }
             ServerToClient::LoginSuccess { user_id, device_id } => {
@@ -61,6 +62,9 @@ async fn main() {
             }
             ServerToClient::LoginFailed { reason } => {
                 warn!("unexpected LoginFailed during main loop: {}", reason);
+            }
+            ServerToClient::AgentResponse { channel, chat_id, content } => {
+                info!("received AgentResponse: channel={}, chat_id={}, content={}", channel, chat_id, content);
             }
         }
     }

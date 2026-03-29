@@ -328,11 +328,14 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                     let (new_tx, rx) = mpsc::channel(64);
                     let agent_state = Arc::new(state.clone());
                     let sid = session_id.clone();
+                    let inbound = inbound;
                     tokio::spawn(async move {
+                        // 先发送初始化消息，然后进入循环
+                        if new_tx.send(inbound).await.is_err() {
+                            return;
+                        }
                         agent_loop::run_session(sid, rx, agent_state).await;
                     });
-                    // 发到新的 agent_loop
-                    let _ = new_tx.send(inbound).await;
                 } else {
                     // 已有 session，直接发送
                     if let Err(_) = tx.send(inbound).await {
