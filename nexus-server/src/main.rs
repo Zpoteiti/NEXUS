@@ -6,7 +6,7 @@
 
 mod agent_loop;
 // mod api;
-// mod auth;
+mod auth;
 mod bus;
 mod channels;
 mod config;
@@ -65,6 +65,8 @@ async fn main() {
 
     let app = Router::new()
         .route("/ws", get(ws::ws_handler))
+        .route("/api/auth/register", axum::routing::post(auth::register))
+        .route("/api/auth/login", axum::routing::post(auth::login))
         .fallback(|| async { (StatusCode::NOT_IMPLEMENTED, "Not Implemented") })
         .with_state(state);
 
