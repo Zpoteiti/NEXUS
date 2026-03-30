@@ -3,6 +3,7 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
+use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -45,6 +46,20 @@ async fn nexus_connection(socket: WebSocket, state: SharedState) {
         let _ = sink.send(Message::Text(fail.into())).await;
         warn!("nexus gateway: auth rejected");
         return;
+    }
+
+    // Check if nexus is already connected before sending AuthOk
+    {
+        let guard = state.nexus_tx.read().await;
+        if guard.is_some() {
+            let fail = serde_json::to_string(&NexusOutbound::AuthFail {
+                reason: "another nexus connection is already active".to_string(),
+            })
+            .unwrap();
+            let _ = sink.send(Message::Text(fail.into())).await;
+            warn!("nexus gateway: rejected duplicate connection");
+            return;
+        }
     }
 
     let ok = serde_json::to_string(&NexusOutbound::AuthOk).unwrap();
@@ -116,7 +131,12 @@ pub async fn route_nexus_send(
 }
 
 pub fn verify_token(provided: &str, expected: &str) -> bool {
-    provided == expected
+    let a = provided.as_bytes();
+    let b = expected.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    a.ct_eq(b).into()
 }
 
 #[cfg(test)]

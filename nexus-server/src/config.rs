@@ -35,6 +35,10 @@ pub fn load_config() -> ServerConfig {
     let webui_gateway_token = std::env::var("NEXUS_WEBUI_GATEWAY_TOKEN")
         .unwrap_or_else(|_| "dev-token".to_string());
 
+    if webui_gateway_token == "dev-token" {
+        tracing::warn!("NEXUS_WEBUI_GATEWAY_TOKEN is using the insecure default 'dev-token'. Set this env var in production.");
+    }
+
     ServerConfig {
         database_url,
         admin_token,

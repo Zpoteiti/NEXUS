@@ -231,6 +231,7 @@ impl Channel for WebUiChannel {
         loop {
             match self.run_once().await {
                 Ok(()) => {
+                    backoff = Duration::from_secs(1);
                     info!("WebUiChannel: disconnected gracefully, reconnecting...");
                 }
                 Err(e) => {
