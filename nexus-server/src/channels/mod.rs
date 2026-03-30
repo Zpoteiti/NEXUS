@@ -1,48 +1,42 @@
-/// 职责边界：
-/// 1. 定义异步的 `Channel` Trait，规范各平台 Channel 的统一接口（start、stop、send 等）。
-/// 2. 实现 `ChannelManager`，负责系统启动时加载各启用渠道并管理其生命周期。
-///    与 bus.rs 的边界约定：
-///    - ChannelManager 在启动时持有 bus 的克隆引用。
-///    - ChannelManager 运行一个后台 Task 消费 outbound 队列，
-///      根据 OutboundEvent.channel 路由给对应的 Channel 实例。
-///    - 各具体 Channel（telegram / webui）在注册到 ChannelManager 时，
-///      用于将平台收到的消息推入总线（inbound 方向）。
-/// 3. ChannelManager 不直接处理消息内容，只负责分发路由；
-///    消息格式转换由各 Channel 实例（telegram.rs / webui.rs）内部完成。
-///
-/// 参考 nanobot：
-/// - 替代 nanobot/channels/base.py 中的 BaseChannel 抽象类。
-/// - 替代 nanobot/channels/manager.py 中的 _dispatch_outbound 分发逻辑。
+//! Channel abstraction: each channel is an active WS client connecting to an external gateway.
+//! ChannelManager spawns each channel's start() task and runs the outbound dispatch loop.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::bus::MessageBus;
 
+pub mod webui;
+pub mod discord;
+
 // ============================================================================
 // Channel Trait - 各平台渠道（webui/telegram/discord）需实现此 trait
 // ============================================================================
 
-/// Channel trait - 各平台渠道（webui/telegram/discord）需实现此 trait
+/// Active channel trait — each implementation is a self-managing WS client.
 #[async_trait::async_trait]
 pub trait Channel: Send + Sync {
-    /// 渠道名称，如 "webui", "telegram", "discord"
+    /// Channel name, e.g. "webui", "discord".
     fn name(&self) -> &str;
-    /// 发送消息到该渠道
-    async fn send_message(&self, chat_id: &str, content: &str) -> Result<(), String>;
+    /// Long-running task: connect to external gateway, receive inbound events, publish to bus.
+    /// Must implement auto-reconnect with exponential backoff internally.
+    async fn start(&self);
+    /// Stop the connection and clean up resources.
+    async fn stop(&self);
+    /// Send an outbound message to the gateway (called by ChannelManager dispatch loop).
+    async fn send(&self, chat_id: &str, content: &str) -> Result<(), String>;
 }
 
 // ============================================================================
 // ChannelManager - 负责消费 OutboundEvent 并路由到正确的 Channel
 // ============================================================================
 
-/// ChannelManager - 统一管理所有 Channel 的生命周期和消息路由
+/// ChannelManager — spawns each channel's start() task and runs the outbound dispatch loop.
 pub struct ChannelManager {
     bus: Arc<MessageBus>,
-    channels: HashMap<String, Box<dyn Channel>>,
+    channels: HashMap<String, Arc<dyn Channel>>,
 }
 
 impl ChannelManager {
@@ -53,70 +47,112 @@ impl ChannelManager {
         }
     }
 
-    /// 注册一个 channel
+    /// Register a channel.
     pub fn register<C: Channel + 'static>(&mut self, channel: C) {
         let name = channel.name().to_string();
         info!("ChannelManager: registering channel \"{}\"", name);
-        self.channels.insert(name, Box::new(channel));
+        self.channels.insert(name, Arc::new(channel));
     }
 
-    /// 启动 ChannelManager - 运行 dispatch loop 消费 OutboundEvent
-    pub fn start(mut self) -> JoinHandle<()> {
-        info!("ChannelManager: starting dispatch loop");
-        tokio::spawn(async move {
-            self.dispatch_loop().await;
-        })
-    }
+    /// Spawn all channel start() tasks + outbound dispatch loop.
+    /// Returns a JoinHandle for the dispatch loop (ends when bus shuts down).
+    pub fn start(self) -> JoinHandle<()> {
+        let channels: Arc<HashMap<String, Arc<dyn Channel>>> = Arc::new(self.channels);
+        let bus = self.bus;
 
-    /// Dispatch loop - 从 bus 消费 OutboundEvent 并路由到对应 Channel
-    async fn dispatch_loop(&mut self) {
-        loop {
-            let event = self.bus.consume_outbound().await;
-            let event = match event {
-                Some(e) => e,
-                None => {
-                    info!("ChannelManager: shutdown signal received, stopping dispatch loop");
-                    break;
-                }
-            };
-
-            let channel_name = &event.channel;
-            if let Some(channel) = self.channels.get(channel_name) {
-                match channel.send_message(&event.chat_id, &event.content).await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        warn!("ChannelManager: failed to send to channel \"{}\": {}", channel_name, e);
-                    }
-                }
-            } else {
-                // Channel 不存在，log 并丢弃
-                // M2 阶段这是正常的（telegram/discord 等渠道尚未实现）
-                warn!(
-                    "ChannelManager: no channel registered for \"{}\", dropping event (chat_id={})",
-                    channel_name, event.chat_id
-                );
-            }
+        for (name, channel) in channels.iter() {
+            let ch = channel.clone();
+            let n = name.clone();
+            info!("ChannelManager: starting channel \"{}\"", n);
+            tokio::spawn(async move { ch.start().await });
         }
+
+        tokio::spawn(async move {
+            loop {
+                let event = match bus.consume_outbound().await {
+                    Some(e) => e,
+                    None => {
+                        info!("ChannelManager: bus closed, shutting down");
+                        break;
+                    }
+                };
+
+                let ch_name = event.channel.as_str();
+                if let Some(channel) = channels.get(ch_name) {
+                    if let Err(e) = channel.send(&event.chat_id, &event.content).await {
+                        warn!("ChannelManager: send to \"{}\" failed: {}", ch_name, e);
+                    }
+                } else {
+                    warn!(
+                        "ChannelManager: no channel \"{}\" registered, dropping event (chat_id={})",
+                        ch_name, event.chat_id
+                    );
+                }
+            }
+        })
     }
 }
 
 // ============================================================================
-// Stub Channel 实现 - M2 阶段用于占位
+// Tests
 // ============================================================================
 
-/// WebUI Channel stub - M2 阶段只是 log，实际的消息推送通过 WebSocket 完成
-pub struct WebUiChannel;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tokio::sync::RwLock;
 
-#[async_trait::async_trait]
-impl Channel for WebUiChannel {
-    fn name(&self) -> &str {
-        "webui"
+    struct MockChannel {
+        name: &'static str,
+        last_sent: Arc<RwLock<Option<(String, String)>>>,
     }
 
-    async fn send_message(&self, chat_id: &str, content: &str) -> Result<(), String> {
-        // M2: WebUI 的消息推送尚未实现
-        // 未来会在 ChannelManager 中维护 WebSocket 连接来推送消息
-        info!("WebUiChannel: would send to chat_id={}: {}", chat_id, content);
-        Ok(())
+    #[async_trait::async_trait]
+    impl Channel for MockChannel {
+        fn name(&self) -> &str {
+            self.name
+        }
+        async fn start(&self) {
+            tokio::time::sleep(tokio::time::Duration::from_secs(9999)).await;
+        }
+        async fn stop(&self) {}
+        async fn send(&self, chat_id: &str, content: &str) -> Result<(), String> {
+            *self.last_sent.write().await = Some((chat_id.to_string(), content.to_string()));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_outbound_to_registered_channel() {
+        let bus = Arc::new(MessageBus::new());
+        let last_sent: Arc<RwLock<Option<(String, String)>>> = Arc::new(RwLock::new(None));
+        let channel = MockChannel {
+            name: "mock",
+            last_sent: last_sent.clone(),
+        };
+
+        let mut mgr = ChannelManager::new(bus.clone());
+        mgr.register(channel);
+        let _handle = mgr.start();
+
+        // Give the dispatch loop time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Publish an outbound event
+        bus.publish_outbound(crate::bus::OutboundEvent {
+            channel: "mock".to_string(),
+            chat_id: "chat1".to_string(),
+            content: "hello".to_string(),
+            media: vec![],
+            metadata: HashMap::new(),
+        })
+        .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let sent = last_sent.read().await;
+        assert_eq!(sent.as_ref().unwrap().0, "chat1");
+        assert_eq!(sent.as_ref().unwrap().1, "hello");
     }
 }

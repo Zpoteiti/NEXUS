@@ -28,7 +28,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use bus::MessageBus;
-use channels::{ChannelManager, WebUiChannel};
+use channels::ChannelManager;
 use session::SessionManager;
 
 #[tokio::main]
@@ -48,9 +48,8 @@ async fn main() {
     // 创建 MessageBus
     let bus = Arc::new(MessageBus::new());
 
-    // 创建并启动 ChannelManager
-    let mut channel_manager = ChannelManager::new(bus.clone());
-    channel_manager.register(WebUiChannel);
+    // 创建并启动 ChannelManager（具体 Channel 实现在 Task 7 注册）
+    let channel_manager = ChannelManager::new(bus.clone());
     let channel_manager_handle = channel_manager.start();
 
     // 创建 SessionManager
