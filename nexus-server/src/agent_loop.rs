@@ -68,11 +68,18 @@ async fn run_single_turn(
     // 2. 获取工具 schema
     let tools = context::get_all_tools_schema(state, user_id).await;
 
-    // 3. 构建 messages
-    let messages = vec![
+    // 3. 构建 messages（含历史记录）
+    // Load message history from DB
+    let history = context::build_message_history(state, session_id).await;
+
+    let mut messages = vec![
         json!({ "role": "system", "content": system_prompt }),
-        json!({ "role": "user", "content": user_input }),
     ];
+    messages.extend(history);
+    messages.push(json!({ "role": "user", "content": user_input }));
+
+    // Save user message to DB
+    let _ = crate::db::save_message(&state.db, session_id, "user", user_input, None).await;
 
     // 4. 调用 LLM（含自动重试 429 等瞬时错误）
     info!("agent_session {} calling LLM with {} tools", session_id, tools.len());
@@ -88,12 +95,14 @@ async fn run_single_turn(
     // 5. 处理 LLM 返回
     match llm_response.finish_reason.as_str() {
         "stop" => {
-            info!("agent_session {} returning stop: {}", session_id, llm_response.content.as_ref().unwrap_or(&"<empty>".to_string()));
-            Ok(llm_response.content.unwrap_or_default())
+            let reply = llm_response.content.unwrap_or_default();
+            info!("agent_session {} returning stop: {}", session_id, reply);
+            let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None).await;
+            Ok(reply)
         }
         "tool_calls" => {
             info!("agent_session {} calling execute_tool_calls_loop with {} tool_calls", session_id, llm_response.tool_calls.len());
-            execute_tool_calls_loop(state, user_id, messages, llm_response.tool_calls).await
+            execute_tool_calls_loop(state, user_id, session_id, messages, llm_response.tool_calls).await
         }
         _ => Err(format!("unknown finish_reason: {}", llm_response.finish_reason)),
     }
@@ -124,6 +133,7 @@ const MAX_REPEAT_THRESHOLD: usize = 2;
 async fn execute_tool_calls_loop(
     state: &Arc<AppState>,
     user_id: &str,
+    session_id: &str,
     messages: Vec<Value>,
     initial_tool_calls: Vec<ToolCallRequest>,
 ) -> Result<String, String> {
@@ -205,7 +215,11 @@ async fn execute_tool_calls_loop(
             let llm_response = openai_to_llm_response(response);
 
             match llm_response.finish_reason.as_str() {
-                "stop" => return Ok(llm_response.content.unwrap_or_default()),
+                "stop" => {
+                    let reply = llm_response.content.unwrap_or_default();
+                    let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None).await;
+                    return Ok(reply);
+                }
                 "tool_calls" => {
                     let new_count = llm_response.tool_calls.len();
                     info!("execute_tool_calls_loop: after soft error, LLM requested {} new tool calls", new_count);
@@ -247,7 +261,11 @@ async fn execute_tool_calls_loop(
         let llm_response = openai_to_llm_response(response);
 
         match llm_response.finish_reason.as_str() {
-            "stop" => return Ok(llm_response.content.unwrap_or_default()),
+            "stop" => {
+                let reply = llm_response.content.unwrap_or_default();
+                let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None).await;
+                return Ok(reply);
+            }
             "tool_calls" => {
                 let new_count = llm_response.tool_calls.len();
                 info!("execute_tool_calls_loop: LLM requested {} new tool calls", new_count);

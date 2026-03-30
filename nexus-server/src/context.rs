@@ -17,6 +17,9 @@ const SECTION_SEPARATOR: &str = "\n\n---\n\n";
 /// 长期记忆向量检索的 top_k
 const RAG_TOP_K: usize = 5;
 
+/// 历史消息窗口最大条数
+const MAX_HISTORY_MESSAGES: usize = 500;
+
 /// 构建完整的 System Prompt。
 ///
 /// 各段按以下顺序拼接，段间以 SECTION_SEPARATOR 分隔：
@@ -134,14 +137,16 @@ pub async fn get_all_tools_schema(
 /// 从 db::get_session_history 拉取未经 consolidation 的最新消息窗口，
 /// 截断至 MAX_HISTORY_MESSAGES 条，并修复孤儿 tool_result。
 pub async fn build_message_history(
-    _state: &AppState,
-    _session_id: &str,
+    state: &AppState,
+    session_id: &str,
 ) -> Vec<serde_json::Value> {
-    // TODO: db::get_session_history 实现后接入
-    // let history = db::get_session_history(&state.db, session_id, last_consolidated_cursor).await?;
-    // let messages = truncate_and_fix_orphans(history);
-    // messages
-    Vec::new()
+    match crate::db::get_session_history(&state.db, session_id).await {
+        Ok(messages) => truncate_and_fix_orphans(messages, MAX_HISTORY_MESSAGES),
+        Err(e) => {
+            tracing::warn!("get_session_history failed: {}", e);
+            Vec::new()
+        }
+    }
 }
 
 /// 截断历史消息到 MAX_HISTORY_MESSAGES 条，并修复孤儿 tool_result。
