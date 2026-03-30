@@ -4,6 +4,8 @@ pub struct ServerConfig {
     pub admin_token: String,
     pub server_port: u16,
     pub heartbeat_timeout_sec: u64,
+    pub webui_ws_url: String,
+    pub webui_gateway_token: String,
 }
 
 pub fn load_config() -> ServerConfig {
@@ -27,10 +29,18 @@ pub fn load_config() -> ServerConfig {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(60);
 
+    let webui_ws_url = std::env::var("NEXUS_WEBUI_WS_URL")
+        .unwrap_or_else(|_| "ws://localhost:9090/ws/nexus".to_string());
+
+    let webui_gateway_token = std::env::var("NEXUS_WEBUI_GATEWAY_TOKEN")
+        .unwrap_or_else(|_| "dev-token".to_string());
+
     ServerConfig {
         database_url,
         admin_token,
         server_port,
         heartbeat_timeout_sec,
+        webui_ws_url,
+        webui_gateway_token,
     }
 }
