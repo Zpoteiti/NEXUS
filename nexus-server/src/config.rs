@@ -6,6 +6,8 @@ pub struct ServerConfig {
     pub heartbeat_timeout_sec: u64,
     pub gateway_ws_url: String,
     pub gateway_token: String,
+    pub jwt_secret: String,
+    pub bcrypt_cost: u32,
 }
 
 pub fn load_config() -> ServerConfig {
@@ -39,6 +41,14 @@ pub fn load_config() -> ServerConfig {
         tracing::warn!("NEXUS_GATEWAY_TOKEN is using the insecure default 'dev-token'. Set this env var in production.");
     }
 
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .unwrap_or_else(|_| panic!("环境变量 JWT_SECRET 未设置，Server 无法启动。\n  用途：JWT 签名密钥，建议至少 32 字符"));
+
+    let bcrypt_cost = std::env::var("BCRYPT_COST")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(12);
+
     ServerConfig {
         database_url,
         admin_token,
@@ -46,5 +56,7 @@ pub fn load_config() -> ServerConfig {
         heartbeat_timeout_sec,
         gateway_ws_url,
         gateway_token,
+        jwt_secret,
+        bcrypt_cost,
     }
 }
