@@ -3,6 +3,6 @@ members = [
     "nexus-common",
     "nexus-server",
     "nexus-client",
-    "nexus-webui",
+    "nexus-gateway",
 ]
 resolver = "2"

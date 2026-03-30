@@ -1,4 +1,4 @@
-//! WebUiChannel — WS client that connects to nexus-webui-server's /ws/nexus endpoint,
+//! GatewayChannel — WS client that connects to nexus-gateway's /ws/nexus endpoint,
 //! authenticates, and bridges inbound/outbound messages.
 
 use std::collections::HashMap;
@@ -42,14 +42,14 @@ pub enum GatewayToNexus {
 // ============================================================================
 
 pub fn make_session_id(chat_id: &str) -> String {
-    format!("webui:{}", chat_id)
+    format!("gateway:{}", chat_id)
 }
 
 // ============================================================================
-// WebUiChannel
+// GatewayChannel
 // ============================================================================
 
-pub struct WebUiChannel {
+pub struct GatewayChannel {
     ws_url: String,
     token: String,
     state: Arc<AppState>,
@@ -57,11 +57,11 @@ pub struct WebUiChannel {
     ws_out: Arc<RwLock<Option<mpsc::Sender<String>>>>,
 }
 
-impl WebUiChannel {
+impl GatewayChannel {
     pub fn new(state: Arc<AppState>) -> Self {
-        let ws_url = std::env::var("NEXUS_WEBUI_WS_URL")
+        let ws_url = std::env::var("NEXUS_GATEWAY_WS_URL")
             .unwrap_or_else(|_| "ws://localhost:9090/ws/nexus".to_string());
-        let token = std::env::var("NEXUS_WEBUI_GATEWAY_TOKEN").unwrap_or_default();
+        let token = std::env::var("NEXUS_GATEWAY_TOKEN").unwrap_or_default();
 
         Self {
             ws_url,
@@ -105,7 +105,7 @@ impl WebUiChannel {
 
         // Publish the inbound event to the session's inbox via the bus
         let event = InboundEvent {
-            channel: "webui".to_string(),
+            channel: "gateway".to_string(),
             sender_id,
             chat_id,
             content,
@@ -120,13 +120,13 @@ impl WebUiChannel {
     /// Single WS connection attempt. Returns Ok(()) if the connection closes
     /// gracefully (server closed), or Err if auth failed / IO error.
     async fn run_once(&self) -> Result<(), String> {
-        info!("WebUiChannel: connecting to {}", self.ws_url);
+        info!("GatewayChannel: connecting to {}", self.ws_url);
 
         let (ws_stream, _) = connect_async(&self.ws_url)
             .await
             .map_err(|e| format!("connect failed: {}", e))?;
 
-        info!("WebUiChannel: connected, sending auth");
+        info!("GatewayChannel: connected, sending auth");
 
         let (mut ws_sink, mut ws_source) = ws_stream.split();
 
@@ -151,7 +151,7 @@ impl WebUiChannel {
             Message::Text(text) => {
                 match serde_json::from_str::<GatewayToNexus>(&text) {
                     Ok(GatewayToNexus::AuthOk) => {
-                        info!("WebUiChannel: auth_ok");
+                        info!("GatewayChannel: auth_ok");
                     }
                     Ok(GatewayToNexus::AuthFail { reason }) => {
                         return Err(format!("auth_fail: {}", reason));
@@ -175,7 +175,7 @@ impl WebUiChannel {
         tokio::spawn(async move {
             while let Some(text) = out_rx.recv().await {
                 if let Err(e) = ws_sink.send(Message::Text(text.into())).await {
-                    warn!("WebUiChannel write task: send error: {}", e);
+                    warn!("GatewayChannel write task: send error: {}", e);
                     break;
                 }
             }
@@ -194,15 +194,15 @@ impl WebUiChannel {
                             self.handle_inbound(chat_id, sender_id, content).await;
                         }
                         Ok(GatewayToNexus::AuthOk | GatewayToNexus::AuthFail { .. }) => {
-                            warn!("WebUiChannel: unexpected auth message in read loop");
+                            warn!("GatewayChannel: unexpected auth message in read loop");
                         }
                         Err(e) => {
-                            warn!("WebUiChannel: failed to parse message: {}", e);
+                            warn!("GatewayChannel: failed to parse message: {}", e);
                         }
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    info!("WebUiChannel: server closed WS connection");
+                    info!("GatewayChannel: server closed WS connection");
                     break;
                 }
                 Ok(_) => {} // ignore ping/pong/binary
@@ -219,9 +219,9 @@ impl WebUiChannel {
 }
 
 #[async_trait::async_trait]
-impl Channel for WebUiChannel {
+impl Channel for GatewayChannel {
     fn name(&self) -> &str {
-        "webui"
+        "gateway"
     }
 
     async fn start(&self) {
@@ -232,10 +232,10 @@ impl Channel for WebUiChannel {
             match self.run_once().await {
                 Ok(()) => {
                     backoff = Duration::from_secs(1);
-                    info!("WebUiChannel: disconnected gracefully, reconnecting...");
+                    info!("GatewayChannel: disconnected gracefully, reconnecting...");
                 }
                 Err(e) => {
-                    error!("WebUiChannel: error: {}. Reconnecting in {:?}", e, backoff);
+                    error!("GatewayChannel: error: {}. Reconnecting in {:?}", e, backoff);
                 }
             }
 
@@ -261,7 +261,7 @@ impl Channel for WebUiChannel {
                     .await
                     .map_err(|e| format!("channel send error: {}", e))
             }
-            None => Err("WebUiChannel not connected".to_string()),
+            None => Err("GatewayChannel not connected".to_string()),
         }
     }
 }
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn session_id_from_chat_id() {
-        assert_eq!(make_session_id("abc-123"), "webui:abc-123");
+        assert_eq!(make_session_id("abc-123"), "gateway:abc-123");
     }
 
     #[test]

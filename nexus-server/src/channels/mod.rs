@@ -8,17 +8,17 @@ use tracing::{info, warn};
 
 use crate::bus::MessageBus;
 
-pub mod webui;
+pub mod gateway;
 pub mod discord;
 
 // ============================================================================
-// Channel Trait - 各平台渠道（webui/telegram/discord）需实现此 trait
+// Channel Trait - 各平台渠道（gateway/telegram/discord）需实现此 trait
 // ============================================================================
 
 /// Active channel trait — each implementation is a self-managing WS client.
 #[async_trait::async_trait]
 pub trait Channel: Send + Sync {
-    /// Channel name, e.g. "webui", "discord".
+    /// Channel name, e.g. "gateway", "discord".
     fn name(&self) -> &str;
     /// Long-running task: connect to external gateway, receive inbound events, publish to bus.
     /// Must implement auto-reconnect with exponential backoff internally.

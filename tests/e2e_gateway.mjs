@@ -1,11 +1,11 @@
-// E2E test for nexus-webui-server bridge
-// Tests that messages flow: browser → webui-server → nexus
-//              and:         nexus → webui-server → browser
-// Run with: NEXUS_GATEWAY_TOKEN=dev-token node tests/e2e_webui_gateway.mjs
+// E2E test for nexus-gateway bridge
+// Tests that messages flow: browser → nexus-gateway → nexus-server
+//              and:         nexus-server → nexus-gateway → browser
+// Run with: NEXUS_GATEWAY_TOKEN=dev-token node tests/e2e_gateway.mjs
 
 import { WebSocket } from 'ws';
 
-const WEBUI_URL = process.env.WEBUI_URL || 'ws://localhost:9090';
+const GATEWAY_URL = process.env.GATEWAY_URL || 'ws://localhost:9090';
 const GATEWAY_TOKEN = process.env.NEXUS_GATEWAY_TOKEN || 'dev-token';
 
 function wsConnect(url, timeoutMs = 3000) {
@@ -39,27 +39,27 @@ function assert(condition, msg) {
 }
 
 async function runTests() {
-  console.log('=== nexus-webui-server E2E Test ===\n');
+  console.log('=== nexus-gateway E2E Test ===\n');
 
   // --- Test 1: nexus auth flow ---
   console.log('Test 1: nexus auth handshake');
 
-  const nexusWs = await wsConnect(`${WEBUI_URL}/ws/nexus`);
+  const nexusWs = await wsConnect(`${GATEWAY_URL}/ws/nexus`);
   nexusWs.send(JSON.stringify({ type: 'auth', token: GATEWAY_TOKEN }));
   const authResp = await waitMessage(nexusWs);
   assert(authResp.type === 'auth_ok', `auth response is auth_ok (got: ${authResp.type})`);
 
   // --- Test 2: bad auth is rejected ---
   console.log('\nTest 2: bad token is rejected');
-  const badWs = await wsConnect(`${WEBUI_URL}/ws/nexus`);
+  const badWs = await wsConnect(`${GATEWAY_URL}/ws/nexus`);
   badWs.send(JSON.stringify({ type: 'auth', token: 'wrong-token' }));
   const badResp = await waitMessage(badWs);
   assert(badResp.type === 'auth_fail', `bad token returns auth_fail (got: ${badResp.type})`);
   badWs.terminate();
 
   // --- Test 3: browser message forwarded to nexus ---
-  console.log('\nTest 3: browser → webui-server → nexus');
-  const browserWs = await wsConnect(`${WEBUI_URL}/ws/browser`);
+  console.log('\nTest 3: browser → nexus-gateway → nexus-server');
+  const browserWs = await wsConnect(`${GATEWAY_URL}/ws/browser`);
   browserWs.send(JSON.stringify({ type: 'message', content: 'hello from browser' }));
 
   const inbound = await waitMessage(nexusWs);
@@ -70,7 +70,7 @@ async function runTests() {
   const chatId = inbound.chat_id;
 
   // --- Test 4: nexus response routed back to browser ---
-  console.log('\nTest 4: nexus → webui-server → browser');
+  console.log('\nTest 4: nexus-server → nexus-gateway → browser');
   nexusWs.send(JSON.stringify({ type: 'send', chat_id: chatId, content: 'reply from nexus' }));
 
   const outbound = await waitMessage(browserWs);
@@ -84,7 +84,7 @@ async function runTests() {
   await new Promise(r => setTimeout(r, 200));
 
   // Verify nexus WS is still alive by sending a known message
-  const browserWs2 = await wsConnect(`${WEBUI_URL}/ws/browser`);
+  const browserWs2 = await wsConnect(`${GATEWAY_URL}/ws/browser`);
   browserWs2.send(JSON.stringify({ type: 'message', content: 'still alive?' }));
   const probe = await waitMessage(nexusWs);
   assert(probe.type === 'message', `server still alive after unknown chat_id (got: ${probe.type})`);

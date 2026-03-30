@@ -198,7 +198,7 @@ pub struct NexusErrorPayload {
 |------|------|
 | `nexus-server` | 依赖 common，用 `ServerToClient` 下发指令，收 `ClientToServer` 事件 |
 | `nexus-client` | 依赖 common，收 `ServerToClient` 指令，发 `ClientToServer` 事件 |
-| `nexus-webui` | 不直接依赖 common（前端用 TypeScript，协议结构需手动对齐） |
+| `nexus-gateway` | 不直接依赖 common（gateway 与 server 之间协议独立定义） |
 
 ---
 

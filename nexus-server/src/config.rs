@@ -4,8 +4,8 @@ pub struct ServerConfig {
     pub admin_token: String,
     pub server_port: u16,
     pub heartbeat_timeout_sec: u64,
-    pub webui_ws_url: String,
-    pub webui_gateway_token: String,
+    pub gateway_ws_url: String,
+    pub gateway_token: String,
 }
 
 pub fn load_config() -> ServerConfig {
@@ -29,14 +29,14 @@ pub fn load_config() -> ServerConfig {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(60);
 
-    let webui_ws_url = std::env::var("NEXUS_WEBUI_WS_URL")
+    let gateway_ws_url = std::env::var("NEXUS_GATEWAY_WS_URL")
         .unwrap_or_else(|_| "ws://localhost:9090/ws/nexus".to_string());
 
-    let webui_gateway_token = std::env::var("NEXUS_WEBUI_GATEWAY_TOKEN")
+    let gateway_token = std::env::var("NEXUS_GATEWAY_TOKEN")
         .unwrap_or_else(|_| "dev-token".to_string());
 
-    if webui_gateway_token == "dev-token" {
-        tracing::warn!("NEXUS_WEBUI_GATEWAY_TOKEN is using the insecure default 'dev-token'. Set this env var in production.");
+    if gateway_token == "dev-token" {
+        tracing::warn!("NEXUS_GATEWAY_TOKEN is using the insecure default 'dev-token'. Set this env var in production.");
     }
 
     ServerConfig {
@@ -44,7 +44,7 @@ pub fn load_config() -> ServerConfig {
         admin_token,
         server_port,
         heartbeat_timeout_sec,
-        webui_ws_url,
-        webui_gateway_token,
+        gateway_ws_url,
+        gateway_token,
     }
 }

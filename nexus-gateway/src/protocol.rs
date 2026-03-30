@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-/// 浏览器 → webui-server
+/// 浏览器 → nexus-gateway
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrowserInbound {
     Message { content: String },
 }
 
-/// webui-server → 浏览器
+/// nexus-gateway → 浏览器
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrowserOutbound {
@@ -16,7 +16,7 @@ pub enum BrowserOutbound {
     Error { reason: String },
 }
 
-/// nexus-server → webui-server（通过 /ws/nexus）
+/// nexus-server → nexus-gateway（通过 /ws/nexus）
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NexusInbound {
@@ -24,7 +24,7 @@ pub enum NexusInbound {
     Send { chat_id: String, content: String },
 }
 
-/// webui-server → nexus-server（通过 /ws/nexus）
+/// nexus-gateway → nexus-server（通过 /ws/nexus）
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NexusOutbound {

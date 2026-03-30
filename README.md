@@ -8,19 +8,22 @@ NEXUS is a distributed AI agent system that separates orchestration from executi
 ## Architecture
 
 ```
-User ↔ WebUI ↔ nexus-server ↔ nexus-client(s)
+User ↔ Browser ↔ nexus-gateway ↔ nexus-server ↔ nexus-client(s)
+                                       ↑
+                   Discord/Telegram Channel（直连）
 ```
 
 - **nexus-server** — the orchestration hub. Runs the ReAct agent loop, calls the LLM, routes tool requests to the right device, and manages sessions, memory, and authentication.
 - **nexus-client** — the execution node. Connects to the server via WebSocket, registers its local tool capabilities, and executes tool calls on behalf of the agent.
 - **nexus-common** — the frozen shared protocol layer. Defines the WebSocket message types and constants used by both server and client.
-- **nexus-webui** — the browser frontend. Communicates with the server via REST and WebSocket only; has no direct connection to clients.
+- **nexus-gateway** — the browser WebSocket gateway. Accepts browser connections on `/ws/browser` and nexus-server connections on `/ws/nexus`, bridging messages between them.
 
 ### Communication topology
 
 | Link | Transport |
 |------|-----------|
-| WebUI ↔ Server | HTTP REST (`/api/*`) + WebSocket (`/ws/chat`) |
+| Browser ↔ Gateway | WebSocket (`/ws/browser`) |
+| Gateway ↔ Server | WebSocket (`/ws/nexus`, server connects as client) |
 | Client ↔ Server | WebSocket (`/ws`) |
 
 ### Tool types
@@ -77,8 +80,15 @@ Protocol and constants shared between server and client. Defines `ServerToClient
 | `NEXUS_MCP_SERVERS_JSON` | JSON array or object of MCP server configs |
 | `NEXUS_SKILLS_DIR` | Path to the skills directory (default: `~/.nexus/skills`) |
 
-### `nexus-webui`
-Browser frontend built with Vue 3. Provides authentication, chat, and tool-call visibility. Communicates with the server only — no direct client connection.
+### `nexus-gateway`
+Standalone Rust WebSocket gateway. Accepts browser connections on `/ws/browser` (assigns `chat_id`) and nexus-server connections on `/ws/nexus` (gateway token auth), bridging messages bidirectionally. Deployed independently from the server.
+
+**Key environment variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `GATEWAY_PORT` | Listening port (default: `9090`) |
+| `NEXUS_GATEWAY_TOKEN` | Shared secret for nexus-server authentication |
 
 ---
 

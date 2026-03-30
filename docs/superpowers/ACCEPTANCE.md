@@ -46,7 +46,7 @@
 1. 启动 gateway：
 
    ```bash
-   cargo run --package nexus-webui
+   cargo run --package nexus-gateway
    ```
 
    浏览器访问 `http://localhost:9090`，可见聊天页面。

@@ -29,7 +29,7 @@ use tracing::info;
 
 use bus::MessageBus;
 use channels::ChannelManager;
-use channels::webui::WebUiChannel;
+use channels::gateway::GatewayChannel;
 use session::SessionManager;
 
 #[tokio::main]
@@ -56,9 +56,9 @@ async fn main() {
     let mut state = state::AppState::new(pool, config.clone(), bus.clone(), session_manager);
     let state_arc = Arc::new(state.clone());
 
-    // 创建 ChannelManager，注册 WebUiChannel，然后启动
+    // 创建 ChannelManager，注册 GatewayChannel，然后启动
     let mut channel_manager = ChannelManager::new(bus);
-    channel_manager.register(WebUiChannel::new(state_arc));
+    channel_manager.register(GatewayChannel::new(state_arc));
     let channel_manager_handle = channel_manager.start();
 
     *state.channel_manager_handle.write().await = Some(channel_manager_handle);

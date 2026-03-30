@@ -1064,6 +1064,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-gateway"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "dashmap",
+ "dotenvy",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "nexus-server"
 version = "0.1.0"
 dependencies = [
@@ -1078,22 +1095,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "nexus-webui"
-version = "0.1.0"
-dependencies = [
- "axum",
- "dashmap",
- "dotenvy",
- "futures-util",
- "serde",
- "serde_json",
- "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "uuid",

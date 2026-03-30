@@ -14,7 +14,7 @@ async fn main() {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let port: u16 = std::env::var("WEBUI_PORT")
+    let port: u16 = std::env::var("GATEWAY_PORT")
         .unwrap_or_else(|_| "9090".to_string())
         .parse()
         .unwrap_or(9090);
@@ -27,7 +27,7 @@ async fn main() {
     let app = Router::new()
         .route("/ws/browser", get(browser::browser_ws_handler))
         .route("/ws/nexus", get(gateway::nexus_ws_handler))
-        .fallback(|| async { (StatusCode::NOT_FOUND, "nexus-webui-server") })
+        .fallback(|| async { (StatusCode::NOT_FOUND, "nexus-gateway") })
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -35,7 +35,7 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("Failed to bind 0.0.0.0:{}: {}", port, e));
 
-    info!("nexus-webui-server listening on 0.0.0.0:{}", port);
+    info!("nexus-gateway listening on 0.0.0.0:{}", port);
     axum::serve(listener, app)
         .await
         .unwrap_or_else(|e| panic!("server error: {}", e));
