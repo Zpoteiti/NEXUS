@@ -120,17 +120,53 @@ fn extract_first_device_name(tools: &[Value]) -> Option<String> {
     None
 }
 
-/// 从 tools schema 中提取第一个工具的名称。
-/// arguments 简化为 {} — Mock 不实际执行命令，arguments 内容不重要。
+/// 从 tools schema 中提取工具名称和基于 schema 生成的参数。
+/// 优先选 "shell" 工具，否则取第一个。
+/// 会解析 required 字段，为必填 string 参数填入合理默认值。
 fn extract_first_tool_name(tools: &[Value]) -> Option<(String, Value)> {
-    for tool in tools {
-        if let Some(Value::Object(func)) = tool.get("function") {
-            if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
-                return Some((name.to_string(), json!({})));
+    // 优先找 shell 工具，找不到则用第一个
+    let tool = tools.iter()
+        .find(|t| {
+            t.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str()) == Some("shell")
+        })
+        .or_else(|| tools.first())?;
+
+    let func = tool.get("function")?.as_object()?;
+    let name = func.get("name").and_then(|v| v.as_str())?;
+    let mut args = serde_json::Map::new();
+
+    // 从 schema 中提取 required 参数并填入默认值
+    if let Some(Value::Object(params)) = func.get("parameters") {
+        let props = params.get("properties").and_then(|p| p.as_object());
+        let required = params.get("required").and_then(|r| r.as_array());
+
+        if let (Some(props), Some(required)) = (props, required) {
+            for req in required {
+                let key = match req.as_str() {
+                    Some(k) if k != "device_name" => k,
+                    _ => continue,
+                };
+                if let Some(prop) = props.get(key).and_then(|p| p.as_object()) {
+                    let typ = prop.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    let val = match typ {
+                        "string" => match key {
+                            "command" => json!("echo hello from nexus"),
+                            "path" | "file_path" => json!("."),
+                            _ => json!("mock_value"),
+                        },
+                        "integer" | "number" => json!(1),
+                        "boolean" => json!(true),
+                        _ => continue,
+                    };
+                    args.insert(key.to_string(), val);
+                }
             }
         }
     }
-    None
+
+    Some((name.to_string(), Value::Object(args)))
 }
 
 /// 生成 call id
