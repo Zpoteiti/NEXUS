@@ -8,6 +8,7 @@ use crate::providers::{ChatCompletionRequest, LlmResponse, ToolCallRequest};
 use crate::state::AppState;
 use crate::tools_registry::{route_tool, RouteError};
 use serde_json::{json, Value};
+use sqlx::Executor;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -31,7 +32,24 @@ pub async fn run_session(
 ) {
     info!("agent_session started: session_id={}", session_id);
 
+    // Ensure session exists in DB (for message foreign key)
+    // Uses sender_id from the first event; silently ignores errors.
+    let mut db_session_created = false;
+
     while let Some(event) = inbox.recv().await {
+        if !db_session_created {
+            // Create DB session record on first message (need user_id from event)
+            if let Err(e) = sqlx::query(
+                "INSERT INTO sessions (session_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
+            )
+            .bind(&session_id)
+            .bind(&event.sender_id)
+            .execute(&state.db)
+            .await {
+                warn!("failed to create DB session {}: {}", session_id, e);
+            }
+            db_session_created = true;
+        }
         info!("agent_session {} received: content={}", session_id, event.content);
 
         // 持有 session 锁（防止不同 channel 同时写数据库）
