@@ -22,7 +22,10 @@ async fn main() {
     let gateway_token = std::env::var("NEXUS_GATEWAY_TOKEN")
         .expect("NEXUS_GATEWAY_TOKEN env var required");
 
-    let state = AppState::new(gateway_token);
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .expect("JWT_SECRET env var required");
+
+    let state = AppState::new(gateway_token, jwt_secret);
 
     let app = Router::new()
         .route("/ws/browser", get(browser::browser_ws_handler))

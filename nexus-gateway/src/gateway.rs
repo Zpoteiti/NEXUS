@@ -147,7 +147,7 @@ mod tests {
 
     #[tokio::test]
     async fn route_send_to_browser() {
-        let state = AppState::new("token".to_string());
+        let state = AppState::new("token".to_string(), "test-secret".to_string());
         let (browser_tx, mut browser_rx) = mpsc::channel::<String>(8);
         state.browser_conns.insert("chat-abc".to_string(), browser_tx);
 
@@ -161,7 +161,7 @@ mod tests {
 
     #[tokio::test]
     async fn route_send_to_unknown_chat_id_is_noop() {
-        let state = AppState::new("token".to_string());
+        let state = AppState::new("token".to_string(), "test-secret".to_string());
         // chat_id not registered — should not panic
         route_nexus_send(&state, "unknown-chat", "hello").await;
     }

@@ -11,14 +11,17 @@ pub struct AppState {
     pub nexus_tx: Arc<RwLock<Option<mpsc::Sender<String>>>>,
     /// 预期的 nexus-server 认证 token
     pub gateway_token: String,
+    /// JWT secret for validating browser connections
+    pub jwt_secret: String,
 }
 
 impl AppState {
-    pub fn new(gateway_token: String) -> SharedState {
+    pub fn new(gateway_token: String, jwt_secret: String) -> SharedState {
         Arc::new(Self {
             browser_conns: Arc::new(DashMap::new()),
             nexus_tx: Arc::new(RwLock::new(None)),
             gateway_token,
+            jwt_secret,
         })
     }
 }
