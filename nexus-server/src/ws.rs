@@ -129,8 +129,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         }
     };
 
-    let _ = db::update_device_name(&state.db, &token, &device_name).await;
-
+    // device_name is set at token creation time via WebUI, not overwritten by client
     let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(256);
     {
         let mut devices = state.devices.write().await;
