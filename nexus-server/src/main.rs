@@ -65,10 +65,17 @@ async fn main() {
 
     *state.channel_manager_handle.write().await = Some(channel_manager_handle);
 
+    // Protected routes (require JWT)
+    let protected = Router::new()
+        .route("/api/device-tokens", axum::routing::post(auth::create_device_token))
+        .route("/api/discord-config", axum::routing::post(auth::upsert_discord_config))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth::jwt_middleware));
+
     let app = Router::new()
         .route("/ws", get(ws::ws_handler))
         .route("/api/auth/register", axum::routing::post(auth::register))
         .route("/api/auth/login", axum::routing::post(auth::login))
+        .merge(protected)
         .fallback(|| async { (StatusCode::NOT_IMPLEMENTED, "Not Implemented") })
         .with_state(state);
 

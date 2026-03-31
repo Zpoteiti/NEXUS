@@ -164,6 +164,98 @@ pub async fn login(
     }
 }
 
+// ============================================================================
+// Protected API handlers (require JWT)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct CreateDeviceTokenRequest {
+    pub device_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeviceTokenResponse {
+    pub token: String,
+    pub device_name: String,
+}
+
+pub async fn create_device_token(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Json(payload): Json<CreateDeviceTokenRequest>,
+) -> Response {
+    let user_id = &claims.sub;
+
+    // Generate token: nexus_dev_ + 32 random hex chars
+    let random_part: String = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let token = format!(
+        "{}{}",
+        nexus_common::consts::DEVICE_TOKEN_PREFIX,
+        random_part
+    );
+
+    match sqlx::query(
+        "INSERT INTO device_tokens (token, user_id, device_name) VALUES ($1, $2, $3)",
+    )
+    .bind(&token)
+    .bind(user_id)
+    .bind(&payload.device_name)
+    .execute(&state.db)
+    .await
+    {
+        Ok(_) => Json(DeviceTokenResponse {
+            token,
+            device_name: payload.device_name,
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::error!("create device token error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create device token").into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpsertDiscordConfigRequest {
+    pub bot_token: String,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiscordConfigResponse {
+    pub user_id: String,
+    pub enabled: bool,
+    pub allowed_users: Vec<String>,
+}
+
+pub async fn upsert_discord_config(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Json(payload): Json<UpsertDiscordConfigRequest>,
+) -> Response {
+    let user_id = &claims.sub;
+
+    match db::upsert_discord_config(&state.db, user_id, &payload.bot_token, &payload.allowed_users)
+        .await
+    {
+        Ok(_) => Json(DiscordConfigResponse {
+            user_id: user_id.clone(),
+            enabled: true,
+            allowed_users: payload.allowed_users,
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::error!("upsert discord config error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save discord config").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// JWT Middleware
+// ============================================================================
+
 pub async fn jwt_middleware(
     State(state): State<AppState>,
     mut req: Request,
