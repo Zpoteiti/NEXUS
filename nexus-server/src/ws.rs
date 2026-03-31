@@ -205,7 +205,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
 async fn cleanup_device(state: &AppState, device_key: &str, user_id: &str) {
     {
         let mut devices = state.devices.write().await;
-        if let Some(device_state) = devices.remove(device_key) {
+        if devices.remove(device_key).is_some() {
             let mut devices_by_user = state.devices_by_user.write().await;
             if let Some(user_devices) = devices_by_user.get_mut(user_id) {
                 user_devices.retain(|_, v| v != device_key);

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use dashmap::DashMap;
 use chrono::{DateTime, Utc};
+use tracing::warn;
 
 /// 用户消息事件（来自任意 Channel）
 #[derive(Debug, Clone)]
@@ -70,8 +71,13 @@ impl MessageBus {
     pub async fn publish_inbound(&self, event: InboundEvent) {
         let session_id = event.session_id.clone();
         if let Some(tx) = self.inbound_routes.get(&session_id) {
-            // 路由到对应 session 的 inbox；如果 sender 已 drop（session 结束），忽略
-            let _: Result<(), tokio::sync::mpsc::error::SendError<InboundEvent>> = tx.send(event).await;
+            if tx.send(event).await.is_err() {
+                warn!("bus: session {} inbox closed, removing from routes", session_id);
+                drop(tx);
+                self.inbound_routes.remove(&session_id);
+            }
+        } else {
+            warn!("bus: no route for session_id={}, message dropped", session_id);
         }
     }
 

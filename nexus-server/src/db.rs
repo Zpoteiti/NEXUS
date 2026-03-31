@@ -8,6 +8,7 @@
 /// - 这个文件替代了 `nanobot/agent/session.py`（会话管理）和 `nanobot/agent/memory.py`（长期记忆）。
 /// - nanobot 基于本地文件（JSONL session 文件、MEMORY.md、HISTORY.md），Nexus 改为 PostgreSQL。
 
+use serde::Serialize;
 use sqlx::PgPool;
 use sqlx::Row;
 use uuid::Uuid;
@@ -112,6 +113,23 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+pub async fn create_device_token(
+    db: &PgPool,
+    token: &str,
+    user_id: &str,
+    device_name: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO device_tokens (token, user_id, device_name) VALUES ($1, $2, $3)",
+    )
+    .bind(token)
+    .bind(user_id)
+    .bind(device_name)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// Returns (user_id, device_name) if token is valid and not revoked.
 pub async fn verify_device_token(
     pool: &PgPool,
@@ -129,26 +147,6 @@ pub async fn verify_device_token(
     .fetch_optional(pool)
     .await?;
     Ok(row)
-}
-
-pub async fn update_device_name(
-    pool: &PgPool,
-    token: &str,
-    device_name: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        UPDATE device_tokens
-        SET device_name = $1
-        WHERE token = $2
-        "#,
-    )
-    .bind(device_name)
-    .bind(token)
-    .execute(pool)
-    .await?;
-
-    Ok(())
 }
 
 pub async fn create_user(
@@ -189,22 +187,19 @@ pub async fn get_user_by_email(
     .await
 }
 
-pub async fn create_session(
+pub async fn ensure_session(
     db: &PgPool,
+    session_id: &str,
     user_id: &str,
-) -> Result<String, sqlx::Error> {
-    let session_id = Uuid::new_v4().to_string();
+) -> Result<(), sqlx::Error> {
     sqlx::query(
-        r#"
-        INSERT INTO sessions (session_id, user_id)
-        VALUES ($1, $2)
-        "#,
+        "INSERT INTO sessions (session_id, user_id) VALUES ($1, $2) ON CONFLICT (session_id) DO NOTHING",
     )
-    .bind(&session_id)
+    .bind(session_id)
     .bind(user_id)
     .execute(db)
     .await?;
-    Ok(session_id)
+    Ok(())
 }
 
 pub async fn save_message(
@@ -340,4 +335,91 @@ pub async fn upsert_discord_config(
     .execute(db)
     .await?;
     Ok(())
+}
+
+// ============================================================================
+// Admin API queries
+// ============================================================================
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct DeviceTokenInfo {
+    pub token: String,
+    pub device_name: Option<String>,
+    pub revoked: bool,
+    pub created_at: Option<chrono::NaiveDateTime>,
+}
+
+pub async fn list_device_tokens(
+    db: &PgPool,
+    user_id: &str,
+) -> Result<Vec<DeviceTokenInfo>, sqlx::Error> {
+    sqlx::query_as::<_, DeviceTokenInfo>(
+        "SELECT token, device_name, revoked, created_at FROM device_tokens WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn revoke_device_token(
+    db: &PgPool,
+    token: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE device_tokens SET revoked = TRUE WHERE token = $1 AND user_id = $2 AND revoked = FALSE",
+    )
+    .bind(token)
+    .bind(user_id)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn delete_discord_config(
+    db: &PgPool,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM discord_configs WHERE user_id = $1")
+        .bind(user_id)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub async fn list_sessions_by_user(
+    db: &PgPool,
+    user_id: &str,
+) -> Result<Vec<SessionInfo>, sqlx::Error> {
+    sqlx::query_as::<_, SessionInfo>(
+        "SELECT session_id, created_at FROM sessions WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn delete_session(
+    db: &PgPool,
+    session_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query("DELETE FROM messages WHERE session_id = $1")
+        .bind(session_id)
+        .execute(db)
+        .await?;
+    let result = sqlx::query(
+        "DELETE FROM sessions WHERE session_id = $1 AND user_id = $2",
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }

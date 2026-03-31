@@ -11,7 +11,6 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
-use crate::agent_loop;
 use crate::bus::InboundEvent;
 use crate::channels::Channel;
 use crate::state::AppState;
@@ -59,20 +58,15 @@ pub struct GatewayChannel {
 
 impl GatewayChannel {
     pub fn new(state: Arc<AppState>) -> Self {
-        let ws_url = std::env::var("NEXUS_GATEWAY_WS_URL")
-            .unwrap_or_else(|_| "ws://localhost:9090/ws/nexus".to_string());
-        let token = std::env::var("NEXUS_GATEWAY_TOKEN").unwrap_or_default();
-
         Self {
-            ws_url,
-            token,
+            ws_url: state.config.gateway_ws_url.clone(),
+            token: state.config.gateway_token.clone(),
             state,
             ws_out: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// Handle one inbound message from the gateway:
-    /// create a session if new, route the event into it.
+    /// Handle one inbound message from the gateway.
     async fn handle_inbound(
         &self,
         chat_id: String,
@@ -80,30 +74,6 @@ impl GatewayChannel {
         content: String,
     ) {
         let session_id = make_session_id(&chat_id);
-
-        let (is_new, channels) = self
-            .state
-            .session_manager
-            .get_or_create_session(&session_id)
-            .await;
-
-        if is_new {
-            if let Some((inbox_tx, inbox_rx)) = channels {
-                // Register the inbox sender in the bus routing table
-                self.state
-                    .bus
-                    .register_session(session_id.clone(), inbox_tx.clone());
-
-                // Spawn per-session agent loop
-                let state_clone = self.state.clone();
-                let sid = session_id.clone();
-                tokio::spawn(async move {
-                    agent_loop::run_session(sid, inbox_rx, state_clone).await;
-                });
-            }
-        }
-
-        // Publish the inbound event to the session's inbox via the bus
         let event = InboundEvent {
             channel: "gateway".to_string(),
             sender_id,
@@ -114,7 +84,7 @@ impl GatewayChannel {
             media: Vec::new(),
             metadata: HashMap::new(),
         };
-        self.state.bus.publish_inbound(event).await;
+        crate::session::ensure_session_and_publish(&self.state, event).await;
     }
 
     /// Single WS connection attempt. Returns Ok(()) if the connection closes

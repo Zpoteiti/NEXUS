@@ -6,16 +6,11 @@
 /// - nanobot 从本地 SOUL.md / USER.md 文件读取 soul 与 user_preferences，
 ///   Nexus 改为从 db.rs 的 users/preferences 表动态读取，其余结构一致。
 
-use std::collections::HashMap;
-use sqlx::PgPool;
 use crate::state::AppState;
 use crate::tools_registry::build_tools_schema;
 
 /// 系统提示词各段之间的分隔符（与 nanobot 保持一致）
 const SECTION_SEPARATOR: &str = "\n\n---\n\n";
-
-/// 长期记忆向量检索的 top_k
-const RAG_TOP_K: usize = 5;
 
 /// 历史消息窗口最大条数
 const MAX_HISTORY_MESSAGES: usize = 500;
@@ -32,8 +27,8 @@ const MAX_HISTORY_MESSAGES: usize = 500;
 pub async fn build_system_prompt(
     state: &AppState,
     user_id: &str,
-    session_id: &str,
-    user_input: &str,
+    _session_id: &str,
+    _user_input: &str,
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
 
@@ -44,27 +39,13 @@ pub async fn build_system_prompt(
         now
     ));
 
-    // 段 2 — soul 与 user_preferences（db 实现后接入）
-    // let soul = db::get_user_soul(&state.db, user_id).await.ok().flatten();
-    // let prefs = db::get_user_preferences(&state.db, user_id).await.ok().flatten();
-    // if let Some(soul_text) = soul { sections.push(soul_text); }
+    // 段 2 — soul 与 user_preferences（后续实现）
 
     // 段 3 — 在线设备与可用工具（必须段）
     let device_section = build_device_section(state, user_id).await;
     sections.push(device_section);
 
-    // 段 4 — RAG 注入（db 实现后接入）
-    // let query_emb = embed_text(user_input, &provider_api_key, &provider_api_base).await;
-    // if !query_emb.is_empty() {
-    //     let chunks = db::vector_search_memory(&state.db, user_id, query_emb, RAG_TOP_K).await.unwrap_or_default();
-    //     if !chunks.is_empty() {
-    //         let rag_text = chunks.iter()
-    //             .map(|c| c.text.as_str())
-    //             .collect::<Vec<_>>()
-    //             .join("\n\n");
-    //         sections.push(format!("【Relevant Memory】\n{}", rag_text));
-    //     }
-    // }
+    // 段 4 — RAG 注入（后续实现）
 
     sections.join(SECTION_SEPARATOR)
 }
@@ -87,7 +68,7 @@ async fn build_device_section(state: &AppState, user_id: &str) -> String {
         "You can execute tools on the following devices:".to_string(),
     ];
 
-    for (device_id, device_state) in devices.iter() {
+    for device_state in devices.values() {
         if device_state.user_id != user_id {
             continue;
         }
@@ -119,7 +100,7 @@ pub async fn get_all_tools_schema(
     let devices = state.devices.read().await;
     let mut all_schemas: Vec<serde_json::Value> = Vec::new();
 
-    for (device_id, device_state) in devices.iter() {
+    for device_state in devices.values() {
         if device_state.user_id != user_id {
             continue;
         }
@@ -179,14 +160,3 @@ fn find_legal_start(messages: &[serde_json::Value]) -> usize {
     0
 }
 
-/// 调用 LLM Embedding API 生成查询向量。
-///
-/// 若调用失败，返回空 Vec（跳过 RAG 注入，不中断上下文构建）。
-pub async fn embed_text(
-    _text: &str,
-    _api_key: &str,
-    _api_base: &str,
-) -> Vec<f32> {
-    // TODO: 实现 embedding API 调用
-    Vec::new()
-}

@@ -5,14 +5,12 @@
 /// 4. 绝对不要在这里写具体的 WebSocket 收发逻辑或 LLM 提示词逻辑。
 
 mod agent_loop;
-// mod api;
 mod auth;
 mod bus;
 mod channels;
 mod config;
 mod context;
 mod db;
-// mod memory;
 mod providers;
 mod session;
 mod state;
@@ -53,23 +51,34 @@ async fn main() {
     // 创建 SessionManager
     let session_manager = Arc::new(SessionManager::new());
 
-    // 创建 AppState with all arguments
-    let mut state = state::AppState::new(pool, config.clone(), bus.clone(), session_manager);
-    let state_arc = Arc::new(state.clone());
+    // 创建 AppState
+    let state = state::AppState::new(pool, config.clone(), bus.clone(), session_manager);
+    let state_arc = Arc::new(state);
 
-    // 创建 ChannelManager，注册 GatewayChannel，然后启动
+    // 创建 ChannelManager，注册 Channel，然后启动
     let mut channel_manager = ChannelManager::new(bus);
     channel_manager.register(GatewayChannel::new(state_arc.clone()));
-    channel_manager.register(DiscordChannel::new(state_arc));
+    channel_manager.register(DiscordChannel::new(state_arc.clone()));
     let channel_manager_handle = channel_manager.start();
 
-    *state.channel_manager_handle.write().await = Some(channel_manager_handle);
+    *state_arc.channel_manager_handle.write().await = Some(channel_manager_handle);
+
+    // AppState is Clone (all fields are Arc), deref + clone for axum state
+    let app_state = (*state_arc).clone();
 
     // Protected routes (require JWT)
     let protected = Router::new()
-        .route("/api/device-tokens", axum::routing::post(auth::create_device_token))
-        .route("/api/discord-config", axum::routing::post(auth::upsert_discord_config))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth::jwt_middleware));
+        // Device tokens
+        .route("/api/device-tokens", axum::routing::post(auth::create_device_token).get(auth::list_device_tokens))
+        .route("/api/device-tokens/{token}", axum::routing::delete(auth::revoke_device_token))
+        // Discord config
+        .route("/api/discord-config", axum::routing::post(auth::upsert_discord_config).get(auth::get_discord_config).delete(auth::delete_discord_config))
+        // Sessions
+        .route("/api/sessions", axum::routing::get(auth::list_sessions))
+        .route("/api/sessions/{session_id}", axum::routing::delete(auth::delete_session))
+        // LLM config (admin only)
+        .route("/api/llm-config", axum::routing::get(auth::get_llm_config).put(auth::update_llm_config))
+        .layer(axum::middleware::from_fn_with_state(app_state.clone(), auth::jwt_middleware));
 
     let app = Router::new()
         .route("/ws", get(ws::ws_handler))
@@ -77,7 +86,7 @@ async fn main() {
         .route("/api/auth/login", axum::routing::post(auth::login))
         .merge(protected)
         .fallback(|| async { (StatusCode::NOT_IMPLEMENTED, "Not Implemented") })
-        .with_state(state);
+        .with_state(app_state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server_port));
     let listener = tokio::net::TcpListener::bind(addr)

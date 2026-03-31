@@ -1,9 +1,12 @@
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LlmConfig {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
 }
+
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -15,7 +18,7 @@ pub struct ServerConfig {
     pub gateway_token: String,
     pub jwt_secret: String,
     pub bcrypt_cost: u32,
-    pub llm: LlmConfig,
+    pub llm: Arc<RwLock<LlmConfig>>,
 }
 
 pub fn load_config() -> ServerConfig {
@@ -72,6 +75,6 @@ pub fn load_config() -> ServerConfig {
         gateway_token,
         jwt_secret,
         bcrypt_cost,
-        llm,
+        llm: Arc::new(RwLock::new(llm)),
     }
 }

@@ -36,14 +36,7 @@ pub async fn run_session(
 
     while let Some(event) = inbox.recv().await {
         if !db_session_created {
-            // Create DB session record on first message (need user_id from event)
-            if let Err(e) = sqlx::query(
-                "INSERT INTO sessions (session_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
-            )
-            .bind(&session_id)
-            .bind(&event.sender_id)
-            .execute(&state.db)
-            .await {
+            if let Err(e) = crate::db::ensure_session(&state.db, &session_id, &event.sender_id).await {
                 warn!("failed to create DB session {}: {}", session_id, e);
             }
             db_session_created = true;
@@ -66,7 +59,9 @@ pub async fn run_session(
         }
     }
 
-    info!("agent_session ended: session_id={}", session_id);
+    state.bus.unregister_session(&session_id);
+    state.session_manager.remove_session(&session_id).await;
+    info!("agent_session ended and cleaned up: session_id={}", session_id);
 }
 
 // ============================================================================
@@ -124,6 +119,8 @@ async fn run_single_turn(
     let user_id = &event.sender_id;
     let session_id = &event.session_id;
 
+    let llm_config = state.config.llm.read().await.clone();
+
     let system_prompt = context::build_system_prompt(state, user_id, session_id, user_input).await;
     let tools = context::get_all_tools_schema(state, user_id).await;
     let history = context::build_message_history(state, session_id).await;
@@ -139,10 +136,10 @@ async fn run_single_turn(
     info!("agent_session {} calling LLM with {} tools", session_id, tools.len());
     let request = ChatCompletionRequest {
         messages: messages.clone(),
-        tools,
-        model: state.config.llm.model.clone(),
+        tools: tools.clone(),
+        model: llm_config.model.clone(),
     };
-    let response = call_with_retry(&state.config.llm, request).await
+    let response = call_with_retry(&llm_config, request).await
         .map_err(|e| format!("LLM provider error: {}", e))?;
     let choice = response.choices.first()
         .ok_or_else(|| "LLM returned empty choices array".to_string())?;
@@ -158,7 +155,7 @@ async fn run_single_turn(
         "tool_calls" => {
             let tool_calls = parse_tool_calls(choice);
             info!("agent_session {} calling execute_tool_calls_loop with {} tool_calls", session_id, tool_calls.len());
-            execute_tool_calls_loop(state, user_id, session_id, messages, tool_calls).await
+            execute_tool_calls_loop(state, user_id, session_id, messages, tool_calls, tools, &llm_config).await
         }
         _ => Err(format!("unknown finish_reason: {}", choice.finish_reason)),
     }
@@ -171,6 +168,8 @@ async fn execute_tool_calls_loop(
     session_id: &str,
     messages: Vec<Value>,
     initial_tool_calls: Vec<ToolCallParsed>,
+    tools: Vec<Value>,
+    llm_config: &crate::config::LlmConfig,
 ) -> Result<String, String> {
     let mut current_messages = messages.clone();
     let mut current_tool_calls = initial_tool_calls;
@@ -229,10 +228,10 @@ async fn execute_tool_calls_loop(
 
             let request = ChatCompletionRequest {
                 messages: current_messages.clone(),
-                tools: vec![],
-                model: state.config.llm.model.clone(),
+                tools: tools.clone(),
+                model: llm_config.model.clone(),
             };
-            let response = call_with_retry(&state.config.llm, request).await
+            let response = call_with_retry(llm_config, request).await
                 .map_err(|e| format!("LLM provider error: {}", e))?;
             let choice = response.choices.first()
                 .ok_or_else(|| "LLM returned empty choices array".to_string())?;
@@ -269,10 +268,10 @@ async fn execute_tool_calls_loop(
 
         let request = ChatCompletionRequest {
             messages: current_messages.clone(),
-            tools: vec![],
-            model: state.config.llm.model.clone(),
+            tools: tools.clone(),
+            model: llm_config.model.clone(),
         };
-        let response = call_with_retry(&state.config.llm, request).await
+        let response = call_with_retry(llm_config, request).await
             .map_err(|e| format!("LLM provider error: {}", e))?;
         let choice = response.choices.first()
             .ok_or_else(|| "LLM returned empty choices array".to_string())?;
@@ -318,7 +317,6 @@ async fn execute_single_tool(
             if exit_code == 0 { Ok(output.to_string()) } else { Err(output.to_string()) }
         }
         Err(RouteError::DeviceNotFound(name)) => Err(format!("device '{}' not found", name)),
-        Err(RouteError::DeviceOffline(name)) => Err(format!("device '{}' is offline", name)),
         Err(RouteError::SendFailed(name)) => Err(format!("failed to send request to '{}'", name)),
     }
 }

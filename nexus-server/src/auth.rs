@@ -3,13 +3,14 @@
 /// POST /api/auth/login    → login()
 
 use axum::{
-    extract::{Json, Request, State},
+    extract::{Json, Path, Request, State},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::db;
 use crate::state::AppState;
@@ -194,15 +195,7 @@ pub async fn create_device_token(
         random_part
     );
 
-    match sqlx::query(
-        "INSERT INTO device_tokens (token, user_id, device_name) VALUES ($1, $2, $3)",
-    )
-    .bind(&token)
-    .bind(user_id)
-    .bind(&payload.device_name)
-    .execute(&state.db)
-    .await
-    {
+    match db::create_device_token(&state.db, &token, user_id, &payload.device_name).await {
         Ok(_) => Json(DeviceTokenResponse {
             token,
             device_name: payload.device_name,
@@ -280,4 +273,158 @@ pub async fn jwt_middleware(
         },
         None => (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
     }
+}
+
+// ============================================================================
+// Admin API handlers
+// ============================================================================
+
+/// GET /api/device-tokens — list all device tokens for current user
+pub async fn list_device_tokens(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    match db::list_device_tokens(&state.db, &claims.sub).await {
+        Ok(tokens) => Json(tokens).into_response(),
+        Err(e) => {
+            tracing::error!("list_device_tokens error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list tokens").into_response()
+        }
+    }
+}
+
+/// DELETE /api/device-tokens/:token — revoke a device token
+pub async fn revoke_device_token(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(token): Path<String>,
+) -> Response {
+    match db::revoke_device_token(&state.db, &token, &claims.sub).await {
+        Ok(true) => (StatusCode::OK, "Token revoked").into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "Token not found or already revoked").into_response(),
+        Err(e) => {
+            tracing::error!("revoke_device_token error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to revoke token").into_response()
+        }
+    }
+}
+
+/// GET /api/discord-config — get current user's Discord config
+pub async fn get_discord_config(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    match db::get_discord_config_by_user_id(&state.db, &claims.sub).await {
+        Ok(Some(config)) => Json(json!({
+            "user_id": config.user_id,
+            "bot_user_id": config.bot_user_id,
+            "enabled": config.enabled,
+            "allowed_users": config.allowed_users,
+        })).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "No Discord config found").into_response(),
+        Err(e) => {
+            tracing::error!("get_discord_config error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get config").into_response()
+        }
+    }
+}
+
+/// DELETE /api/discord-config — delete current user's Discord config
+pub async fn delete_discord_config(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    match db::delete_discord_config(&state.db, &claims.sub).await {
+        Ok(true) => (StatusCode::OK, "Discord config deleted").into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "No Discord config found").into_response(),
+        Err(e) => {
+            tracing::error!("delete_discord_config error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete config").into_response()
+        }
+    }
+}
+
+/// GET /api/sessions — list current user's sessions
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    match db::list_sessions_by_user(&state.db, &claims.sub).await {
+        Ok(sessions) => Json(sessions).into_response(),
+        Err(e) => {
+            tracing::error!("list_sessions error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list sessions").into_response()
+        }
+    }
+}
+
+/// DELETE /api/sessions/:session_id — delete a session and its messages
+pub async fn delete_session(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(session_id): Path<String>,
+) -> Response {
+    match db::delete_session(&state.db, &session_id, &claims.sub).await {
+        Ok(true) => {
+            // Clean up in-memory session if active
+            state.bus.unregister_session(&session_id);
+            state.session_manager.remove_session(&session_id).await;
+            (StatusCode::OK, "Session deleted").into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, "Session not found").into_response(),
+        Err(e) => {
+            tracing::error!("delete_session error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete session").into_response()
+        }
+    }
+}
+
+/// GET /api/llm-config — get current LLM config (admin only, api_key masked)
+pub async fn get_llm_config(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    if !claims.is_admin {
+        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+    }
+    let llm = state.config.llm.read().await;
+    let masked_key = if llm.api_key.len() > 12 {
+        format!("{}...{}", &llm.api_key[..8], &llm.api_key[llm.api_key.len()-4..])
+    } else {
+        "***".to_string()
+    };
+    Json(json!({
+        "api_base": llm.api_base,
+        "api_key": masked_key,
+        "model": llm.model,
+    })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateLlmConfigRequest {
+    pub api_base: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+}
+
+/// PUT /api/llm-config — update LLM config at runtime (admin only)
+pub async fn update_llm_config(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Json(payload): Json<UpdateLlmConfigRequest>,
+) -> Response {
+    if !claims.is_admin {
+        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+    }
+    let mut llm = state.config.llm.write().await;
+    if let Some(api_base) = payload.api_base {
+        llm.api_base = api_base;
+    }
+    if let Some(api_key) = payload.api_key {
+        llm.api_key = api_key;
+    }
+    if let Some(model) = payload.model {
+        llm.model = model;
+    }
+    (StatusCode::OK, "LLM config updated").into_response()
 }

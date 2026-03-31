@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 use crate::bus::InboundEvent;
+use crate::state::AppState;
 
 /// 每个 session 的句柄
 pub struct SessionHandle {
@@ -54,9 +55,25 @@ impl SessionManager {
         sessions.remove(session_id);
     }
 
-    /// 获取所有活跃 session ids
-    pub async fn list_sessions(&self) -> Vec<String> {
-        let sessions = self.sessions.read().await;
-        sessions.keys().cloned().collect()
+}
+
+/// 确保 session 存在并发布 inbound 事件。
+/// Channel 只需构造 InboundEvent，然后调用此函数——session 创建逻辑统一在这里。
+pub async fn ensure_session_and_publish(
+    state: &Arc<AppState>,
+    event: InboundEvent,
+) {
+    let session_id = event.session_id.clone();
+    let (is_new, channels) = state.session_manager.get_or_create_session(&session_id).await;
+    if is_new {
+        if let Some((inbox_tx, inbox_rx)) = channels {
+            state.bus.register_session(session_id.clone(), inbox_tx);
+            let state_clone = state.clone();
+            let sid = session_id.clone();
+            tokio::spawn(async move {
+                crate::agent_loop::run_session(sid, inbox_rx, state_clone).await;
+            });
+        }
     }
+    state.bus.publish_inbound(event).await;
 }

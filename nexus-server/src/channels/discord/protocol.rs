@@ -63,6 +63,7 @@ pub struct MessageCreateData {
     pub guild_id: Option<String>,
     pub thread_id: Option<String>,
     pub sender_id: String,
+    pub sender_name: String,
     pub sender_is_bot: bool,
     pub content: String,
     pub mentions: Vec<String>,
@@ -76,6 +77,11 @@ pub fn parse_message_create(d: &Value) -> Option<MessageCreateData> {
 
     let author = d.get("author")?;
     let sender_id = author.get("id")?.as_str()?.to_string();
+    let sender_name = author.get("global_name")
+        .or_else(|| author.get("username"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
     let sender_is_bot = author.get("bot").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let mentions: Vec<String> = d
@@ -99,6 +105,7 @@ pub fn parse_message_create(d: &Value) -> Option<MessageCreateData> {
         guild_id,
         thread_id,
         sender_id,
+        sender_name,
         sender_is_bot,
         content,
         mentions,
@@ -163,8 +170,22 @@ mod tests {
         let msg = parse_message_create(&d).unwrap();
         assert_eq!(msg.channel_id, "ch1");
         assert_eq!(msg.sender_id, "user1");
+        assert_eq!(msg.sender_name, "bob");
         assert!(!msg.sender_is_bot);
         assert!(msg.guild_id.is_none());
+    }
+
+    #[test]
+    fn test_parse_message_create_global_name_preferred() {
+        let d = serde_json::json!({
+            "id": "msg3",
+            "channel_id": "ch3",
+            "content": "hi",
+            "author": {"id": "user3", "username": "bob123", "global_name": "Bob"},
+            "mentions": []
+        });
+        let msg = parse_message_create(&d).unwrap();
+        assert_eq!(msg.sender_name, "Bob");
     }
 
     #[test]

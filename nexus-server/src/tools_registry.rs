@@ -12,7 +12,6 @@ use crate::state::AppState;
 #[derive(Debug)]
 pub enum RouteError {
     DeviceNotFound(String),
-    DeviceOffline(String),
     SendFailed(String),
 }
 
@@ -21,9 +20,6 @@ impl std::fmt::Display for RouteError {
         match self {
             RouteError::DeviceNotFound(name) => {
                 write!(f, "device '{}' not found or does not belong to this user", name)
-            }
-            RouteError::DeviceOffline(name) => {
-                write!(f, "device '{}' is currently offline", name)
             }
             RouteError::SendFailed(name) => {
                 write!(f, "failed to send request to device '{}'", name)

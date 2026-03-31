@@ -26,7 +26,7 @@ pub type TypingTokenMap = Arc<DashMap<String, CancellationToken>>;
 
 struct ConnHandle {
     cancel: CancellationToken,
-    handle: JoinHandle<()>,
+    _handle: JoinHandle<()>,
 }
 
 pub struct DiscordChannel {
@@ -158,7 +158,7 @@ async fn run_connection_manager(
                 user_id,
                 ConnHandle {
                     cancel,
-                    handle,
+                    _handle: handle,
                 },
             );
         }

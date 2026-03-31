@@ -13,7 +13,6 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::agent_loop;
 use crate::bus::InboundEvent;
 use crate::db::{self, DiscordConfig};
 use crate::state::AppState;
@@ -282,17 +281,11 @@ async fn handle_message(
             format!("discord:guild:{}", msg.channel_id)
         };
         let clean_content = strip_mention(&msg.content, bot_uid);
-        (sid, config.user_id.clone(), clean_content)
+        let prefixed = format!("{}: {}", msg.sender_name, clean_content);
+        (sid, config.user_id.clone(), prefixed)
     } else {
-        // DM: only allow if sender is the bot owner (check via bot_user_id match)
-        // or if sender is in allowed_users list
-        // Since we don't store owner's discord_id, we use bot_user_id from READY
-        // to identify the bot itself (skip), and only allow DMs from users
-        // who are in the allowed_users list, or if allowed_users is empty,
-        // allow anyone who DMs (owner-only scenario, single-user deployment)
-        if !config.allowed_users.is_empty()
-            && !config.allowed_users.contains(&msg.sender_id)
-        {
+        // DM: sender must be in allowed_users. Empty list = nobody allowed.
+        if !config.allowed_users.contains(&msg.sender_id) {
             debug!("DiscordGatewayConn [{}]: DM sender {} not in allowed_users, ignoring", config.user_id, msg.sender_id);
             return;
         }
@@ -314,22 +307,6 @@ async fn handle_message(
         typing_cancel.clone(),
     );
 
-    let (is_new, channels) = state
-        .session_manager
-        .get_or_create_session(&session_id)
-        .await;
-
-    if is_new {
-        if let Some((inbox_tx, inbox_rx)) = channels {
-            state.bus.register_session(session_id.clone(), inbox_tx);
-            let state_clone = state.clone();
-            let sid = session_id.clone();
-            tokio::spawn(async move {
-                agent_loop::run_session(sid, inbox_rx, state_clone).await;
-            });
-        }
-    }
-
     let event = InboundEvent {
         channel: "discord".to_string(),
         sender_id: user_id,
@@ -340,7 +317,7 @@ async fn handle_message(
         media: Vec::new(),
         metadata: HashMap::new(),
     };
-    state.bus.publish_inbound(event).await;
+    crate::session::ensure_session_and_publish(state, event).await;
 
     let cancel = typing_cancel.clone();
     tokio::spawn(async move {
