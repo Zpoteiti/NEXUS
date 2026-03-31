@@ -21,6 +21,9 @@ use crate::state::AppState;
 
 use gateway_conn::ChannelTokenMap;
 
+/// Shared map of channel_id → CancellationToken for typing indicators
+pub type TypingTokenMap = Arc<DashMap<String, CancellationToken>>;
+
 struct ConnHandle {
     cancel: CancellationToken,
     handle: JoinHandle<()>,
@@ -29,6 +32,7 @@ struct ConnHandle {
 pub struct DiscordChannel {
     state: Arc<AppState>,
     channel_tokens: ChannelTokenMap,
+    typing_tokens: TypingTokenMap,
     shutdown: CancellationToken,
 }
 
@@ -37,6 +41,7 @@ impl DiscordChannel {
         Self {
             state,
             channel_tokens: Arc::new(DashMap::new()),
+            typing_tokens: Arc::new(DashMap::new()),
             shutdown: CancellationToken::new(),
         }
     }
@@ -53,6 +58,7 @@ impl Channel for DiscordChannel {
         run_connection_manager(
             self.state.clone(),
             self.channel_tokens.clone(),
+            self.typing_tokens.clone(),
             self.shutdown.clone(),
         )
         .await;
@@ -70,13 +76,21 @@ impl Channel for DiscordChannel {
             .map(|v| v.value().clone())
             .ok_or_else(|| format!("no bot token mapped for channel_id {}", chat_id))?;
 
-        rest::send_message(&bot_token, chat_id, content).await
+        let result = rest::send_message(&bot_token, chat_id, content).await;
+
+        // Cancel typing indicator after sending reply
+        if let Some((_, token)) = self.typing_tokens.remove(chat_id) {
+            token.cancel();
+        }
+
+        result
     }
 }
 
 async fn run_connection_manager(
     state: Arc<AppState>,
     channel_tokens: ChannelTokenMap,
+    typing_tokens: TypingTokenMap,
     shutdown: CancellationToken,
 ) {
     let mut connections: HashMap<String, ConnHandle> = HashMap::new();
@@ -121,6 +135,7 @@ async fn run_connection_manager(
             let cancel = CancellationToken::new();
             let state_clone = state.clone();
             let ct_clone = channel_tokens.clone();
+            let tt_clone = typing_tokens.clone();
             let cancel_clone = cancel.clone();
             let last_id_clone = last_identify.clone();
             let user_id = config.user_id.clone();
@@ -136,7 +151,7 @@ async fn run_connection_manager(
                     *guard = tokio::time::Instant::now();
                 }
 
-                gateway_conn::run(config, state_clone, ct_clone, cancel_clone).await;
+                gateway_conn::run(config, state_clone, ct_clone, tt_clone, cancel_clone).await;
             });
 
             connections.insert(

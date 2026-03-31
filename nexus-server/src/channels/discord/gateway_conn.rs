@@ -24,11 +24,14 @@ use super::rest;
 /// Shared state for outbound routing: channel_id → bot_token
 pub type ChannelTokenMap = Arc<DashMap<String, String>>;
 
+use super::TypingTokenMap;
+
 /// Run a single Discord bot connection with auto-reconnect.
 pub async fn run(
     config: DiscordConfig,
     state: Arc<AppState>,
     channel_tokens: ChannelTokenMap,
+    typing_tokens: TypingTokenMap,
     cancel: CancellationToken,
 ) {
     let mut backoff = Duration::from_secs(1);
@@ -40,7 +43,7 @@ pub async fn run(
                 info!("DiscordGatewayConn [{}]: cancelled, shutting down", config.user_id);
                 break;
             }
-            result = run_once(&config, &state, &channel_tokens) => {
+            result = run_once(&config, &state, &channel_tokens, &typing_tokens) => {
                 match result {
                     Ok(()) => {
                         backoff = Duration::from_secs(1);
@@ -74,6 +77,7 @@ async fn run_once(
     config: &DiscordConfig,
     state: &Arc<AppState>,
     channel_tokens: &ChannelTokenMap,
+    typing_tokens: &TypingTokenMap,
 ) -> Result<(), String> {
     info!("DiscordGatewayConn [{}]: connecting to Gateway", config.user_id);
 
@@ -187,6 +191,7 @@ async fn run_once(
                                                     config,
                                                     state,
                                                     channel_tokens,
+                                                    typing_tokens,
                                                     bot_user_id.as_deref(),
                                                     msg_data,
                                                 ).await;
@@ -238,6 +243,7 @@ async fn handle_message(
     config: &DiscordConfig,
     state: &Arc<AppState>,
     channel_tokens: &ChannelTokenMap,
+    typing_tokens: &TypingTokenMap,
     bot_user_id: Option<&str>,
     msg: MessageCreateData,
 ) {
@@ -301,6 +307,7 @@ async fn handle_message(
     channel_tokens.insert(msg.channel_id.clone(), config.bot_token.clone());
 
     let typing_cancel = CancellationToken::new();
+    typing_tokens.insert(msg.channel_id.clone(), typing_cancel.clone());
     let _typing_handle = rest::start_typing(
         config.bot_token.clone(),
         msg.channel_id.clone(),
