@@ -32,7 +32,7 @@ pub enum ServerToClient {
     },
     LoginSuccess {
         user_id: String,
-        device_id: String,
+        device_name: String,
     },
     LoginFailed {
         reason: String,
@@ -54,32 +54,16 @@ pub enum ClientToServer {
     ToolExecutionResult(ToolExecutionResult),
     SubmitToken {
         token: String,
-        device_id: String,
-        device_name: String,
-        /// 客户端声明的协议版本，Server 应校验是否等于 consts::PROTOCOL_VERSION，不匹配则拒绝登录。
         protocol_version: String,
     },
-    
-    /// 新增：客户端连上 MCP 或启动时，主动向 Server 上报当前可用的所有工具 Schema
+
     RegisterTools {
-        device_id: String,
-        device_name: String,
-        /// 工具 Schema 列表（内置工具 + MCP 工具）
         schemas: Vec<Value>,
-        /// Skill 全量列表。
-        /// always=false: content=None（服务端只存摘要）
-        /// always=true:  content=Some(正文)（服务端存储，用于注入 system prompt）
         skills: Vec<SkillFull>,
     },
 
-    /// 新增：心跳包，带着当前工具的 Hash，防止 Server 和 Client 状态脱节。
-    /// hash 是对【内置工具 + MCP 工具 Schema 列表 + 所有 Skill 的 name/description/content/always】计算的统一哈希。
-    /// Server 可通过比对上次记录的 hash 来判断工具集是否发生变更。
     Heartbeat {
-        device_id: String,
-        device_name: String,
         hash: String,
-        /// 合法值："online" | "busy"。M1 阶段 Client 只发送 "online"。
         status: String,
     },
 }

@@ -112,13 +112,14 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Returns (user_id, device_name) if token is valid and not revoked.
 pub async fn verify_device_token(
     pool: &PgPool,
     token: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar::<_, String>(
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String, String)>(
         r#"
-        SELECT user_id
+        SELECT user_id, COALESCE(device_name, 'unnamed')
         FROM device_tokens
         WHERE token = $1
           AND revoked = FALSE
@@ -126,7 +127,8 @@ pub async fn verify_device_token(
     )
     .bind(token)
     .fetch_optional(pool)
-    .await
+    .await?;
+    Ok(row)
 }
 
 pub async fn update_device_name(

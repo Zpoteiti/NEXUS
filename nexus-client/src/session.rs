@@ -1,18 +1,7 @@
-/// 职责边界：
-/// 1. 专门管理与 Server 的 WebSocket 长连接 (`tokio_tungstenite`)。
-/// 2. 负责断线重连机制 (Exponential Backoff)。
-/// 3. 负责维持心跳 (Heartbeat)，定期向 Server 报告 Client 的存活状态和当前工具 Hash。
-/// 4. 将收到的 `ServerToClient` 消息推入内部的 MPSC Channel，供 executor 消费。
+/// Session management: WebSocket connection to server, handshake, heartbeat, tool registration.
 ///
-/// ─────────────────────────────────────────────────────────────────────────────
-/// 【心跳与工具热拔插流程】
-/// ─────────────────────────────────────────────────────────────────────────────
-/// - Client 每次发送心跳前，调用 `discovery::discover_all()` 重新扫描：
-///   - 内置工具 + MCP 工具 → tools_schema
-///   - Skills → skill_summaries
-/// - 计算 tools_hash 和 skills_hash
-/// - 若任一 hash 与上次不同，说明工具集发生了变更，则发送 RegisterTools 更新 Server
-/// - Server 收到新的 RegisterTools 后，更新 AppState 中该设备的工具快照。
+/// Client only sends its token. Server resolves user_id, device_name from DB.
+/// LoginSuccess returns the device_name assigned by the user at token creation time.
 
 use std::time::Duration;
 
@@ -27,7 +16,6 @@ use tracing::{info, warn};
 
 use crate::config::ClientConfig;
 
-/// ClientSession 保存与 Server 的会话状态，供 main.rs 访问。
 pub struct ClientSession {
     outbound_tx: mpsc::Sender<ClientToServer>,
     inbound_rx: mpsc::Receiver<ServerToClient>,
@@ -97,20 +85,13 @@ async fn run_single_connection(
     inbound_tx: &mpsc::Sender<ServerToClient>,
     outbound_rx: &mut mpsc::Receiver<ClientToServer>,
 ) -> Result<(), String> {
-    let device_id = config.device_id.clone();
-    let device_name = config.device_name.clone();
-    perform_handshake(ws_stream, &device_id, &device_name).await?;
+    let device_name = perform_handshake(ws_stream, &config.auth_token).await?;
 
-    // 步骤 2 — 登录成功后，立即发现并注册工具（重连时也会执行）
+    // Discover and register tools
     let (schemas, skills, hash) =
         crate::discovery::discover_all(&config.mcp_servers, &config.skills_dir).await;
 
-    let register = ClientToServer::RegisterTools {
-        device_id: device_id.clone(),
-        device_name: device_name.clone(),
-        schemas,
-        skills,
-    };
+    let register = ClientToServer::RegisterTools { schemas, skills };
     send_client_message(ws_stream, &register).await?;
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SEC));
@@ -119,23 +100,17 @@ async fn run_single_connection(
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                // 每次心跳重新计算 unified hash，检测工具或 skills 是否变更
                 let (current_schemas, current_skills, current_hash) =
                     crate::discovery::discover_all(&config.mcp_servers, &config.skills_dir).await;
 
                 let heartbeat_event = ClientToServer::Heartbeat {
-                    device_id: device_id.clone(),
-                    device_name: device_name.clone(),
                     hash: current_hash.clone(),
                     status: "online".to_string(),
                 };
                 send_client_message(ws_stream, &heartbeat_event).await?;
 
-                // 若 unified hash 变了，说明工具集发生变更，立即重新注册全量
                 if current_hash != last_hash {
                     let register = ClientToServer::RegisterTools {
-                        device_id: device_id.clone(),
-                        device_name: device_name.clone(),
                         schemas: current_schemas,
                         skills: current_skills,
                     };
@@ -177,13 +152,14 @@ async fn run_single_connection(
     }
 }
 
+/// Handshake: wait for RequireLogin, send SubmitToken, receive LoginSuccess.
+/// Returns the device_name assigned by server.
 async fn perform_handshake(
     ws_stream: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
-    device_id: &str,
-    device_name: &str,
-) -> Result<(), String> {
+    auth_token: &str,
+) -> Result<String, String> {
     let require_login = tokio::time::timeout(Duration::from_secs(30), ws_stream.next())
         .await
         .map_err(|_| "wait require-login timeout".to_string())?
@@ -202,9 +178,7 @@ async fn perform_handshake(
     }
 
     let submit = ClientToServer::SubmitToken {
-        token: crate::config::load_config().auth_token.clone(),
-        device_id: device_id.to_string(),
-        device_name: device_name.to_string(),
+        token: auth_token.to_string(),
         protocol_version: PROTOCOL_VERSION.to_string(),
     };
     send_client_message(ws_stream, &submit).await?;
@@ -223,12 +197,9 @@ async fn perform_handshake(
     let login_result_msg = serde_json::from_str::<ServerToClient>(&login_result_text)
         .map_err(|err| format!("invalid login-result json: {err}"))?;
     match login_result_msg {
-        ServerToClient::LoginSuccess { .. } => {
-            info!(
-                "device login success: device_id={}",
-                device_id,
-            );
-            Ok(())
+        ServerToClient::LoginSuccess { device_name, .. } => {
+            info!("device login success: device_name={}", device_name);
+            Ok(device_name)
         }
         ServerToClient::LoginFailed { reason } => Err(format!("login failed: {}", reason)),
         _ => Err("unexpected message during login".to_string()),

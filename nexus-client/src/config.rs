@@ -38,8 +38,6 @@ pub struct McpServerConfig {
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     pub server_ws_url: String,
-    pub device_id: String,
-    pub device_name: String,
     pub auth_token: String,
     pub mcp_servers: Vec<McpServerConfig>,
     pub skills_dir: PathBuf,
@@ -189,12 +187,6 @@ pub fn load_config() -> ClientConfig {
         .unwrap_or_else(|| DEFAULT_SERVER_WS_URL.to_string());
     validate_server_ws_url(&server_ws_url);
 
-    let host = detect_hostname();
-    let device_id = first_non_empty_env(&["NEXUS_DEVICE_ID", "NEXUS_CLIENT_DEVICE_ID"])
-        .unwrap_or_else(|| host.clone());
-    let device_name = first_non_empty_env(&["NEXUS_DEVICE_NAME", "NEXUS_CLIENT_DEVICE_NAME"])
-        .unwrap_or_else(|| host.clone());
-
     let auth_token = first_non_empty_env(&["NEXUS_AUTH_TOKEN", "NEXUS_DEVICE_TOKEN"])
         .unwrap_or_else(|| panic!("环境变量 NEXUS_AUTH_TOKEN 未设置，Client 无法完成设备鉴权"));
     validate_auth_token(&auth_token);
@@ -206,8 +198,6 @@ pub fn load_config() -> ClientConfig {
 
     ClientConfig {
         server_ws_url,
-        device_id,
-        device_name,
         auth_token,
         mcp_servers,
         skills_dir,

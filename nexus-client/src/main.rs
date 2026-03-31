@@ -57,8 +57,8 @@ async fn main() {
                 message } => {
                 warn!("unexpected RequireLogin during main loop: {}", message);
             }
-            ServerToClient::LoginSuccess { user_id, device_id } => {
-                info!("unexpected LoginSuccess during main loop: user_id={}, device_id={}", user_id, device_id);
+            ServerToClient::LoginSuccess { user_id, device_name } => {
+                info!("unexpected LoginSuccess during main loop: user_id={}, device_name={}", user_id, device_name);
             }
             ServerToClient::LoginFailed { reason } => {
                 warn!("unexpected LoginFailed during main loop: {}", reason);
