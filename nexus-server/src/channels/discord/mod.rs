@@ -81,7 +81,10 @@ async fn run_connection_manager(
 ) {
     let mut connections: HashMap<String, ConnHandle> = HashMap::new();
     let poll_interval = Duration::from_secs(30);
-    let identify_semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    // Rate-limit IDENTIFY calls: track last identify time (Discord allows 1 per 5s)
+    let last_identify = Arc::new(tokio::sync::Mutex::new(
+        tokio::time::Instant::now() - Duration::from_secs(5),
+    ));
 
     loop {
         let configs = match db::get_all_discord_configs(&state.db).await {
@@ -119,19 +122,18 @@ async fn run_connection_manager(
             let state_clone = state.clone();
             let ct_clone = channel_tokens.clone();
             let cancel_clone = cancel.clone();
-            let sem_clone = identify_semaphore.clone();
+            let last_id_clone = last_identify.clone();
             let user_id = config.user_id.clone();
 
             let handle = tokio::spawn(async move {
                 // Rate-limit IDENTIFY calls across bots (1 per 5 seconds)
-                if let Ok(_permit) = sem_clone.acquire().await {
-                    let sem_for_release = sem_clone.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        sem_for_release.add_permits(1);
-                    });
-                    // Don't drop permit, let the spawned task release it after 5s
-                    std::mem::forget(_permit);
+                {
+                    let mut guard = last_id_clone.lock().await;
+                    let elapsed = guard.elapsed();
+                    if elapsed < Duration::from_secs(5) {
+                        tokio::time::sleep(Duration::from_secs(5) - elapsed).await;
+                    }
+                    *guard = tokio::time::Instant::now();
                 }
 
                 gateway_conn::run(config, state_clone, ct_clone, cancel_clone).await;

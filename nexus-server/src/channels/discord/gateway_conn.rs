@@ -48,16 +48,24 @@ pub async fn run(
                     }
                     Err(e) => {
                         error!("DiscordGatewayConn [{}]: error: {}. Reconnecting in {:?}", config.user_id, e, backoff);
+                        // Only increase backoff on errors, not graceful disconnects
+                        let wait = backoff;
+                        backoff = (backoff * 2).min(max_backoff);
+                        tokio::select! {
+                            _ = cancel.cancelled() => break,
+                            _ = tokio::time::sleep(wait) => {}
+                        }
+                        continue;
                     }
                 }
             }
         }
 
+        // Graceful disconnect: reconnect after 1s with no backoff increase
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = tokio::time::sleep(backoff) => {}
         }
-        backoff = (backoff * 2).min(max_backoff);
     }
 }
 
@@ -270,6 +278,18 @@ async fn handle_message(
         let clean_content = strip_mention(&msg.content, bot_uid);
         (sid, config.user_id.clone(), clean_content)
     } else {
+        // DM: only allow if sender is the bot owner (check via bot_user_id match)
+        // or if sender is in allowed_users list
+        // Since we don't store owner's discord_id, we use bot_user_id from READY
+        // to identify the bot itself (skip), and only allow DMs from users
+        // who are in the allowed_users list, or if allowed_users is empty,
+        // allow anyone who DMs (owner-only scenario, single-user deployment)
+        if !config.allowed_users.is_empty()
+            && !config.allowed_users.contains(&msg.sender_id)
+        {
+            debug!("DiscordGatewayConn [{}]: DM sender {} not in allowed_users, ignoring", config.user_id, msg.sender_id);
+            return;
+        }
         let sid = format!("discord:dm:{}", msg.sender_id);
         (sid, config.user_id.clone(), msg.content.clone())
     };

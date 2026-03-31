@@ -113,11 +113,13 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
             break;
         }
 
-        let search_region = &remaining[..max_len];
+        // Find a safe byte boundary (UTF-8 safe)
+        let safe_max = remaining.floor_char_boundary(max_len);
+        let search_region = &remaining[..safe_max];
         let split_at = search_region
             .rfind('\n')
             .map(|pos| pos + 1)
-            .unwrap_or(max_len);
+            .unwrap_or(safe_max);
 
         chunks.push(remaining[..split_at].to_string());
         remaining = &remaining[split_at..];
