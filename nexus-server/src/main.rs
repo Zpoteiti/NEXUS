@@ -29,6 +29,7 @@ use tracing::info;
 
 use bus::MessageBus;
 use channels::ChannelManager;
+use channels::discord::DiscordChannel;
 use channels::gateway::GatewayChannel;
 use session::SessionManager;
 
@@ -58,7 +59,8 @@ async fn main() {
 
     // 创建 ChannelManager，注册 GatewayChannel，然后启动
     let mut channel_manager = ChannelManager::new(bus);
-    channel_manager.register(GatewayChannel::new(state_arc));
+    channel_manager.register(GatewayChannel::new(state_arc.clone()));
+    channel_manager.register(DiscordChannel::new(state_arc));
     let channel_manager_handle = channel_manager.start();
 
     *state.channel_manager_handle.write().await = Some(channel_manager_handle);
