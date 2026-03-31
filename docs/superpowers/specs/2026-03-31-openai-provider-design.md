@@ -75,13 +75,13 @@ pub async fn chat_completion(
 New fields in `ServerConfig`:
 ```rust
 pub struct LlmConfig {
-    pub api_base: String,    // LLM_API_BASE (required)
-    pub api_key: String,     // LLM_API_KEY (required)
-    pub model: String,       // LLM_MODEL (required)
+    pub api_base: String,    // hardcoded for now
+    pub api_key: String,     // hardcoded for now
+    pub model: String,       // hardcoded for now
 }
 ```
 
-No defaults. All three are required — server panics on startup if missing.
+All three hardcoded initially. Will be made configurable via admin API later.
 
 ### 5. `agent_loop.rs`
 
@@ -98,10 +98,11 @@ Entire file removed.
 
 ## Configuration
 
-```env
-LLM_API_BASE=https://api.minimaxi.com/v1
-LLM_API_KEY=sk-cp-...
-LLM_MODEL=MiniMax-M2.7
+Hardcoded in `config.rs` for now:
+```rust
+api_base: "https://api.minimaxi.com/v1"
+api_key: "sk-cp-..."  // committed as hardcoded, admin API will manage later
+model: "MiniMax-M2.7"
 ```
 
 ## Error Type
