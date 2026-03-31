@@ -1,11 +1,11 @@
 use reqwest::Client;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use tracing::debug;
 
 use crate::config::LlmConfig;
 use super::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 
-static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
+static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()

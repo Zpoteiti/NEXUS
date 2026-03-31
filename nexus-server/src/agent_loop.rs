@@ -144,7 +144,8 @@ async fn run_single_turn(
     };
     let response = call_with_retry(&state.config.llm, request).await
         .map_err(|e| format!("LLM provider error: {}", e))?;
-    let choice = &response.choices[0];
+    let choice = response.choices.first()
+        .ok_or_else(|| "LLM returned empty choices array".to_string())?;
     info!("agent_session {} LLM returned: finish_reason={}", session_id, choice.finish_reason);
 
     match choice.finish_reason.as_str() {
@@ -183,7 +184,7 @@ async fn execute_tool_calls_loop(
                 "tool_calls": [{
                     "id": tc.id,
                     "type": "function",
-                    "function": { "name": tc.name, "arguments": tc.arguments }
+                    "function": { "name": tc.name, "arguments": tc.arguments.to_string() }
                 }]
             }));
         }
@@ -233,7 +234,8 @@ async fn execute_tool_calls_loop(
             };
             let response = call_with_retry(&state.config.llm, request).await
                 .map_err(|e| format!("LLM provider error: {}", e))?;
-            let choice = &response.choices[0];
+            let choice = response.choices.first()
+                .ok_or_else(|| "LLM returned empty choices array".to_string())?;
 
             match choice.finish_reason.as_str() {
                 "stop" => {
@@ -272,7 +274,8 @@ async fn execute_tool_calls_loop(
         };
         let response = call_with_retry(&state.config.llm, request).await
             .map_err(|e| format!("LLM provider error: {}", e))?;
-        let choice = &response.choices[0];
+        let choice = response.choices.first()
+            .ok_or_else(|| "LLM returned empty choices array".to_string())?;
 
         match choice.finish_reason.as_str() {
             "stop" => {
