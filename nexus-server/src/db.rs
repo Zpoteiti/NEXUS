@@ -20,6 +20,15 @@ pub struct User {
     pub is_admin: bool,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct DiscordConfig {
+    pub user_id: String,
+    pub bot_token: String,
+    pub bot_user_id: Option<String>,
+    pub enabled: bool,
+    pub allowed_users: Vec<String>,
+}
+
 pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
@@ -78,6 +87,22 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             tool_call_id TEXT,
             is_consolidated BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS discord_configs (
+            user_id TEXT PRIMARY KEY REFERENCES users(user_id),
+            bot_token TEXT NOT NULL,
+            bot_user_id TEXT,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            allowed_users TEXT[] NOT NULL DEFAULT '{}',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
         "#,
     )
@@ -242,4 +267,75 @@ pub async fn get_session_history(
         .collect();
 
     Ok(messages)
+}
+
+pub async fn get_all_discord_configs(
+    db: &PgPool,
+) -> Result<Vec<DiscordConfig>, sqlx::Error> {
+    sqlx::query_as::<_, DiscordConfig>(
+        r#"
+        SELECT user_id, bot_token, bot_user_id, enabled, allowed_users
+        FROM discord_configs
+        WHERE enabled = TRUE
+        "#,
+    )
+    .fetch_all(db)
+    .await
+}
+
+pub async fn get_discord_config_by_user_id(
+    db: &PgPool,
+    user_id: &str,
+) -> Result<Option<DiscordConfig>, sqlx::Error> {
+    sqlx::query_as::<_, DiscordConfig>(
+        r#"
+        SELECT user_id, bot_token, bot_user_id, enabled, allowed_users
+        FROM discord_configs
+        WHERE user_id = $1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+}
+
+pub async fn update_bot_user_id(
+    db: &PgPool,
+    user_id: &str,
+    bot_user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE discord_configs
+        SET bot_user_id = $1, updated_at = NOW()
+        WHERE user_id = $2
+        "#,
+    )
+    .bind(bot_user_id)
+    .bind(user_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+pub async fn upsert_discord_config(
+    db: &PgPool,
+    user_id: &str,
+    bot_token: &str,
+    allowed_users: &[String],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO discord_configs (user_id, bot_token, allowed_users)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE
+        SET bot_token = $2, allowed_users = $3, updated_at = NOW()
+        "#,
+    )
+    .bind(user_id)
+    .bind(bot_token)
+    .bind(allowed_users)
+    .execute(db)
+    .await?;
+    Ok(())
 }
