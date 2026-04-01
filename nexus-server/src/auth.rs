@@ -213,6 +213,8 @@ pub struct UpsertDiscordConfigRequest {
     pub bot_token: String,
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    /// Discord user ID of the bot owner (for sender identity verification)
+    pub owner_discord_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -220,6 +222,7 @@ pub struct DiscordConfigResponse {
     pub user_id: String,
     pub enabled: bool,
     pub allowed_users: Vec<String>,
+    pub owner_discord_id: Option<String>,
 }
 
 pub async fn upsert_discord_config(
@@ -229,13 +232,14 @@ pub async fn upsert_discord_config(
 ) -> Response {
     let user_id = &claims.sub;
 
-    match db::upsert_discord_config(&state.db, user_id, &payload.bot_token, &payload.allowed_users)
+    match db::upsert_discord_config(&state.db, user_id, &payload.bot_token, &payload.allowed_users, payload.owner_discord_id.as_deref())
         .await
     {
         Ok(_) => Json(DiscordConfigResponse {
             user_id: user_id.clone(),
             enabled: true,
             allowed_users: payload.allowed_users,
+            owner_discord_id: payload.owner_discord_id,
         })
         .into_response(),
         Err(e) => {

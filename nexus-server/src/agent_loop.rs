@@ -121,7 +121,7 @@ async fn run_single_turn(
 
     let llm_config = state.config.llm.read().await.clone();
 
-    let system_prompt = context::build_system_prompt(state, user_id, session_id, user_input).await;
+    let system_prompt = context::build_system_prompt(state, user_id, session_id, user_input, &event.metadata).await;
     let tools = context::get_all_tools_schema(state, user_id).await;
     let history = context::build_message_history(state, session_id).await;
 

@@ -290,7 +290,8 @@ async fn handle_message(
             return;
         }
         let sid = format!("discord:dm:{}", msg.sender_id);
-        (sid, config.user_id.clone(), msg.content.clone())
+        let prefixed = format!("{}: {}", msg.sender_name, msg.content);
+        (sid, config.user_id.clone(), prefixed)
     };
 
     if content.trim().is_empty() {
@@ -307,6 +308,15 @@ async fn handle_message(
         typing_cancel.clone(),
     );
 
+    let is_owner = config
+        .owner_discord_id
+        .as_ref()
+        .is_some_and(|oid| oid == &msg.sender_id);
+
+    let mut metadata = HashMap::new();
+    metadata.insert("sender_discord_name".to_string(), serde_json::json!(msg.sender_name));
+    metadata.insert("is_owner".to_string(), serde_json::json!(is_owner));
+
     let event = InboundEvent {
         channel: "discord".to_string(),
         sender_id: user_id,
@@ -315,7 +325,7 @@ async fn handle_message(
         session_id,
         timestamp: Some(chrono::Utc::now()),
         media: Vec::new(),
-        metadata: HashMap::new(),
+        metadata,
     };
     crate::session::ensure_session_and_publish(state, event).await;
 

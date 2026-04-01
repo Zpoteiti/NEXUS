@@ -28,6 +28,7 @@ pub struct DiscordConfig {
     pub bot_user_id: Option<String>,
     pub enabled: bool,
     pub allowed_users: Vec<String>,
+    pub owner_discord_id: Option<String>,
 }
 
 pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
@@ -62,6 +63,10 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
         .await?;
 
     sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE")
+        .execute(pool)
+        .await?;
+
+    sqlx::query("ALTER TABLE discord_configs ADD COLUMN IF NOT EXISTS owner_discord_id TEXT")
         .execute(pool)
         .await?;
 
@@ -271,7 +276,7 @@ pub async fn get_all_discord_configs(
 ) -> Result<Vec<DiscordConfig>, sqlx::Error> {
     sqlx::query_as::<_, DiscordConfig>(
         r#"
-        SELECT user_id, bot_token, bot_user_id, enabled, allowed_users
+        SELECT user_id, bot_token, bot_user_id, enabled, allowed_users, owner_discord_id
         FROM discord_configs
         WHERE enabled = TRUE
         "#,
@@ -286,7 +291,7 @@ pub async fn get_discord_config_by_user_id(
 ) -> Result<Option<DiscordConfig>, sqlx::Error> {
     sqlx::query_as::<_, DiscordConfig>(
         r#"
-        SELECT user_id, bot_token, bot_user_id, enabled, allowed_users
+        SELECT user_id, bot_token, bot_user_id, enabled, allowed_users, owner_discord_id
         FROM discord_configs
         WHERE user_id = $1
         "#,
@@ -320,18 +325,20 @@ pub async fn upsert_discord_config(
     user_id: &str,
     bot_token: &str,
     allowed_users: &[String],
+    owner_discord_id: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
-        INSERT INTO discord_configs (user_id, bot_token, allowed_users)
-        VALUES ($1, $2, $3)
+        INSERT INTO discord_configs (user_id, bot_token, allowed_users, owner_discord_id)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT (user_id) DO UPDATE
-        SET bot_token = $2, allowed_users = $3, updated_at = NOW()
+        SET bot_token = $2, allowed_users = $3, owner_discord_id = $4, updated_at = NOW()
         "#,
     )
     .bind(user_id)
     .bind(bot_token)
     .bind(allowed_users)
+    .bind(owner_discord_id)
     .execute(db)
     .await?;
     Ok(())
