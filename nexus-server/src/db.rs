@@ -66,10 +66,6 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
 
-    sqlx::query("ALTER TABLE discord_configs ADD COLUMN IF NOT EXISTS owner_discord_id TEXT")
-        .execute(pool)
-        .await?;
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS sessions (
@@ -116,6 +112,10 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+
+    sqlx::query("ALTER TABLE discord_configs ADD COLUMN IF NOT EXISTS owner_discord_id TEXT")
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         r#"

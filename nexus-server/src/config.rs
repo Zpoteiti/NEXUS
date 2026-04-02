@@ -3,18 +3,8 @@ pub struct LlmConfig {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
-    #[serde(default = "default_context_window")]
     pub context_window: usize,
-    #[serde(default = "default_max_output_tokens")]
     pub max_output_tokens: usize,
-}
-
-fn default_context_window() -> usize {
-    204800
-}
-
-fn default_max_output_tokens() -> usize {
-    131072
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

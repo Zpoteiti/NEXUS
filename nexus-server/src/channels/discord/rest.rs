@@ -117,7 +117,7 @@ pub async fn send_message_with_files(
 ) -> Result<(), String> {
     let url = format!("{}/channels/{}/messages", DISCORD_API_BASE, channel_id);
 
-    let mut form = build_multipart_form(content, file_paths)?;
+    let mut form = build_multipart_form(content, file_paths).await?;
 
     for _attempt in 0..MAX_RETRIES {
         let response = HTTP_CLIENT
@@ -148,7 +148,7 @@ pub async fn send_message_with_files(
             );
             tokio::time::sleep(std::time::Duration::from_secs_f64(retry_after)).await;
             // Rebuild form for retry (multipart::Form is consumed by send)
-            form = build_multipart_form(content, file_paths)?;
+            form = build_multipart_form(content, file_paths).await?;
             continue;
         }
 
@@ -159,7 +159,7 @@ pub async fn send_message_with_files(
     Err("Discord file send: max retries exceeded".to_string())
 }
 
-fn build_multipart_form(
+async fn build_multipart_form(
     content: &str,
     file_paths: &[String],
 ) -> Result<reqwest::multipart::Form, String> {
