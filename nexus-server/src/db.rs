@@ -58,6 +58,14 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query("ALTER TABLE device_tokens ADD COLUMN IF NOT EXISTS fs_policy JSONB NOT NULL DEFAULT '{\"mode\":\"sandbox\"}'")
+        .execute(pool)
+        .await?;
+
+    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_device_tokens_user_device ON device_tokens (user_id, device_name)")
+        .execute(pool)
+        .await?;
+
     sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await?;
@@ -771,4 +779,46 @@ pub async fn list_memory_chunks(
     .bind(offset)
     .fetch_all(db)
     .await
+}
+
+// ============================================================================
+// Device Policy
+// ============================================================================
+
+pub async fn get_device_policy(
+    db: &PgPool,
+    user_id: &str,
+    device_name: &str,
+) -> Result<nexus_common::protocol::FsPolicy, sqlx::Error> {
+    let row: (serde_json::Value,) = sqlx::query_as(
+        "SELECT COALESCE(fs_policy, '{\"mode\":\"sandbox\"}'::jsonb) FROM device_tokens WHERE user_id = $1 AND device_name = $2 AND revoked = FALSE"
+    )
+    .bind(user_id)
+    .bind(device_name)
+    .fetch_one(db)
+    .await?;
+
+    serde_json::from_value(row.0)
+        .map_err(|e| sqlx::Error::Protocol(format!("invalid fs_policy JSON: {e}")))
+}
+
+pub async fn update_device_policy(
+    db: &PgPool,
+    user_id: &str,
+    device_name: &str,
+    policy: &nexus_common::protocol::FsPolicy,
+) -> Result<bool, sqlx::Error> {
+    let json = serde_json::to_value(policy)
+        .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize policy: {e}")))?;
+
+    let result = sqlx::query(
+        "UPDATE device_tokens SET fs_policy = $1 WHERE user_id = $2 AND device_name = $3 AND revoked = FALSE"
+    )
+    .bind(json)
+    .bind(user_id)
+    .bind(device_name)
+    .execute(db)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
 }
