@@ -6,10 +6,11 @@
 /// 3. 将任何模块返回的 Ok(String) 或 Err(String) 统一包装为 `protocol::ToolExecutionResult` 向上层返回。
 
 use nexus_common::consts::{EXIT_CODE_SUCCESS, EXIT_CODE_TIMEOUT};
-use nexus_common::protocol::{ExecuteToolRequest, ToolExecutionResult};
+use nexus_common::protocol::{ExecuteToolRequest, FsPolicy, ToolExecutionResult};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
+use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
 use crate::discovery;
@@ -20,6 +21,9 @@ use crate::tools::{LocalTool, ToolError};
 
 /// Top-level execution timeout in seconds.
 const EXECUTOR_TIMEOUT_SEC: u64 = 120;
+
+/// Filesystem tool names that require policy-aware dispatch.
+const FS_TOOLS: &[&str] = &["read_file", "write_file", "list_dir", "stat"];
 
 /// 本地工具注册表 — executor.rs 和 discovery.rs 共用的单一样本来源。
 pub static LOCAL_TOOL_REGISTRY: LazyLock<HashMap<&'static str, Box<dyn LocalTool>>> =
@@ -34,9 +38,17 @@ pub static LOCAL_TOOL_REGISTRY: LazyLock<HashMap<&'static str, Box<dyn LocalTool
     });
 
 /// 执行工具调用请求，带 120s 顶层超时保护。
-pub async fn execute_tool_request(req: ExecuteToolRequest) -> ToolExecutionResult {
+pub async fn execute_tool_request(
+    req: ExecuteToolRequest,
+    fs_policy: &Arc<RwLock<FsPolicy>>,
+) -> ToolExecutionResult {
     let request_id = req.request_id.clone();
-    match timeout(Duration::from_secs(EXECUTOR_TIMEOUT_SEC), execute_tool_inner(req)).await {
+    match timeout(
+        Duration::from_secs(EXECUTOR_TIMEOUT_SEC),
+        execute_tool_inner(req, fs_policy),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => ToolExecutionResult {
             request_id,
@@ -47,13 +59,20 @@ pub async fn execute_tool_request(req: ExecuteToolRequest) -> ToolExecutionResul
 }
 
 /// Inner implementation without top-level timeout.
-async fn execute_tool_inner(req: ExecuteToolRequest) -> ToolExecutionResult {
+async fn execute_tool_inner(
+    req: ExecuteToolRequest,
+    fs_policy: &Arc<RwLock<FsPolicy>>,
+) -> ToolExecutionResult {
     let request_id = req.request_id.clone();
     let tool_name = req.tool_name.clone();
     let arguments = req.arguments;
 
     // 路由到对应工具
-    let result = if let Some(tool) = LOCAL_TOOL_REGISTRY.get(tool_name.as_str()) {
+    let result = if FS_TOOLS.contains(&tool_name.as_str()) {
+        // Filesystem tools use policy-aware dispatch
+        let policy = fs_policy.read().await;
+        execute_fs_tool(&tool_name, arguments, &policy).await
+    } else if let Some(tool) = LOCAL_TOOL_REGISTRY.get(tool_name.as_str()) {
         tool.execute(arguments).await
     } else if let Some((server_name, _tool_name)) = parse_mcp_tool_name(&tool_name) {
         // MCP 工具
@@ -77,6 +96,21 @@ async fn execute_tool_inner(req: ExecuteToolRequest) -> ToolExecutionResult {
             exit_code: e.exit_code(),
             output: e.to_string(),
         },
+    }
+}
+
+/// Dispatch filesystem tool calls with the active FsPolicy.
+async fn execute_fs_tool(
+    tool_name: &str,
+    arguments: Value,
+    policy: &FsPolicy,
+) -> Result<String, ToolError> {
+    match tool_name {
+        "read_file" => ReadFileTool::new().execute_with_policy(arguments, policy).await,
+        "write_file" => WriteFileTool::new().execute_with_policy(arguments, policy).await,
+        "list_dir" => ListDirTool::new().execute_with_policy(arguments, policy).await,
+        "stat" => StatTool::new().execute_with_policy(arguments, policy).await,
+        _ => Err(ToolError::NotFound(format!("unknown fs tool: {}", tool_name))),
     }
 }
 

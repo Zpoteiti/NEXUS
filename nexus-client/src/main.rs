@@ -50,7 +50,7 @@ async fn main() {
         match &message {
             ServerToClient::ExecuteToolRequest(req) => {
                 info!("received ExecuteToolRequest: tool={}", req.tool_name);
-                let result = executor::execute_tool_request(req.clone()).await;
+                let result = executor::execute_tool_request(req.clone(), &fs_policy).await;
                 let response = ClientToServer::ToolExecutionResult(result);
                 if let Err(e) = session.send(response).await {
                     warn!("failed to send ToolExecutionResult: {}", e);
