@@ -94,6 +94,11 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
     // Use token as internal device key
     let device_key = token.clone();
 
+    // Fetch current policy before registering device
+    let fs_policy = db::get_device_policy(&state.db, &user_id, &device_name)
+        .await
+        .unwrap_or_default();
+
     // Step 4: Register device in routing tables
     let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(256);
     {
@@ -106,6 +111,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 ws_tx: ws_tx.clone(),
                 tools: Vec::new(),
                 skills: Vec::new(),
+                fs_policy: fs_policy.clone(),
                 last_seen: Instant::now(),
             },
         );
@@ -126,9 +132,6 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
     });
 
     // Step 5: Send LoginSuccess (tell client its device_name and current policy)
-    let fs_policy = db::get_device_policy(&state.db, &user_id, &device_name)
-        .await
-        .unwrap_or_default();
     let login_success = ServerToClient::LoginSuccess {
         user_id: user_id.clone(),
         device_name: device_name.clone(),
@@ -173,17 +176,19 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
 
         match incoming {
             ClientToServer::Heartbeat { hash: _, status: _ } => {
-                let mut devices = state.devices.write().await;
-                if let Some(device) = devices.get_mut(&device_key) {
-                    device.last_seen = Instant::now();
-                }
-                drop(devices);
-
-                let fs_policy = db::get_device_policy(&state.db, &user_id, &device_name)
+                // Refresh policy from DB (cheap: only on heartbeat interval, not per-message)
+                let fresh_policy = db::get_device_policy(&state.db, &user_id, &device_name)
                     .await
                     .unwrap_or_default();
 
-                let ack = ServerToClient::HeartbeatAck { fs_policy };
+                let mut devices = state.devices.write().await;
+                if let Some(device) = devices.get_mut(&device_key) {
+                    device.last_seen = Instant::now();
+                    device.fs_policy = fresh_policy.clone();
+                }
+                drop(devices);
+
+                let ack = ServerToClient::HeartbeatAck { fs_policy: fresh_policy };
                 let ack_text = serde_json::to_string(&ack).unwrap_or_default();
                 let _ = ws_tx.send(Message::Text(ack_text.into())).await;
             }

@@ -162,20 +162,26 @@ pub async fn build_system_prompt(
 }
 
 /// Collect all always=true skills from the user's online devices.
+/// Uses the devices_by_user index to avoid scanning all devices.
 async fn collect_always_skills(state: &AppState, user_id: &str) -> Vec<(String, String)> {
+    let devices_by_user = state.devices_by_user.read().await;
+    let user_devices = match devices_by_user.get(user_id) {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+
     let devices = state.devices.read().await;
     let mut skills = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for device_state in devices.values() {
-        if device_state.user_id != user_id {
-            continue;
-        }
-        for skill in &device_state.skills {
-            if skill.always {
-                if let Some(ref content) = skill.content {
-                    if seen.insert(skill.name.clone()) {
-                        skills.push((skill.name.clone(), content.clone()));
+    for device_key in user_devices.values() {
+        if let Some(device_state) = devices.get(device_key) {
+            for skill in &device_state.skills {
+                if skill.always {
+                    if let Some(ref content) = skill.content {
+                        if seen.insert(skill.name.clone()) {
+                            skills.push((skill.name.clone(), content.clone()));
+                        }
                     }
                 }
             }

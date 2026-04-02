@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::Message;
-use nexus_common::protocol::{FileUploadResponse, SkillFull, ToolExecutionResult};
+use nexus_common::protocol::{FileUploadResponse, FsPolicy, SkillFull, ToolExecutionResult};
 use sqlx::PgPool;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -34,6 +34,7 @@ pub struct DeviceState {
     pub ws_tx: mpsc::Sender<Message>,
     pub tools: Vec<serde_json::Value>,
     pub skills: Vec<SkillFull>,
+    pub fs_policy: FsPolicy,
     pub last_seen: Instant,
 }
 

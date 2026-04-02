@@ -7,6 +7,9 @@ use nexus_common::protocol::FsPolicy;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+static WORKSPACE_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// Operation type for policy enforcement.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,22 +24,26 @@ pub enum FsOp {
 /// 1. `NEXUS_WORKSPACE` 环境变量
 /// 2. `~/.nexus/workspace`（`HOME` 或 `USERPROFILE` 均考虑）
 pub fn get_workspace_root() -> PathBuf {
-    if let Some(ws) = env::var("NEXUS_WORKSPACE").ok().and_then(|v| {
-        let trimmed = v.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(trimmed))
-        }
-    }) {
-        return ws;
-    }
+    WORKSPACE_ROOT
+        .get_or_init(|| {
+            if let Some(ws) = env::var("NEXUS_WORKSPACE").ok().and_then(|v| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(trimmed))
+                }
+            }) {
+                return ws;
+            }
 
-    let home = env::var("HOME")
-        .or_else(|_| env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
+            let home = env::var("HOME")
+                .or_else(|_| env::var("USERPROFILE"))
+                .unwrap_or_else(|_| ".".to_string());
 
-    PathBuf::from(home).join(".nexus").join("workspace")
+            PathBuf::from(home).join(".nexus").join("workspace")
+        })
+        .clone()
 }
 
 /// 规范化并校验路径。
@@ -72,15 +79,6 @@ pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, String> {
     }
 
     Ok(resolved)
-}
-
-/// Async wrapper around `sanitize_path` that runs the blocking `canonicalize()` call
-/// on a dedicated thread via `spawn_blocking`, avoiding stalls on the async runtime.
-pub async fn sanitize_path_async(raw: &str, restrict: bool) -> Result<PathBuf, String> {
-    let raw = raw.to_string();
-    tokio::task::spawn_blocking(move || sanitize_path(&raw, restrict))
-        .await
-        .unwrap_or_else(|_| Err("path resolution task panicked".to_string()))
 }
 
 /// Policy-aware path sanitization.

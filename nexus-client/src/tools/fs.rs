@@ -48,37 +48,6 @@ fn detect_image_mime(data: &[u8]) -> Option<&'static str> {
     None
 }
 
-/// 将路径解析为 workspace 内的绝对路径。
-#[allow(dead_code)]
-fn resolve_path(path: &str) -> Result<PathBuf, ToolError> {
-    env::sanitize_path(path, true)
-        .map_err(|e| ToolError::InvalidParams(format!("path outside workspace: {}", e)))
-}
-
-/// 解析并校验路径，返回 PathBuf。
-#[allow(dead_code)]
-fn resolve_required_path(path: &str) -> Result<PathBuf, ToolError> {
-    if path.is_empty() {
-        return Err(ToolError::InvalidParams("path is required".to_string()));
-    }
-    resolve_path(path)
-}
-
-/// Async version of `resolve_path` — runs canonicalize off the async runtime.
-async fn resolve_path_async(path: &str) -> Result<PathBuf, ToolError> {
-    env::sanitize_path_async(path, true)
-        .await
-        .map_err(|e| ToolError::InvalidParams(format!("path outside workspace: {}", e)))
-}
-
-/// Async version of `resolve_required_path`.
-async fn resolve_required_path_async(path: &str) -> Result<PathBuf, ToolError> {
-    if path.is_empty() {
-        return Err(ToolError::InvalidParams("path is required".to_string()));
-    }
-    resolve_path_async(path).await
-}
-
 /// Policy-aware path resolution for read operations.
 async fn resolve_path_for_read(path: &str, policy: &FsPolicy) -> Result<PathBuf, ToolError> {
     if path.is_empty() {
@@ -148,21 +117,11 @@ impl LocalTool for ReadFileTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
-            let fp = resolve_required_path_async(path).await?;
-            self.read_file_core(&args, fp).await
-        })
-        .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        self.execute_with_policy(args, &FsPolicy::Sandbox).await
     }
 }
 
 impl ReadFileTool {
-    /// Execute with policy-aware path resolution.
     pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
         timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
             let path = args
@@ -320,26 +279,11 @@ impl LocalTool for WriteFileTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("missing required field: content".to_string()))?
-                .to_string();
-            let fp = resolve_required_path_async(path).await?;
-            Self::write_file_core(fp, content).await
-        })
-        .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        self.execute_with_policy(args, &FsPolicy::Sandbox).await
     }
 }
 
 impl WriteFileTool {
-    /// Execute with policy-aware path resolution.
     pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
         timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
             let path = args
@@ -439,21 +383,11 @@ impl LocalTool for ListDirTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
-            let dp = resolve_required_path_async(path).await?;
-            Self::list_dir_core(&args, dp).await
-        })
-        .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        self.execute_with_policy(args, &FsPolicy::Sandbox).await
     }
 }
 
 impl ListDirTool {
-    /// Execute with policy-aware path resolution.
     pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
         timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
             let path = args
@@ -602,21 +536,11 @@ impl LocalTool for StatTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
-            let fp = resolve_required_path_async(path).await?;
-            Self::stat_core(fp).await
-        })
-        .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        self.execute_with_policy(args, &FsPolicy::Sandbox).await
     }
 }
 
 impl StatTool {
-    /// Execute with policy-aware path resolution.
     pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
         timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
             let path = args
