@@ -7,6 +7,7 @@
 /// - `nanobot/agent/tools/filesystem.py` 的 ReadFileTool、WriteFileTool、ListDirTool。
 
 use async_trait::async_trait;
+use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
@@ -15,6 +16,7 @@ use tokio::time::{timeout, Duration};
 
 use super::{LocalTool, ToolError};
 use crate::env;
+use crate::env::FsOp;
 
 /// Per-tool timeout in seconds for filesystem operations.
 const FS_TOOL_TIMEOUT_SEC: u64 = 30;
@@ -77,6 +79,26 @@ async fn resolve_required_path_async(path: &str) -> Result<PathBuf, ToolError> {
     resolve_path_async(path).await
 }
 
+/// Policy-aware path resolution for read operations.
+async fn resolve_path_for_read(path: &str, policy: &FsPolicy) -> Result<PathBuf, ToolError> {
+    if path.is_empty() {
+        return Err(ToolError::InvalidParams("path is required".to_string()));
+    }
+    env::sanitize_path_with_policy_async(path, FsOp::Read, policy)
+        .await
+        .map_err(|e| ToolError::InvalidParams(format!("path access denied: {}", e)))
+}
+
+/// Policy-aware path resolution for write operations.
+async fn resolve_path_for_write(path: &str, policy: &FsPolicy) -> Result<PathBuf, ToolError> {
+    if path.is_empty() {
+        return Err(ToolError::InvalidParams("path is required".to_string()));
+    }
+    env::sanitize_path_with_policy_async(path, FsOp::Write, policy)
+        .await
+        .map_err(|e| ToolError::InvalidParams(format!("path access denied: {}", e)))
+}
+
 // ---------------------------------------------------------------------------
 // read_file
 // ---------------------------------------------------------------------------
@@ -126,28 +148,44 @@ impl LocalTool for ReadFileTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), self.execute_inner(args))
-            .await
-            .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+            let fp = resolve_required_path_async(path).await?;
+            self.read_file_core(&args, fp).await
+        })
+        .await
+        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
     }
 }
 
 impl ReadFileTool {
-    async fn execute_inner(&self, args: Value) -> Result<String, ToolError> {
-        let path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+    /// Execute with policy-aware path resolution.
+    pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+            let fp = resolve_path_for_read(path, policy).await?;
+            self.read_file_core(&args, fp).await
+        })
+        .await
+        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+    }
 
-        let fp = resolve_required_path_async(path).await?;
+    async fn read_file_core(&self, args: &Value, fp: PathBuf) -> Result<String, ToolError> {
+        let path_display = fp.display().to_string();
 
         // 文件不存在
         if !fp.exists() {
-            return Err(ToolError::NotFound(format!("file not found: {}", path)));
+            return Err(ToolError::NotFound(format!("file not found: {}", path_display)));
         }
         // 不是文件
         if !fp.is_file() {
-            return Err(ToolError::InvalidParams(format!("not a file: {}", path)));
+            return Err(ToolError::InvalidParams(format!("not a file: {}", path_display)));
         }
 
         // 读取原始字节
@@ -160,7 +198,7 @@ impl ReadFileTool {
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to read file: {}", e)))?;
 
         if raw.is_empty() {
-            return Ok(format!("(Empty file: {})", path));
+            return Ok(format!("(Empty file: {})", path_display));
         }
 
         // 图片检测
@@ -282,27 +320,45 @@ impl LocalTool for WriteFileTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), self.execute_inner(args))
-            .await
-            .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: content".to_string()))?
+                .to_string();
+            let fp = resolve_required_path_async(path).await?;
+            Self::write_file_core(fp, content).await
+        })
+        .await
+        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
     }
 }
 
 impl WriteFileTool {
-    async fn execute_inner(&self, args: Value) -> Result<String, ToolError> {
-        let path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+    /// Execute with policy-aware path resolution.
+    pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: content".to_string()))?
+                .to_string();
+            let fp = resolve_path_for_write(path, policy).await?;
+            Self::write_file_core(fp, content).await
+        })
+        .await
+        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+    }
 
-        let content = args
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidParams("missing required field: content".to_string()))?
-            .to_string();
-
-        let fp = resolve_required_path_async(path).await?;
-
+    async fn write_file_core(fp: PathBuf, content: String) -> Result<String, ToolError> {
         // 创建父目录
         if let Some(parent) = fp.parent() {
             fs::create_dir_all(parent)
@@ -383,18 +439,36 @@ impl LocalTool for ListDirTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), self.execute_inner(args))
-            .await
-            .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+            let dp = resolve_required_path_async(path).await?;
+            Self::list_dir_core(&args, dp).await
+        })
+        .await
+        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
     }
 }
 
 impl ListDirTool {
-    async fn execute_inner(&self, args: Value) -> Result<String, ToolError> {
-        let path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+    /// Execute with policy-aware path resolution.
+    pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+            let dp = resolve_path_for_read(path, policy).await?;
+            Self::list_dir_core(&args, dp).await
+        })
+        .await
+        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+    }
+
+    async fn list_dir_core(args: &Value, dp: PathBuf) -> Result<String, ToolError> {
+        let path_display = dp.display().to_string();
 
         let recursive = args
             .get("recursive")
@@ -406,13 +480,11 @@ impl ListDirTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(LIST_DIR_DEFAULT_MAX as u64) as usize;
 
-        let dp = resolve_required_path_async(path).await?;
-
         if !dp.exists() {
-            return Err(ToolError::NotFound(format!("directory not found: {}", path)));
+            return Err(ToolError::NotFound(format!("directory not found: {}", path_display)));
         }
         if !dp.is_dir() {
-            return Err(ToolError::InvalidParams(format!("not a directory: {}", path)));
+            return Err(ToolError::InvalidParams(format!("not a directory: {}", path_display)));
         }
 
         let cap = max_entries.max(1);
@@ -478,7 +550,7 @@ impl ListDirTool {
         }
 
         if items.is_empty() && total == 0 {
-            return Ok(format!("Directory {} is empty", path));
+            return Ok(format!("Directory {} is empty", path_display));
         }
 
         items.sort();
@@ -530,23 +602,37 @@ impl LocalTool for StatTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), self.execute_inner(args))
-            .await
-            .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+            let fp = resolve_required_path_async(path).await?;
+            Self::stat_core(fp).await
+        })
+        .await
+        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
     }
 }
 
 impl StatTool {
-    async fn execute_inner(&self, args: Value) -> Result<String, ToolError> {
-        let path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+    /// Execute with policy-aware path resolution.
+    pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
+            let fp = resolve_path_for_read(path, policy).await?;
+            Self::stat_core(fp).await
+        })
+        .await
+        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+    }
 
-        let fp = resolve_required_path_async(path).await?;
-
+    async fn stat_core(fp: PathBuf) -> Result<String, ToolError> {
         if !fp.exists() {
-            return Err(ToolError::NotFound(format!("path not found: {}", path)));
+            return Err(ToolError::NotFound(format!("path not found: {}", fp.display())));
         }
 
         let metadata = fs::metadata(&fp)

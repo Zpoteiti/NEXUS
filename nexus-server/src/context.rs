@@ -148,7 +148,41 @@ pub async fn build_system_prompt(
         }
     }
 
+    // 段 5 — 常驻 Skill 内容注入（always=true 的 skill 全文注入）
+    let always_skills = collect_always_skills(state, user_id).await;
+    if !always_skills.is_empty() {
+        let mut skill_section = String::from("## Active Skills\n");
+        for (name, content) in &always_skills {
+            skill_section.push_str(&format!("### {}\n{}\n\n", name, content));
+        }
+        sections.push(skill_section);
+    }
+
     sections.join(SECTION_SEPARATOR)
+}
+
+/// Collect all always=true skills from the user's online devices.
+async fn collect_always_skills(state: &AppState, user_id: &str) -> Vec<(String, String)> {
+    let devices = state.devices.read().await;
+    let mut skills = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for device_state in devices.values() {
+        if device_state.user_id != user_id {
+            continue;
+        }
+        for skill in &device_state.skills {
+            if skill.always {
+                if let Some(ref content) = skill.content {
+                    if seen.insert(skill.name.clone()) {
+                        skills.push((skill.name.clone(), content.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    skills
 }
 
 /// 构建发送者身份与安全边界段。

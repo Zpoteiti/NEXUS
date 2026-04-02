@@ -105,6 +105,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 device_name: device_name.clone(),
                 ws_tx: ws_tx.clone(),
                 tools: Vec::new(),
+                skills: Vec::new(),
                 last_seen: Instant::now(),
             },
         );
@@ -124,10 +125,14 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         }
     });
 
-    // Step 5: Send LoginSuccess (tell client its device_name)
+    // Step 5: Send LoginSuccess (tell client its device_name and current policy)
+    let fs_policy = db::get_device_policy(&state.db, &user_id, &device_name)
+        .await
+        .unwrap_or_default();
     let login_success = ServerToClient::LoginSuccess {
         user_id: user_id.clone(),
         device_name: device_name.clone(),
+        fs_policy,
     };
     let login_success_text = match serde_json::to_string(&login_success) {
         Ok(text) => text,
@@ -172,11 +177,21 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 if let Some(device) = devices.get_mut(&device_key) {
                     device.last_seen = Instant::now();
                 }
+                drop(devices);
+
+                let fs_policy = db::get_device_policy(&state.db, &user_id, &device_name)
+                    .await
+                    .unwrap_or_default();
+
+                let ack = ServerToClient::HeartbeatAck { fs_policy };
+                let ack_text = serde_json::to_string(&ack).unwrap_or_default();
+                let _ = ws_tx.send(Message::Text(ack_text.into())).await;
             }
-            ClientToServer::RegisterTools { schemas, skills: _ } => {
+            ClientToServer::RegisterTools { schemas, skills } => {
                 let mut devices = state.devices.write().await;
                 if let Some(device) = devices.get_mut(&device_key) {
                     device.tools = schemas;
+                    device.skills = skills;
                 }
             }
             ClientToServer::ToolExecutionResult(result) => {

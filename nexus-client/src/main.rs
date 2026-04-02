@@ -31,7 +31,9 @@ mod session;
 mod skills;
 pub mod tools;
 
-use nexus_common::protocol::{ClientToServer, FileUploadRequest, FileUploadResponse, ServerToClient};
+use nexus_common::protocol::{ClientToServer, FileUploadRequest, FileUploadResponse, FsPolicy, ServerToClient};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 #[tokio::main]
@@ -39,7 +41,8 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let config = config::load_config();
-    let mut session = session::connect_and_loop(config).await;
+    let fs_policy = Arc::new(RwLock::new(FsPolicy::default()));
+    let mut session = session::connect_and_loop(config, fs_policy.clone()).await;
 
     info!("nexus-client started, waiting for server messages...");
 
@@ -47,7 +50,7 @@ async fn main() {
         match &message {
             ServerToClient::ExecuteToolRequest(req) => {
                 info!("received ExecuteToolRequest: tool={}", req.tool_name);
-                let result = executor::execute_tool_request(req.clone()).await;
+                let result = executor::execute_tool_request(req.clone(), &fs_policy).await;
                 let response = ClientToServer::ToolExecutionResult(result);
                 if let Err(e) = session.send(response).await {
                     warn!("failed to send ToolExecutionResult: {}", e);
@@ -65,11 +68,14 @@ async fn main() {
                 message } => {
                 warn!("unexpected RequireLogin during main loop: {}", message);
             }
-            ServerToClient::LoginSuccess { user_id, device_name } => {
+            ServerToClient::LoginSuccess { user_id, device_name, .. } => {
                 info!("unexpected LoginSuccess during main loop: user_id={}, device_name={}", user_id, device_name);
             }
             ServerToClient::LoginFailed { reason } => {
                 warn!("unexpected LoginFailed during main loop: {}", reason);
+            }
+            ServerToClient::HeartbeatAck { .. } => {
+                // Handled in session.rs message loop; should not reach here
             }
         }
     }

@@ -9,6 +9,27 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Per-device filesystem access policy.
+/// - Sandbox: only workspace (default)
+/// - Whitelist: workspace (read+write) + listed paths (read-only)
+/// - Unrestricted: full filesystem access
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "mode")]
+pub enum FsPolicy {
+    #[serde(rename = "sandbox")]
+    Sandbox,
+    #[serde(rename = "whitelist")]
+    Whitelist { allowed_paths: Vec<String> },
+    #[serde(rename = "unrestricted")]
+    Unrestricted,
+}
+
+impl Default for FsPolicy {
+    fn default() -> Self {
+        FsPolicy::Sandbox
+    }
+}
+
 /// Skill 全量信息，用于 Client → Server 注册。
 ///
 /// - always=false: content = None（服务端只有摘要，正文由 Agent 自行 read_file）
@@ -34,9 +55,13 @@ pub enum ServerToClient {
     LoginSuccess {
         user_id: String,
         device_name: String,
+        fs_policy: FsPolicy,
     },
     LoginFailed {
         reason: String,
+    },
+    HeartbeatAck {
+        fs_policy: FsPolicy,
     },
 }
 

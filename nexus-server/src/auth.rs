@@ -469,6 +469,55 @@ pub async fn update_llm_config(
 }
 
 // ============================================================================
+// Device policy handlers
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateDevicePolicyRequest {
+    pub fs_policy: nexus_common::protocol::FsPolicy,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DevicePolicyResponse {
+    pub device_name: String,
+    pub fs_policy: nexus_common::protocol::FsPolicy,
+}
+
+/// GET /api/devices/{device_name}/policy — get the fs_policy for a device
+pub async fn get_device_policy(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(device_name): Path<String>,
+) -> Response {
+    match db::get_device_policy(&state.db, &claims.sub, &device_name).await {
+        Ok(policy) => Json(DevicePolicyResponse {
+            device_name,
+            fs_policy: policy,
+        })
+        .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "Device not found").into_response(),
+    }
+}
+
+/// PATCH /api/devices/{device_name}/policy — update the fs_policy for a device
+pub async fn update_device_policy(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(device_name): Path<String>,
+    Json(payload): Json<UpdateDevicePolicyRequest>,
+) -> Response {
+    match db::update_device_policy(&state.db, &claims.sub, &device_name, &payload.fs_policy).await {
+        Ok(true) => Json(DevicePolicyResponse {
+            device_name,
+            fs_policy: payload.fs_policy,
+        })
+        .into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "Device not found or revoked").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")).into_response(),
+    }
+}
+
+// ============================================================================
 // Embedding config handlers
 // ============================================================================
 

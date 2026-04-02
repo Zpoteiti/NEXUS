@@ -3,9 +3,17 @@
 /// 2. 划定"安全工作区 (Workspace)"的绝对路径，禁止 Agent 操作该路径之外的文件。
 /// 3. 管理 Agent 执行命令时的环境变量 (隔离宿主机的敏感 ENV)。
 
+use nexus_common::protocol::FsPolicy;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
+
+/// Operation type for policy enforcement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FsOp {
+    Read,
+    Write,
+}
 
 /// 获取工作区根目录。
 ///
@@ -71,6 +79,88 @@ pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, String> {
 pub async fn sanitize_path_async(raw: &str, restrict: bool) -> Result<PathBuf, String> {
     let raw = raw.to_string();
     tokio::task::spawn_blocking(move || sanitize_path(&raw, restrict))
+        .await
+        .unwrap_or_else(|_| Err("path resolution task panicked".to_string()))
+}
+
+/// Policy-aware path sanitization.
+///
+/// Enforces the given `FsPolicy`:
+/// - `Unrestricted`: all paths allowed.
+/// - `Sandbox`: only workspace paths allowed.
+/// - `Whitelist`: workspace (read+write), whitelisted paths (read-only).
+pub fn sanitize_path_with_policy(
+    path: &str,
+    op: FsOp,
+    policy: &FsPolicy,
+) -> Result<PathBuf, String> {
+    let p = Path::new(path);
+
+    let resolved = if p.is_relative() {
+        get_workspace_root().join(p)
+    } else {
+        PathBuf::from(p)
+    };
+
+    let resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+
+    match policy {
+        FsPolicy::Unrestricted => Ok(resolved),
+        FsPolicy::Sandbox => {
+            let workspace = get_workspace_root();
+            let workspace = workspace.canonicalize().unwrap_or(workspace);
+            if !is_subpath(&resolved, &workspace) {
+                return Err(format!(
+                    "Path {} is outside workspace {}",
+                    resolved.display(),
+                    workspace.display()
+                ));
+            }
+            Ok(resolved)
+        }
+        FsPolicy::Whitelist { allowed_paths } => {
+            let workspace = get_workspace_root();
+            let workspace = workspace.canonicalize().unwrap_or(workspace);
+
+            // Workspace: always allowed (read+write)
+            if is_subpath(&resolved, &workspace) {
+                return Ok(resolved);
+            }
+
+            // Whitelisted paths: read-only
+            if op == FsOp::Write {
+                return Err(format!(
+                    "Path {} is outside workspace — writes only allowed in workspace",
+                    resolved.display()
+                ));
+            }
+
+            for allowed in allowed_paths {
+                let allowed_path = PathBuf::from(allowed);
+                let allowed_path = allowed_path.canonicalize().unwrap_or(allowed_path);
+                if is_subpath(&resolved, &allowed_path) {
+                    return Ok(resolved);
+                }
+            }
+
+            Err(format!(
+                "Path {} is outside workspace and not in whitelist",
+                resolved.display()
+            ))
+        }
+    }
+}
+
+/// Async wrapper around `sanitize_path_with_policy` that runs the blocking
+/// `canonicalize()` call on a dedicated thread via `spawn_blocking`.
+pub async fn sanitize_path_with_policy_async(
+    raw: &str,
+    op: FsOp,
+    policy: &FsPolicy,
+) -> Result<PathBuf, String> {
+    let raw = raw.to_string();
+    let policy = policy.clone();
+    tokio::task::spawn_blocking(move || sanitize_path_with_policy(&raw, op, &policy))
         .await
         .unwrap_or_else(|_| Err("path resolution task panicked".to_string()))
 }
