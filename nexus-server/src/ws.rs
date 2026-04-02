@@ -105,6 +105,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 device_name: device_name.clone(),
                 ws_tx: ws_tx.clone(),
                 tools: Vec::new(),
+                skills: Vec::new(),
                 last_seen: Instant::now(),
             },
         );
@@ -173,10 +174,11 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                     device.last_seen = Instant::now();
                 }
             }
-            ClientToServer::RegisterTools { schemas, skills: _ } => {
+            ClientToServer::RegisterTools { schemas, skills } => {
                 let mut devices = state.devices.write().await;
                 if let Some(device) = devices.get_mut(&device_key) {
                     device.tools = schemas;
+                    device.skills = skills;
                 }
             }
             ClientToServer::ToolExecutionResult(result) => {
