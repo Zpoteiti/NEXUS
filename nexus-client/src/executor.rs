@@ -5,7 +5,7 @@
 ///    - 如果 tool_name 以 "mcp_" 开头，解析出 server_name 和 tool_name，转发给 MCP 会话。
 /// 3. 将任何模块返回的 Ok(String) 或 Err(String) 统一包装为 `protocol::ToolExecutionResult` 向上层返回。
 
-use nexus_common::consts::{EXIT_CODE_SUCCESS, EXIT_CODE_TIMEOUT};
+use nexus_common::consts::{EXIT_CODE_SUCCESS, EXIT_CODE_TIMEOUT, EXIT_CODE_VALIDATION_FAILED};
 use nexus_common::protocol::{ExecuteToolRequest, FsPolicy, ToolExecutionResult};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -66,6 +66,22 @@ async fn execute_tool_inner(
     let request_id = req.request_id.clone();
     let tool_name = req.tool_name.clone();
     let arguments = req.arguments;
+
+    // Shell policy guard: enforce FsPolicy on shell commands before execution
+    if tool_name == "shell" || tool_name == "exec" {
+        let cmd = arguments
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let policy = fs_policy.read().await;
+        if let Err(reason) = crate::tools::shell::guard_command_policy(cmd, &*policy) {
+            return ToolExecutionResult {
+                request_id,
+                exit_code: EXIT_CODE_VALIDATION_FAILED,
+                output: reason,
+            };
+        }
+    }
 
     // 路由到对应工具
     let result = if FS_TOOLS.contains(&tool_name.as_str()) {

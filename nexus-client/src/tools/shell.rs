@@ -12,6 +12,7 @@ use nexus_common::consts::{
     HEARTBEAT_INTERVAL_SEC, MAX_TOOL_OUTPUT_CHARS, TOOL_OUTPUT_HEAD_CHARS,
     TOOL_OUTPUT_TAIL_CHARS,
 };
+use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::process::Stdio;
 use tokio::io::AsyncReadExt;
@@ -212,6 +213,92 @@ fn truncate_output(output: &str) -> String {
         "{}\n... ({} chars truncated) ...\n{}",
         head, middle_len, tail
     )
+}
+
+/// Validate a shell command against the filesystem policy.
+/// Returns Err with a reason if the command violates the policy.
+pub fn guard_command_policy(cmd: &str, policy: &FsPolicy) -> Result<(), String> {
+    match policy {
+        FsPolicy::Unrestricted => Ok(()),
+        FsPolicy::Sandbox => {
+            // Block path traversal
+            if cmd.contains("../") || cmd.contains("..\\") {
+                return Err("command blocked: path traversal '../' not allowed in sandbox mode".to_string());
+            }
+            // Block absolute paths outside workspace
+            let workspace = env::get_workspace_root();
+            let workspace_str = workspace.to_string_lossy();
+            for path in extract_absolute_paths(cmd) {
+                if !path.starts_with(workspace_str.as_ref())
+                    && !path.starts_with("/dev/null")
+                    && !path.starts_with("/tmp/nexus")
+                {
+                    return Err(format!(
+                        "command blocked: absolute path '{}' is outside workspace in sandbox mode",
+                        path
+                    ));
+                }
+            }
+            Ok(())
+        }
+        FsPolicy::Whitelist { allowed_paths } => {
+            // Block path traversal
+            if cmd.contains("../") || cmd.contains("..\\") {
+                return Err("command blocked: path traversal '../' not allowed in whitelist mode".to_string());
+            }
+            // Block absolute paths outside workspace + whitelist
+            let workspace = env::get_workspace_root();
+            let workspace_str = workspace.to_string_lossy();
+            for path in extract_absolute_paths(cmd) {
+                if path.starts_with("/dev/null") || path.starts_with("/tmp/nexus") {
+                    continue;
+                }
+                let mut allowed = path.starts_with(workspace_str.as_ref());
+                if !allowed {
+                    for ap in allowed_paths {
+                        if path.starts_with(ap.as_str()) {
+                            allowed = true;
+                            break;
+                        }
+                    }
+                }
+                if !allowed {
+                    return Err(format!(
+                        "command blocked: absolute path '{}' is outside workspace and whitelist",
+                        path
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Extract absolute paths from a shell command string.
+/// Matches sequences starting with / that look like file paths.
+fn extract_absolute_paths(cmd: &str) -> Vec<&str> {
+    let mut paths = Vec::new();
+    // Simple heuristic: find tokens starting with /
+    for token in cmd.split_whitespace() {
+        // Strip common shell operators/redirects
+        let clean = token
+            .trim_start_matches('>')
+            .trim_start_matches('<')
+            .trim_start_matches('|');
+        if clean.starts_with('/') && clean.len() > 1 {
+            paths.push(clean);
+        }
+    }
+    // Also check for paths after = (like VAR=/some/path)
+    for token in cmd.split_whitespace() {
+        if let Some(pos) = token.find('=') {
+            let after = &token[pos + 1..];
+            if after.starts_with('/') && after.len() > 1 {
+                paths.push(after);
+            }
+        }
+    }
+    paths
 }
 
 #[cfg(test)]
