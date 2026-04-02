@@ -62,7 +62,11 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
 
-    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_device_tokens_user_device ON device_tokens (user_id, device_name)")
+    sqlx::query("DROP INDEX IF EXISTS idx_device_tokens_user_device")
+        .execute(pool)
+        .await?;
+
+    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_device_tokens_user_device ON device_tokens (user_id, device_name) WHERE revoked = FALSE")
         .execute(pool)
         .await?;
 
