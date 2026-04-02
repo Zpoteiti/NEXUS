@@ -58,7 +58,7 @@ async fn main() {
             }
             ServerToClient::FileUploadRequest(req) => {
                 info!("received FileUploadRequest: path={}", req.file_path);
-                let response = handle_file_upload_request(req).await;
+                let response = handle_file_upload_request(req, &fs_policy).await;
                 let msg = ClientToServer::FileUploadResponse(response);
                 if let Err(e) = session.send(msg).await {
                     warn!("failed to send FileUploadResponse: {}", e);
@@ -83,7 +83,10 @@ async fn main() {
     warn!("session inbound channel closed");
 }
 
-async fn handle_file_upload_request(req: &FileUploadRequest) -> FileUploadResponse {
+async fn handle_file_upload_request(
+    req: &FileUploadRequest,
+    fs_policy: &Arc<RwLock<FsPolicy>>,
+) -> FileUploadResponse {
     use base64::Engine;
 
     let path = std::path::Path::new(&req.file_path);
@@ -100,6 +103,16 @@ async fn handle_file_upload_request(req: &FileUploadRequest) -> FileUploadRespon
         mime_type: None,
         error: Some(error),
     };
+
+    // Validate path against FsPolicy before any file access
+    {
+        let policy = fs_policy.read().await;
+        if let Err(reason) =
+            crate::env::sanitize_path_with_policy(&req.file_path, crate::env::FsOp::Read, &*policy)
+        {
+            return make_error(format!("file access denied by device policy: {}", reason));
+        }
+    }
 
     // Check file exists
     if !path.exists() {
