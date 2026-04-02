@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::Message;
-use nexus_common::protocol::ToolExecutionResult;
+use nexus_common::protocol::{FileUploadResponse, ToolExecutionResult};
 use sqlx::PgPool;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -46,6 +46,8 @@ pub struct AppState {
     pub devices_by_user: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
     /// 工具调用挂起等待表：request_id → oneshot::Sender
     pub pending: Arc<RwLock<HashMap<String, oneshot::Sender<ToolExecutionResult>>>>,
+    /// 文件上传挂起等待表：request_id → oneshot::Sender
+    pub file_upload_pending: Arc<RwLock<HashMap<String, oneshot::Sender<FileUploadResponse>>>>,
     pub bus: Arc<MessageBus>,
     pub session_manager: Arc<SessionManager>,
     /// ChannelManager 的 dispatch task handle，用于 graceful shutdown
@@ -61,6 +63,7 @@ impl AppState {
             devices: Arc::new(RwLock::new(HashMap::new())),
             devices_by_user: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(HashMap::new())),
+            file_upload_pending: Arc::new(RwLock::new(HashMap::new())),
             bus,
             session_manager,
             channel_manager_handle: Arc::new(RwLock::new(None)),
@@ -73,8 +76,15 @@ impl AppState {
 pub async fn cancel_pending_requests_for_device(
     device_key: &str,
     pending: &RwLock<HashMap<String, oneshot::Sender<ToolExecutionResult>>>,
+    file_upload_pending: &RwLock<HashMap<String, oneshot::Sender<FileUploadResponse>>>,
 ) {
     let prefix = format!("{device_key}:");
-    let mut pending_map = pending.write().await;
-    pending_map.retain(|request_id, _| !request_id.starts_with(&prefix));
+    {
+        let mut pending_map = pending.write().await;
+        pending_map.retain(|request_id, _| !request_id.starts_with(&prefix));
+    }
+    {
+        let mut pending_map = file_upload_pending.write().await;
+        pending_map.retain(|request_id, _| !request_id.starts_with(&prefix));
+    }
 }

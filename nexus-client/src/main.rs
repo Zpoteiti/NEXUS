@@ -31,7 +31,7 @@ mod session;
 mod skills;
 pub mod tools;
 
-use nexus_common::protocol::{ClientToServer, ServerToClient};
+use nexus_common::protocol::{ClientToServer, FileUploadRequest, FileUploadResponse, ServerToClient};
 use tracing::{info, warn};
 
 #[tokio::main]
@@ -53,6 +53,14 @@ async fn main() {
                     warn!("failed to send ToolExecutionResult: {}", e);
                 }
             }
+            ServerToClient::FileUploadRequest(req) => {
+                info!("received FileUploadRequest: path={}", req.file_path);
+                let response = handle_file_upload_request(req).await;
+                let msg = ClientToServer::FileUploadResponse(response);
+                if let Err(e) = session.send(msg).await {
+                    warn!("failed to send FileUploadResponse: {}", e);
+                }
+            }
             ServerToClient::RequireLogin {
                 message } => {
                 warn!("unexpected RequireLogin during main loop: {}", message);
@@ -67,4 +75,93 @@ async fn main() {
     }
 
     warn!("session inbound channel closed");
+}
+
+async fn handle_file_upload_request(req: &FileUploadRequest) -> FileUploadResponse {
+    use base64::Engine;
+
+    let path = std::path::Path::new(&req.file_path);
+
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let make_error = |error: String| FileUploadResponse {
+        request_id: req.request_id.clone(),
+        file_name: file_name.clone(),
+        content_base64: String::new(),
+        mime_type: None,
+        error: Some(error),
+    };
+
+    // Check file exists
+    if !path.exists() {
+        return make_error(format!("File not found: {}", req.file_path));
+    }
+
+    // Check file size (max 25MB for Discord)
+    match tokio::fs::metadata(path).await {
+        Ok(meta) if meta.len() > 25 * 1024 * 1024 => {
+            return make_error(format!(
+                "File too large: {} bytes (max 25MB)",
+                meta.len()
+            ));
+        }
+        Err(e) => {
+            return make_error(format!("Failed to read file metadata: {}", e));
+        }
+        _ => {}
+    }
+
+    // Read file
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) => {
+            return make_error(format!("Failed to read file: {}", e));
+        }
+    };
+
+    let content_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let mime_type = detect_mime_type(&file_name);
+
+    FileUploadResponse {
+        request_id: req.request_id.clone(),
+        file_name,
+        content_base64,
+        mime_type,
+        error: None,
+    }
+}
+
+fn detect_mime_type(filename: &str) -> Option<String> {
+    let lower = filename.to_lowercase();
+    let mime = if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".pdf") {
+        "application/pdf"
+    } else if lower.ends_with(".txt") {
+        "text/plain"
+    } else if lower.ends_with(".json") {
+        "application/json"
+    } else if lower.ends_with(".csv") {
+        "text/csv"
+    } else if lower.ends_with(".zip") {
+        "application/zip"
+    } else if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+        "application/gzip"
+    } else if lower.ends_with(".mp3") {
+        "audio/mpeg"
+    } else if lower.ends_with(".mp4") {
+        "video/mp4"
+    } else {
+        return None;
+    };
+    Some(mime.to_string())
 }

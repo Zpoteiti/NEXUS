@@ -91,6 +91,8 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             tool_call_id TEXT,
+            tool_name TEXT,
+            tool_arguments TEXT,
             is_consolidated BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
@@ -115,6 +117,77 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS system_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // pgvector extension
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
+        .execute(pool)
+        .await?;
+
+    // Memory chunks table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS memory_chunks (
+            id SERIAL PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            user_id TEXT NOT NULL REFERENCES users(user_id),
+            history_entry TEXT NOT NULL,
+            memory_text TEXT NOT NULL,
+            embedding vector,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Soul & preferences columns on users
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS soul TEXT")
+        .execute(pool)
+        .await?;
+
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS preferences JSONB")
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn get_system_config(
+    db: &PgPool,
+    key: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM system_config WHERE key = $1"
+    )
+    .bind(key)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|r| r.0))
+}
+
+pub async fn set_system_config(
+    db: &PgPool,
+    key: &str,
+    value: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO system_config (key, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()"
+    )
+    .bind(key)
+    .bind(value)
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -213,19 +286,20 @@ pub async fn save_message(
     role: &str,
     content: &str,
     tool_call_id: Option<&str>,
+    tool_name: Option<&str>,
+    tool_arguments: Option<&str>,
 ) -> Result<String, sqlx::Error> {
     let message_id = Uuid::new_v4().to_string();
     sqlx::query(
-        r#"
-        INSERT INTO messages (message_id, session_id, role, content, tool_call_id)
-        VALUES ($1, $2, $3, $4, $5)
-        "#,
+        "INSERT INTO messages (message_id, session_id, role, content, tool_call_id, tool_name, tool_arguments) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&message_id)
     .bind(session_id)
     .bind(role)
     .bind(content)
     .bind(tool_call_id)
+    .bind(tool_name)
+    .bind(tool_arguments)
     .execute(db)
     .await?;
     Ok(message_id)
@@ -237,7 +311,7 @@ pub async fn get_session_history(
 ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
     let rows = sqlx::query(
         r#"
-        SELECT role, content, tool_call_id
+        SELECT role, content, tool_call_id, tool_name, tool_arguments
         FROM messages
         WHERE session_id = $1
           AND is_consolidated = FALSE
@@ -254,17 +328,33 @@ pub async fn get_session_history(
             let role: String = row.get("role");
             let content: String = row.get("content");
             let tool_call_id: Option<String> = row.get("tool_call_id");
+            let tool_name: Option<String> = row.get("tool_name");
+            let tool_arguments: Option<String> = row.get("tool_arguments");
 
-            let mut obj = serde_json::json!({
-                "role": role,
-                "content": content,
-            });
-
-            if let Some(id) = tool_call_id {
-                obj["tool_call_id"] = serde_json::Value::String(id);
+            if role == "assistant" && tool_name.is_some() {
+                serde_json::json!({
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": tool_arguments
+                        }
+                    }]
+                })
+            } else if role == "tool" {
+                serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": content
+                })
+            } else {
+                serde_json::json!({
+                    "role": role,
+                    "content": content
+                })
             }
-
-            obj
         })
         .collect();
 
@@ -400,6 +490,48 @@ pub struct SessionInfo {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct MessageInfo {
+    pub message_id: String,
+    pub role: String,
+    pub content: String,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_arguments: Option<String>,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub async fn get_session_messages(
+    db: &PgPool,
+    session_id: &str,
+    user_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<MessageInfo>, sqlx::Error> {
+    // Verify ownership first
+    let session = sqlx::query_as::<_, (String,)>(
+        "SELECT user_id FROM sessions WHERE session_id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(db)
+    .await?;
+
+    match session {
+        Some((owner,)) if owner == user_id => {}
+        Some(_) => return Ok(vec![]), // Not owner, return empty
+        None => return Ok(vec![]),
+    }
+
+    sqlx::query_as::<_, MessageInfo>(
+        "SELECT message_id, role, content, tool_call_id, tool_name, tool_arguments, created_at FROM messages WHERE session_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3",
+    )
+    .bind(session_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(db)
+    .await
+}
+
 pub async fn list_sessions_by_user(
     db: &PgPool,
     user_id: &str,
@@ -429,4 +561,214 @@ pub async fn delete_session(
     .execute(db)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+// ============================================================================
+// StoredMessage (for consolidation)
+// ============================================================================
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct StoredMessage {
+    pub message_id: String,
+    pub role: String,
+    pub content: String,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_arguments: Option<String>,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+// ============================================================================
+// Soul & Preferences
+// ============================================================================
+
+pub async fn get_user_soul(db: &PgPool, user_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT soul FROM users WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.and_then(|r| r.0))
+}
+
+pub async fn update_user_soul(db: &PgPool, user_id: &str, soul: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET soul = $1 WHERE user_id = $2")
+        .bind(soul)
+        .bind(user_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_user_preferences(
+    db: &PgPool,
+    user_id: &str,
+) -> Result<Option<serde_json::Value>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (Option<serde_json::Value>,)>(
+        "SELECT preferences FROM users WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.and_then(|r| r.0))
+}
+
+pub async fn update_user_preferences(
+    db: &PgPool,
+    user_id: &str,
+    prefs: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET preferences = $1 WHERE user_id = $2")
+        .bind(prefs)
+        .bind(user_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+// ============================================================================
+// Memory Chunks
+// ============================================================================
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct MemoryChunk {
+    pub id: i32,
+    pub session_id: String,
+    pub user_id: String,
+    pub history_entry: String,
+    pub memory_text: String,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub async fn save_memory_chunk(
+    db: &PgPool,
+    session_id: &str,
+    user_id: &str,
+    history_entry: &str,
+    memory_text: &str,
+    embedding: Option<&[f32]>,
+) -> Result<(), sqlx::Error> {
+    if let Some(emb) = embedding {
+        let emb_str = format!(
+            "[{}]",
+            emb.iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        sqlx::query(
+            "INSERT INTO memory_chunks (session_id, user_id, history_entry, memory_text, embedding) VALUES ($1, $2, $3, $4, $5::vector)",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(history_entry)
+        .bind(memory_text)
+        .bind(&emb_str)
+        .execute(db)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO memory_chunks (session_id, user_id, history_entry, memory_text) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(history_entry)
+        .bind(memory_text)
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn get_latest_memory_text(
+    db: &PgPool,
+    session_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT memory_text FROM memory_chunks WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|r| r.0))
+}
+
+pub async fn vector_search_memory(
+    db: &PgPool,
+    user_id: &str,
+    query_embedding: &[f32],
+    top_k: usize,
+) -> Result<Vec<MemoryChunk>, sqlx::Error> {
+    let emb_str = format!(
+        "[{}]",
+        query_embedding
+            .iter()
+            .map(|f| f.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    sqlx::query_as::<_, MemoryChunk>(
+        "SELECT id, session_id, user_id, history_entry, memory_text, created_at FROM memory_chunks WHERE user_id = $1 AND embedding IS NOT NULL ORDER BY embedding <=> $2::vector LIMIT $3",
+    )
+    .bind(user_id)
+    .bind(&emb_str)
+    .bind(top_k as i64)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn get_unconsolidated_messages(
+    db: &PgPool,
+    session_id: &str,
+) -> Result<Vec<StoredMessage>, sqlx::Error> {
+    sqlx::query_as::<_, StoredMessage>(
+        "SELECT message_id, role, content, tool_call_id, tool_name, tool_arguments, created_at FROM messages WHERE session_id = $1 AND is_consolidated = FALSE ORDER BY created_at ASC",
+    )
+    .bind(session_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn mark_messages_consolidated(
+    db: &PgPool,
+    message_ids: &[String],
+) -> Result<(), sqlx::Error> {
+    if message_ids.is_empty() {
+        return Ok(());
+    }
+    sqlx::query("UPDATE messages SET is_consolidated = TRUE WHERE message_id = ANY($1)")
+        .bind(message_ids)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn update_session_last_consolidated(
+    db: &PgPool,
+    session_id: &str,
+    last_message_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE sessions SET last_consolidated = $1 WHERE session_id = $2")
+        .bind(last_message_id)
+        .bind(session_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn list_memory_chunks(
+    db: &PgPool,
+    user_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<MemoryChunk>, sqlx::Error> {
+    sqlx::query_as::<_, MemoryChunk>(
+        "SELECT id, session_id, user_id, history_entry, memory_text, created_at FROM memory_chunks WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+    )
+    .bind(user_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(db)
+    .await
 }

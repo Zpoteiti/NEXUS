@@ -97,7 +97,78 @@ impl ProviderError {
 
 const RETRY_DELAYS: &[u64] = &[1, 2, 4];
 
+/// Check if any message contains image_url content blocks
+fn has_image_content(messages: &[Value]) -> bool {
+    messages.iter().any(|m| {
+        if let Some(content) = m.get("content") {
+            if let Some(arr) = content.as_array() {
+                return arr.iter().any(|part| {
+                    part.get("type").and_then(|t| t.as_str()) == Some("image_url")
+                });
+            }
+        }
+        false
+    })
+}
+
+/// Strip image content blocks, replacing with text placeholders
+fn strip_image_content(mut request: ChatCompletionRequest) -> ChatCompletionRequest {
+    for msg in &mut request.messages {
+        let arr = match msg.get("content").and_then(|c| c.as_array()) {
+            Some(arr) => arr.clone(),
+            None => continue,
+        };
+
+        // Replace array content: keep text blocks, replace image blocks with placeholder
+        let new_content: Vec<Value> = arr
+            .iter()
+            .map(|part| {
+                if part.get("type").and_then(|t| t.as_str()) == Some("image_url") {
+                    serde_json::json!({"type": "text", "text": "[image omitted]"})
+                } else {
+                    part.clone()
+                }
+            })
+            .collect();
+
+        // If all parts are text after stripping, simplify to string
+        let texts: Vec<String> = new_content
+            .iter()
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()).map(String::from))
+            .collect();
+
+        let replacement = if texts.len() == new_content.len() {
+            serde_json::json!(texts.join("\n"))
+        } else {
+            serde_json::json!(new_content)
+        };
+
+        if let Some(c) = msg.get_mut("content") {
+            *c = replacement;
+        }
+    }
+    request
+}
+
 pub async fn call_with_retry(
+    config: &LlmConfig,
+    request: ChatCompletionRequest,
+) -> Result<ChatCompletionResponse, ProviderError> {
+    match call_with_retry_inner(config, request.clone()).await {
+        Ok(resp) => Ok(resp),
+        Err(e) if !e.is_transient() && has_image_content(&request.messages) => {
+            warn!(
+                "LLM error with image content, retrying without images: {}",
+                e
+            );
+            let stripped = strip_image_content(request);
+            call_with_retry_inner(config, stripped).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn call_with_retry_inner(
     config: &LlmConfig,
     request: ChatCompletionRequest,
 ) -> Result<ChatCompletionResponse, ProviderError> {
@@ -109,10 +180,7 @@ pub async fn call_with_retry(
             Err(e) => {
                 if !e.is_transient() || attempt >= RETRY_DELAYS.len() {
                     if attempt > 0 {
-                        warn!(
-                            "LLM call failed after {} retries: {}",
-                            attempt, e
-                        );
+                        warn!("LLM call failed after {} retries: {}", attempt, e);
                     }
                     return Err(e);
                 }

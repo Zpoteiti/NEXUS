@@ -5,17 +5,21 @@
 ///    - 如果 tool_name 以 "mcp_" 开头，解析出 server_name 和 tool_name，转发给 MCP 会话。
 /// 3. 将任何模块返回的 Ok(String) 或 Err(String) 统一包装为 `protocol::ToolExecutionResult` 向上层返回。
 
-use nexus_common::consts::EXIT_CODE_SUCCESS;
+use nexus_common::consts::{EXIT_CODE_SUCCESS, EXIT_CODE_TIMEOUT};
 use nexus_common::protocol::{ExecuteToolRequest, ToolExecutionResult};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use tokio::time::{timeout, Duration};
 
 use crate::discovery;
 use crate::mcp_client::parse_mcp_tool_name;
 use crate::tools::fs::{ListDirTool, ReadFileTool, StatTool, WriteFileTool};
 use crate::tools::shell::ShellTool;
 use crate::tools::{LocalTool, ToolError};
+
+/// Top-level execution timeout in seconds.
+const EXECUTOR_TIMEOUT_SEC: u64 = 120;
 
 /// 本地工具注册表 — executor.rs 和 discovery.rs 共用的单一样本来源。
 pub static LOCAL_TOOL_REGISTRY: LazyLock<HashMap<&'static str, Box<dyn LocalTool>>> =
@@ -29,8 +33,21 @@ pub static LOCAL_TOOL_REGISTRY: LazyLock<HashMap<&'static str, Box<dyn LocalTool
         ])
     });
 
-/// 执行工具调用请求。
+/// 执行工具调用请求，带 120s 顶层超时保护。
 pub async fn execute_tool_request(req: ExecuteToolRequest) -> ToolExecutionResult {
+    let request_id = req.request_id.clone();
+    match timeout(Duration::from_secs(EXECUTOR_TIMEOUT_SEC), execute_tool_inner(req)).await {
+        Ok(result) => result,
+        Err(_) => ToolExecutionResult {
+            request_id,
+            exit_code: EXIT_CODE_TIMEOUT,
+            output: format!("execution timed out after {}s", EXECUTOR_TIMEOUT_SEC),
+        },
+    }
+}
+
+/// Inner implementation without top-level timeout.
+async fn execute_tool_inner(req: ExecuteToolRequest) -> ToolExecutionResult {
     let request_id = req.request_id.clone();
     let tool_name = req.tool_name.clone();
     let arguments = req.arguments;

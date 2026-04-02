@@ -30,7 +30,7 @@ static MCP_MANAGER: LazyLock<RwLock<McpClientManager>> =
 /// 返回: (tools schemas, skills 全量列表, unified_hash)
 /// unified_hash = hash(工具 schemas + 所有 Skill 的 name/description/content/always)
 pub async fn discover_all(
-    _mcp_servers: &[McpServerConfig],
+    mcp_servers: &[McpServerConfig],
     skills_dir: &PathBuf,
 ) -> (Vec<Value>, Vec<SkillFull>, String) {
     let mut all_schemas = Vec::new();
@@ -38,8 +38,8 @@ pub async fn discover_all(
     // 1. 内置工具
     all_schemas.extend(discover_builtin_tools().iter().cloned());
 
-    // 2. MCP 工具
-    let mcp_tools = discover_mcp_tools_internal().await;
+    // 2. MCP 工具 — initialize if not yet done, then collect schemas
+    let mcp_tools = discover_mcp_tools_internal(mcp_servers).await;
     all_schemas.extend(mcp_tools);
 
     // 3. Skills（全量：always=true 带正文，always=false 不带正文）
@@ -61,27 +61,53 @@ pub async fn discover_tools(
     schemas
 }
 
+/// Whether MCP has been initialized at least once.
+static MCP_INITIALIZED: LazyLock<RwLock<bool>> = LazyLock::new(|| RwLock::new(false));
+
 /// 初始化 MCP 客户端管理器。
-#[allow(dead_code)]
 pub async fn init_mcp(mcp_servers: &[McpServerConfig]) {
     let mut manager = MCP_MANAGER.write().await;
     if let Err(e) = manager.initialize(mcp_servers).await {
         tracing::warn!("failed to initialize MCP servers: {}", e);
     }
+    let mut initialized = MCP_INITIALIZED.write().await;
+    *initialized = true;
 }
 
-/// 内部调用：发现 MCP 工具。
-async fn discover_mcp_tools_internal() -> Vec<Value> {
-    // 简化处理：返回空，实际的工具 schema 需要在 session 初始化时获取
-    // 此处返回空是安全的，因为 MCP 工具发现会延迟到 RegisterTools 时
-    Vec::new()
+/// 内部调用：确保 MCP 已初始化，然后收集所有 MCP 工具 schemas。
+async fn discover_mcp_tools_internal(mcp_servers: &[McpServerConfig]) -> Vec<Value> {
+    // Initialize MCP on first call if servers are configured
+    if !mcp_servers.is_empty() {
+        let initialized = *MCP_INITIALIZED.read().await;
+        if !initialized {
+            init_mcp(mcp_servers).await;
+        }
+    }
+
+    // Collect tool schemas from all connected MCP sessions
+    let mut manager = MCP_MANAGER.write().await;
+    let server_names: Vec<String> = manager.server_names().iter().map(|s| s.to_string()).collect();
+    let mut all_schemas = Vec::new();
+    for name in &server_names {
+        if let Some(session) = manager.get_session_mut(name) {
+            match session.list_tools().await {
+                Ok(schemas) => {
+                    tracing::debug!("MCP server '{}': collected {} tool schemas", name, schemas.len());
+                    all_schemas.extend(schemas);
+                }
+                Err(e) => {
+                    tracing::warn!("MCP server '{}': failed to list tools during discovery: {}", name, e);
+                }
+            }
+        }
+    }
+    all_schemas
 }
 
 /// 发现 MCP 工具（供外部调用，初始化并返回 schema）。
 #[allow(dead_code)]
-pub async fn discover_mcp_tools(_mcp_servers: &[McpServerConfig]) -> Vec<Value> {
-    // MCP 工具发现目前返回空，实际的 schema 在 session 初始化时通过 MCP manager 获取
-    Vec::new()
+pub async fn discover_mcp_tools(mcp_servers: &[McpServerConfig]) -> Vec<Value> {
+    discover_mcp_tools_internal(mcp_servers).await
 }
 
 /// 内置工具 Schema 发现（缓存结果）。

@@ -294,7 +294,32 @@ async fn handle_message(
         (sid, config.user_id.clone(), prefixed)
     };
 
-    if content.trim().is_empty() {
+    // Parse and download attachments
+    let mut media_paths = Vec::new();
+    let mut content = content; // make mutable for attachment annotations
+
+    for att in &msg.attachments {
+        let filename = att.get("filename").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let url = att.get("url").and_then(|v| v.as_str());
+        let size = att.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        if size > 20 * 1024 * 1024 {
+            content.push_str(&format!("\n[attachment: {} - too large]", filename));
+            continue;
+        }
+
+        if let Some(url) = url {
+            match rest::download_attachment(url, filename).await {
+                Ok(path) => media_paths.push(path),
+                Err(e) => {
+                    warn!("Failed to download Discord attachment {}: {}", filename, e);
+                    content.push_str(&format!("\n[attachment: {} - download failed]", filename));
+                }
+            }
+        }
+    }
+
+    if content.trim().is_empty() && media_paths.is_empty() {
         return;
     }
 
@@ -324,7 +349,7 @@ async fn handle_message(
         content,
         session_id,
         timestamp: Some(chrono::Utc::now()),
-        media: Vec::new(),
+        media: media_paths,
         metadata,
     };
     crate::session::ensure_session_and_publish(state, event).await;

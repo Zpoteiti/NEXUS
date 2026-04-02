@@ -66,6 +66,15 @@ pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+/// Async wrapper around `sanitize_path` that runs the blocking `canonicalize()` call
+/// on a dedicated thread via `spawn_blocking`, avoiding stalls on the async runtime.
+pub async fn sanitize_path_async(raw: &str, restrict: bool) -> Result<PathBuf, String> {
+    let raw = raw.to_string();
+    tokio::task::spawn_blocking(move || sanitize_path(&raw, restrict))
+        .await
+        .unwrap_or_else(|_| Err("path resolution task panicked".to_string()))
+}
+
 /// 检查 `path` 是否是 `base` 的子目录（或相等）。
 fn is_subpath(path: &Path, base: &Path) -> bool {
     path.starts_with(base)

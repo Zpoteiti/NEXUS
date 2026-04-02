@@ -69,6 +69,17 @@ impl Channel for DiscordChannel {
         self.shutdown.cancel();
     }
 
+    async fn send_progress(&self, chat_id: &str, content: &str) -> Result<(), String> {
+        let bot_token = self
+            .channel_tokens
+            .get(chat_id)
+            .map(|v| v.value().clone())
+            .ok_or_else(|| format!("no bot token mapped for channel_id {}", chat_id))?;
+
+        // Send progress message without cancelling typing indicator
+        rest::send_message(&bot_token, chat_id, content).await
+    }
+
     async fn send(&self, chat_id: &str, content: &str) -> Result<(), String> {
         let bot_token = self
             .channel_tokens
@@ -77,6 +88,32 @@ impl Channel for DiscordChannel {
             .ok_or_else(|| format!("no bot token mapped for channel_id {}", chat_id))?;
 
         let result = rest::send_message(&bot_token, chat_id, content).await;
+
+        // Cancel typing indicator after sending reply
+        if let Some((_, token)) = self.typing_tokens.remove(chat_id) {
+            token.cancel();
+        }
+
+        result
+    }
+
+    async fn send_with_media(
+        &self,
+        chat_id: &str,
+        content: &str,
+        media: &[String],
+    ) -> Result<(), String> {
+        let bot_token = self
+            .channel_tokens
+            .get(chat_id)
+            .map(|v| v.value().clone())
+            .ok_or_else(|| format!("no bot token mapped for channel_id {}", chat_id))?;
+
+        let result = if media.is_empty() {
+            rest::send_message(&bot_token, chat_id, content).await
+        } else {
+            rest::send_message_with_files(&bot_token, chat_id, content, media).await
+        };
 
         // Cancel typing indicator after sending reply
         if let Some((_, token)) = self.typing_tokens.remove(chat_id) {

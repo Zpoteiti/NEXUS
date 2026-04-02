@@ -67,6 +67,7 @@ pub struct MessageCreateData {
     pub sender_is_bot: bool,
     pub content: String,
     pub mentions: Vec<String>,
+    pub attachments: Vec<Value>,
 }
 
 pub fn parse_message_create(d: &Value) -> Option<MessageCreateData> {
@@ -99,6 +100,11 @@ pub fn parse_message_create(d: &Value) -> Option<MessageCreateData> {
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let attachments = d.get("attachments")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
     Some(MessageCreateData {
         message_id,
         channel_id,
@@ -109,6 +115,7 @@ pub fn parse_message_create(d: &Value) -> Option<MessageCreateData> {
         sender_is_bot,
         content,
         mentions,
+        attachments,
     })
 }
 

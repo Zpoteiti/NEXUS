@@ -77,6 +77,126 @@ async fn send_single_message(
     Err("Discord send: max retries exceeded on 429".to_string())
 }
 
+/// Download a Discord attachment to a temp directory.
+/// Returns the absolute path to the saved file.
+pub async fn download_attachment(url: &str, filename: &str) -> Result<String, String> {
+    let response = HTTP_CLIENT
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("download error: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("download HTTP {}", response.status()));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("download read error: {}", e))?;
+
+    // Save to temp directory
+    let dir = std::path::Path::new("/tmp/nexus-media");
+    tokio::fs::create_dir_all(dir).await.map_err(|e| format!("mkdir error: {}", e))?;
+
+    let safe_name = filename.replace(['/', '\\', '\0'], "_");
+    let uuid = uuid::Uuid::new_v4();
+    let path = dir.join(format!("{}_{}", uuid, safe_name));
+
+    tokio::fs::write(&path, &bytes).await.map_err(|e| format!("write error: {}", e))?;
+
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Send a Discord message with file attachments via multipart form.
+pub async fn send_message_with_files(
+    bot_token: &str,
+    channel_id: &str,
+    content: &str,
+    file_paths: &[String],
+) -> Result<(), String> {
+    let url = format!("{}/channels/{}/messages", DISCORD_API_BASE, channel_id);
+
+    let mut form = build_multipart_form(content, file_paths)?;
+
+    for _attempt in 0..MAX_RETRIES {
+        let response = HTTP_CLIENT
+            .post(&url)
+            .header("Authorization", format!("Bot {}", bot_token))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| format!("Discord send error: {}", e))?;
+
+        let status = response.status().as_u16();
+        if status == 200 || status == 201 {
+            return Ok(());
+        }
+
+        if status == 429 {
+            let body: serde_json::Value = response
+                .json()
+                .await
+                .unwrap_or_else(|_| serde_json::json!({"retry_after": 1.0}));
+            let retry_after = body
+                .get("retry_after")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0);
+            warn!(
+                "Discord 429 (file upload), retrying after {:.1}s",
+                retry_after
+            );
+            tokio::time::sleep(std::time::Duration::from_secs_f64(retry_after)).await;
+            // Rebuild form for retry (multipart::Form is consumed by send)
+            form = build_multipart_form(content, file_paths)?;
+            continue;
+        }
+
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Discord API error {}: {}", status, body));
+    }
+
+    Err("Discord file send: max retries exceeded".to_string())
+}
+
+fn build_multipart_form(
+    content: &str,
+    file_paths: &[String],
+) -> Result<reqwest::multipart::Form, String> {
+    use reqwest::multipart;
+
+    let mut form = multipart::Form::new().text(
+        "payload_json",
+        serde_json::json!({"content": content}).to_string(),
+    );
+
+    for (i, path) in file_paths.iter().enumerate() {
+        let file_path = std::path::Path::new(path);
+        let file_name = file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("file_{}", i));
+
+        let bytes =
+            tokio::fs::read(path).await.map_err(|e| format!("Failed to read file {}: {}", path, e))?;
+
+        // Check 25MB per-file limit
+        if bytes.len() > 25 * 1024 * 1024 {
+            warn!("Skipping file {} — exceeds 25MB Discord limit", path);
+            continue;
+        }
+
+        let part = multipart::Part::bytes(bytes)
+            .file_name(file_name)
+            .mime_str("application/octet-stream")
+            .map_err(|e| format!("mime error: {}", e))?;
+
+        form = form.part(format!("files[{}]", i), part);
+    }
+
+    Ok(form)
+}
+
 pub fn start_typing(
     bot_token: String,
     channel_id: String,

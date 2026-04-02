@@ -6,17 +6,216 @@
 /// 参考 nanobot：
 /// - 替代 `nanobot/session/manager.py` 中的 `list_sessions` 等文件查询方法，将其转化为 JSON API 接口。
 
-// TODO: 实现 GET /api/sessions
-// TODO: 实现 GET /api/sessions/:id/messages
-// TODO: 实现 GET /api/devices
-// TODO: 实现 GET /api/memories
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Extension, Json,
+};
+use serde::Deserialize;
 
-// TODO: 实现 PATCH /api/user/soul
-//   更新当前登录用户的 soul（Agent 人设/角色设定）。
-//   调用 db::update_user_soul()。
-//   对应 nanobot 用户直接编辑 SOUL.md 的行为，Nexus 改为 REST API 写入。
+use crate::auth::Claims;
+use crate::db;
+use crate::state::AppState;
 
-// TODO: 实现 PATCH /api/user/preferences
-//   更新当前登录用户的 user_preferences（语气、回复风格、语言等）。
-//   调用 db::update_user_preferences()。
-//   调用方：Settings.vue 的"user_preferences 配置"保存按钮。
+#[derive(Deserialize)]
+pub struct PaginationParams {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+// ============================================================================
+// GET /api/sessions/:id/messages
+// ============================================================================
+
+pub async fn get_session_messages(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(session_id): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Response {
+    let limit = params.limit.unwrap_or(50).min(500);
+    let offset = params.offset.unwrap_or(0);
+    match db::get_session_messages(&state.db, &session_id, &claims.sub, limit, offset).await {
+        Ok(messages) => Json(messages).into_response(),
+        Err(e) => {
+            tracing::error!("get_session_messages error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get messages").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// GET /api/devices
+// ============================================================================
+
+pub async fn list_devices(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
+    let devices = state.devices.read().await;
+    let user_devices: Vec<serde_json::Value> = devices
+        .iter()
+        .filter(|(_, dev)| dev.user_id == claims.sub)
+        .map(|(key, dev)| {
+            let masked_key = if key.len() > 12 {
+                format!("{}...{}", &key[..8], &key[key.len() - 4..])
+            } else {
+                "****".to_string()
+            };
+            serde_json::json!({
+                "device_key": masked_key,
+                "device_name": dev.device_name,
+                "tools_count": dev.tools.len(),
+                "last_seen_secs_ago": dev.last_seen.elapsed().as_secs(),
+            })
+        })
+        .collect();
+    Json(user_devices).into_response()
+}
+
+// ============================================================================
+// GET /api/memories
+// ============================================================================
+
+pub async fn list_memories(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Query(params): Query<PaginationParams>,
+) -> Response {
+    let limit = params.limit.unwrap_or(20).min(100);
+    let offset = params.offset.unwrap_or(0);
+    match db::list_memory_chunks(&state.db, &claims.sub, limit, offset).await {
+        Ok(chunks) => Json(chunks).into_response(),
+        Err(e) => {
+            tracing::error!("list_memories error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list memories").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// GET /api/user/soul
+// ============================================================================
+
+pub async fn get_soul(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
+    match db::get_user_soul(&state.db, &claims.sub).await {
+        Ok(soul) => Json(serde_json::json!({ "soul": soul })).into_response(),
+        Err(e) => {
+            tracing::error!("get_soul error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get soul").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// PATCH /api/user/soul
+// ============================================================================
+
+#[derive(Deserialize)]
+pub struct UpdateSoulRequest {
+    pub soul: String,
+}
+
+pub async fn update_soul(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(payload): Json<UpdateSoulRequest>,
+) -> Response {
+    match db::update_user_soul(&state.db, &claims.sub, &payload.soul).await {
+        Ok(()) => (StatusCode::OK, "Soul updated").into_response(),
+        Err(e) => {
+            tracing::error!("update_soul error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update soul").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// GET /api/user/preferences
+// ============================================================================
+
+pub async fn get_preferences(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
+    match db::get_user_preferences(&state.db, &claims.sub).await {
+        Ok(prefs) => Json(serde_json::json!({ "preferences": prefs })).into_response(),
+        Err(e) => {
+            tracing::error!("get_preferences error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get preferences").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// PATCH /api/user/preferences
+// ============================================================================
+
+#[derive(Deserialize)]
+pub struct UpdatePreferencesRequest {
+    pub preferences: serde_json::Value,
+}
+
+pub async fn update_preferences(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(payload): Json<UpdatePreferencesRequest>,
+) -> Response {
+    match db::update_user_preferences(&state.db, &claims.sub, &payload.preferences).await {
+        Ok(()) => (StatusCode::OK, "Preferences updated").into_response(),
+        Err(e) => {
+            tracing::error!("update_preferences error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update preferences").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// GET /api/admin/default-soul (admin only)
+// ============================================================================
+
+pub async fn get_default_soul(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
+    if !claims.is_admin {
+        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+    }
+    match db::get_system_config(&state.db, "default_soul").await {
+        Ok(soul) => Json(serde_json::json!({ "default_soul": soul })).into_response(),
+        Err(e) => {
+            tracing::error!("get_default_soul error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get default soul").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// PUT /api/admin/default-soul (admin only)
+// ============================================================================
+
+#[derive(Deserialize)]
+pub struct SetDefaultSoulRequest {
+    pub soul: String,
+}
+
+pub async fn set_default_soul(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(payload): Json<SetDefaultSoulRequest>,
+) -> Response {
+    if !claims.is_admin {
+        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+    }
+    match db::set_system_config(&state.db, "default_soul", &payload.soul).await {
+        Ok(()) => (StatusCode::OK, "Default soul updated").into_response(),
+        Err(e) => {
+            tracing::error!("set_default_soul error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to set default soul").into_response()
+        }
+    }
+}

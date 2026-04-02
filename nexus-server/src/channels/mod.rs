@@ -27,6 +27,21 @@ pub trait Channel: Send + Sync {
     async fn stop(&self);
     /// Send an outbound message to the gateway (called by ChannelManager dispatch loop).
     async fn send(&self, chat_id: &str, content: &str) -> Result<(), String>;
+    /// Send a progress message (e.g. tool call hints) without cancelling typing indicators.
+    /// Default implementation falls back to `send`.
+    async fn send_progress(&self, chat_id: &str, content: &str) -> Result<(), String> {
+        self.send(chat_id, content).await
+    }
+    /// Send an outbound message with media attachments.
+    /// Default implementation ignores media and falls back to `send`.
+    async fn send_with_media(
+        &self,
+        chat_id: &str,
+        content: &str,
+        media: &[String],
+    ) -> Result<(), String> {
+        self.send(chat_id, content).await
+    }
 }
 
 // ============================================================================
@@ -78,8 +93,21 @@ impl ChannelManager {
                 };
 
                 let ch_name = event.channel.as_str();
+                let is_progress = event.metadata.get("_progress")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
                 if let Some(channel) = channels.get(ch_name) {
-                    if let Err(e) = channel.send(&event.chat_id, &event.content).await {
+                    let result = if is_progress {
+                        channel.send_progress(&event.chat_id, &event.content).await
+                    } else if event.media.is_empty() {
+                        channel.send(&event.chat_id, &event.content).await
+                    } else {
+                        channel
+                            .send_with_media(&event.chat_id, &event.content, &event.media)
+                            .await
+                    };
+                    if let Err(e) = result {
                         warn!("ChannelManager: send to \"{}\" failed: {}", ch_name, e);
                     }
                 } else {

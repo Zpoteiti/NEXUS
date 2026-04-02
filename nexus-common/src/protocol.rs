@@ -27,6 +27,7 @@ pub struct SkillFull {
 #[serde(tag = "type", content = "data")]
 pub enum ServerToClient {
     ExecuteToolRequest(ExecuteToolRequest),
+    FileUploadRequest(FileUploadRequest),
     RequireLogin {
         message: String,
     },
@@ -46,12 +47,19 @@ pub struct ExecuteToolRequest {
     pub arguments: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileUploadRequest {
+    pub request_id: String,
+    pub file_path: String,
+}
+
 /// 客户端上报给服务端的事件
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientToServer {
     ToolStdoutStream(ToolStdoutStream),
     ToolExecutionResult(ToolExecutionResult),
+    FileUploadResponse(FileUploadResponse),
     SubmitToken {
         token: String,
         protocol_version: String,
@@ -72,6 +80,15 @@ pub enum ClientToServer {
 pub struct ToolStdoutStream {
     pub request_id: String,
     pub chunk_data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileUploadResponse {
+    pub request_id: String,
+    pub file_name: String,
+    pub content_base64: String,
+    pub mime_type: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

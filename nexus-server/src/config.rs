@@ -3,6 +3,26 @@ pub struct LlmConfig {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
+    #[serde(default = "default_context_window")]
+    pub context_window: usize,
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: usize,
+}
+
+fn default_context_window() -> usize {
+    204800
+}
+
+fn default_max_output_tokens() -> usize {
+    131072
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingConfig {
+    pub api_base: String,
+    pub api_key: String,
+    pub model: String,
+    pub dimensions: usize,
 }
 
 use std::sync::Arc;
@@ -18,7 +38,8 @@ pub struct ServerConfig {
     pub gateway_token: String,
     pub jwt_secret: String,
     pub bcrypt_cost: u32,
-    pub llm: Arc<RwLock<LlmConfig>>,
+    pub llm: Arc<RwLock<Option<LlmConfig>>>,
+    pub embedding: Arc<RwLock<Option<EmbeddingConfig>>>,
 }
 
 pub fn load_config() -> ServerConfig {
@@ -60,12 +81,6 @@ pub fn load_config() -> ServerConfig {
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(12);
 
-    let llm = LlmConfig {
-        api_base: "https://api.minimaxi.com/v1".to_string(),
-        api_key: "sk-cp-1BBnG-2Gwn17dP38KWGk9l4nz1ZlB7ozhT-1ol6rhVjjH2bRng7zFTTMg8Mqky51W5KxX9NyKF5vXaklYVDdFmFGDBa9nTmHTEhWZr39K-3g7huPKbvJGoU".to_string(),
-        model: "MiniMax-M2.7".to_string(),
-    };
-
     ServerConfig {
         database_url,
         admin_token,
@@ -75,6 +90,7 @@ pub fn load_config() -> ServerConfig {
         gateway_token,
         jwt_secret,
         bcrypt_cost,
-        llm: Arc::new(RwLock::new(llm)),
+        llm: Arc::new(RwLock::new(None)),
+        embedding: Arc::new(RwLock::new(None)),
     }
 }

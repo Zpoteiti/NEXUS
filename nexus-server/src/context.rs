@@ -9,6 +9,65 @@
 use crate::state::AppState;
 use crate::tools_registry::build_tools_schema;
 
+/// Call an OpenAI-compatible embeddings endpoint and return the embedding vector.
+/// On any failure, returns an empty Vec (never blocks the flow).
+pub async fn embed_text(config: &crate::config::EmbeddingConfig, text: &str) -> Vec<f32> {
+    use reqwest::Client;
+    use std::sync::LazyLock;
+
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("embed client")
+    });
+
+    let url = format!("{}/embeddings", config.api_base);
+    let body = serde_json::json!({
+        "model": config.model,
+        "input": text,
+        "dimensions": config.dimensions,
+    });
+
+    let response = match CLIENT
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::warn!("embed_text request failed: {}", e);
+            return Vec::new();
+        }
+    };
+
+    if !response.status().is_success() {
+        tracing::warn!("embed_text HTTP {}", response.status());
+        return Vec::new();
+    }
+
+    let json: serde_json::Value = match response.json().await {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!("embed_text parse error: {}", e);
+            return Vec::new();
+        }
+    };
+
+    json.get("data")
+        .and_then(|d| d.get(0))
+        .and_then(|d| d.get("embedding"))
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_f64().map(|f| f as f32))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// 系统提示词各段之间的分隔符（与 nanobot 保持一致）
 const SECTION_SEPARATOR: &str = "\n\n---\n\n";
 
@@ -28,7 +87,7 @@ pub async fn build_system_prompt(
     state: &AppState,
     user_id: &str,
     _session_id: &str,
-    _user_input: &str,
+    user_input: &str,
     metadata: &std::collections::HashMap<String, serde_json::Value>,
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
@@ -40,7 +99,26 @@ pub async fn build_system_prompt(
         now
     ));
 
-    // 段 2 — soul 与 user_preferences（后续实现）
+    // 段 2 — soul 与 user_preferences
+    let user_soul = crate::db::get_user_soul(&state.db, user_id).await.ok().flatten();
+    let soul = match user_soul {
+        Some(s) => Some(s),
+        None => crate::db::get_system_config(&state.db, "default_soul")
+            .await
+            .ok()
+            .flatten(),
+    };
+    if let Some(soul_text) = soul {
+        sections.push(format!("## Personality\n{}", soul_text));
+    }
+
+    let user_prefs = crate::db::get_user_preferences(&state.db, user_id)
+        .await
+        .ok()
+        .flatten();
+    if let Some(prefs) = user_prefs {
+        sections.push(format!("## User Preferences\n{}", prefs));
+    }
 
     // 段 2.5 — 消息发送者身份与安全边界（Discord 等外部渠道）
     if let Some(sender_section) = build_sender_identity_section(metadata) {
@@ -51,7 +129,24 @@ pub async fn build_system_prompt(
     let device_section = build_device_section(state, user_id).await;
     sections.push(device_section);
 
-    // 段 4 — RAG 注入（后续实现）
+    // 段 4 — RAG 注入
+    let embedding_config = state.config.embedding.read().await.clone();
+    if let Some(ref emb_config) = embedding_config {
+        let query_emb = embed_text(emb_config, user_input).await;
+        if !query_emb.is_empty() {
+            let chunks = crate::db::vector_search_memory(&state.db, user_id, &query_emb, 5)
+                .await
+                .unwrap_or_default();
+            if !chunks.is_empty() {
+                let memory_text = chunks
+                    .iter()
+                    .map(|c| c.memory_text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                sections.push(format!("## Relevant Memory\n{}", memory_text));
+            }
+        }
+    }
 
     sections.join(SECTION_SEPARATOR)
 }
@@ -150,6 +245,50 @@ pub async fn get_all_tools_schema(
             all_schemas.extend(decorated);
         }
     }
+
+    // Built-in server-side tool: save_memory
+    // Available in every session so the agent can proactively save important info
+    all_schemas.push(serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "save_memory",
+            "description": "Save an important fact, user preference, or context to long-term memory. Use this when the user shares something worth remembering across sessions — preferences, project context, relationships, important decisions. Do NOT wait for the user to ask you to remember; proactively save anything that would be useful in future conversations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The fact, preference, or context to remember. Be concise but complete."
+                    }
+                },
+                "required": ["content"]
+            }
+        }
+    }));
+
+    // Built-in server-side tool: send_file
+    // Allows the agent to send a file from a connected device to the user
+    all_schemas.push(serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "send_file",
+            "description": "Send a file from a connected device to the user. Use this after creating or finding a file that the user should receive. The file will be uploaded and sent as an attachment in the chat.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device_name": {
+                        "type": "string",
+                        "description": "The device where the file is located"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path to the file on the device"
+                    }
+                },
+                "required": ["device_name", "file_path"]
+            }
+        }
+    }));
 
     all_schemas
 }

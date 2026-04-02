@@ -11,9 +11,13 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
+use tokio::time::{timeout, Duration};
 
 use super::{LocalTool, ToolError};
 use crate::env;
+
+/// Per-tool timeout in seconds for filesystem operations.
+const FS_TOOL_TIMEOUT_SEC: u64 = 30;
 
 /// 最大读取字符数（参考 nanobot _MAX_CHARS = 128_000）
 const MAX_CHARS: usize = 128_000;
@@ -43,17 +47,34 @@ fn detect_image_mime(data: &[u8]) -> Option<&'static str> {
 }
 
 /// 将路径解析为 workspace 内的绝对路径。
+#[allow(dead_code)]
 fn resolve_path(path: &str) -> Result<PathBuf, ToolError> {
     env::sanitize_path(path, true)
         .map_err(|e| ToolError::InvalidParams(format!("path outside workspace: {}", e)))
 }
 
 /// 解析并校验路径，返回 PathBuf。
+#[allow(dead_code)]
 fn resolve_required_path(path: &str) -> Result<PathBuf, ToolError> {
     if path.is_empty() {
         return Err(ToolError::InvalidParams("path is required".to_string()));
     }
     resolve_path(path)
+}
+
+/// Async version of `resolve_path` — runs canonicalize off the async runtime.
+async fn resolve_path_async(path: &str) -> Result<PathBuf, ToolError> {
+    env::sanitize_path_async(path, true)
+        .await
+        .map_err(|e| ToolError::InvalidParams(format!("path outside workspace: {}", e)))
+}
+
+/// Async version of `resolve_required_path`.
+async fn resolve_required_path_async(path: &str) -> Result<PathBuf, ToolError> {
+    if path.is_empty() {
+        return Err(ToolError::InvalidParams("path is required".to_string()));
+    }
+    resolve_path_async(path).await
 }
 
 // ---------------------------------------------------------------------------
@@ -105,12 +126,20 @@ impl LocalTool for ReadFileTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), self.execute_inner(args))
+            .await
+            .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+    }
+}
+
+impl ReadFileTool {
+    async fn execute_inner(&self, args: Value) -> Result<String, ToolError> {
         let path = args
             .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
 
-        let fp = resolve_required_path(path)?;
+        let fp = resolve_required_path_async(path).await?;
 
         // 文件不存在
         if !fp.exists() {
@@ -253,6 +282,14 @@ impl LocalTool for WriteFileTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), self.execute_inner(args))
+            .await
+            .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+    }
+}
+
+impl WriteFileTool {
+    async fn execute_inner(&self, args: Value) -> Result<String, ToolError> {
         let path = args
             .get("path")
             .and_then(|v| v.as_str())
@@ -264,7 +301,7 @@ impl LocalTool for WriteFileTool {
             .ok_or_else(|| ToolError::InvalidParams("missing required field: content".to_string()))?
             .to_string();
 
-        let fp = resolve_required_path(path)?;
+        let fp = resolve_required_path_async(path).await?;
 
         // 创建父目录
         if let Some(parent) = fp.parent() {
@@ -346,6 +383,14 @@ impl LocalTool for ListDirTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), self.execute_inner(args))
+            .await
+            .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+    }
+}
+
+impl ListDirTool {
+    async fn execute_inner(&self, args: Value) -> Result<String, ToolError> {
         let path = args
             .get("path")
             .and_then(|v| v.as_str())
@@ -361,7 +406,7 @@ impl LocalTool for ListDirTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(LIST_DIR_DEFAULT_MAX as u64) as usize;
 
-        let dp = resolve_required_path(path)?;
+        let dp = resolve_required_path_async(path).await?;
 
         if !dp.exists() {
             return Err(ToolError::NotFound(format!("directory not found: {}", path)));
@@ -485,12 +530,20 @@ impl LocalTool for StatTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), self.execute_inner(args))
+            .await
+            .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+    }
+}
+
+impl StatTool {
+    async fn execute_inner(&self, args: Value) -> Result<String, ToolError> {
         let path = args
             .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
 
-        let fp = resolve_required_path(path)?;
+        let fp = resolve_required_path_async(path).await?;
 
         if !fp.exists() {
             return Err(ToolError::NotFound(format!("path not found: {}", path)));

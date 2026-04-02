@@ -392,16 +392,28 @@ pub async fn get_llm_config(
         return (StatusCode::FORBIDDEN, "Admin only").into_response();
     }
     let llm = state.config.llm.read().await;
-    let masked_key = if llm.api_key.len() > 12 {
-        format!("{}...{}", &llm.api_key[..8], &llm.api_key[llm.api_key.len()-4..])
-    } else {
-        "***".to_string()
-    };
-    Json(json!({
-        "api_base": llm.api_base,
-        "api_key": masked_key,
-        "model": llm.model,
-    })).into_response()
+    match llm.as_ref() {
+        Some(llm) => {
+            let masked_key = if llm.api_key.len() > 12 {
+                format!("{}...{}", &llm.api_key[..8], &llm.api_key[llm.api_key.len()-4..])
+            } else {
+                "***".to_string()
+            };
+            Json(json!({
+                "api_base": llm.api_base,
+                "api_key": masked_key,
+                "model": llm.model,
+                "context_window": llm.context_window,
+                "max_output_tokens": llm.max_output_tokens,
+            })).into_response()
+        }
+        None => {
+            Json(json!({
+                "status": "not_configured",
+                "message": "LLM provider has not been configured yet. Use PUT /api/llm-config to set it up.",
+            })).into_response()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -409,6 +421,8 @@ pub struct UpdateLlmConfigRequest {
     pub api_base: Option<String>,
     pub api_key: Option<String>,
     pub model: Option<String>,
+    pub context_window: Option<usize>,
+    pub max_output_tokens: Option<usize>,
 }
 
 /// PUT /api/llm-config — update LLM config at runtime (admin only)
@@ -420,7 +434,14 @@ pub async fn update_llm_config(
     if !claims.is_admin {
         return (StatusCode::FORBIDDEN, "Admin only").into_response();
     }
-    let mut llm = state.config.llm.write().await;
+    let mut llm_guard = state.config.llm.write().await;
+    let llm = llm_guard.get_or_insert_with(|| crate::config::LlmConfig {
+        api_base: String::new(),
+        api_key: String::new(),
+        model: String::new(),
+        context_window: 204800,
+        max_output_tokens: 131072,
+    });
     if let Some(api_base) = payload.api_base {
         llm.api_base = api_base;
     }
@@ -430,5 +451,102 @@ pub async fn update_llm_config(
     if let Some(model) = payload.model {
         llm.model = model;
     }
+    if let Some(context_window) = payload.context_window {
+        llm.context_window = context_window;
+    }
+    if let Some(max_output_tokens) = payload.max_output_tokens {
+        llm.max_output_tokens = max_output_tokens;
+    }
+
+    // Persist to database
+    if let Ok(json_str) = serde_json::to_string(llm) {
+        if let Err(e) = db::set_system_config(&state.db, "llm_config", &json_str).await {
+            tracing::error!("Failed to persist LLM config to DB: {e}");
+        }
+    }
+
     (StatusCode::OK, "LLM config updated").into_response()
+}
+
+// ============================================================================
+// Embedding config handlers
+// ============================================================================
+
+/// GET /api/embedding-config — get current embedding config (admin only, api_key masked)
+pub async fn get_embedding_config(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    if !claims.is_admin {
+        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+    }
+    let emb = state.config.embedding.read().await;
+    match emb.as_ref() {
+        Some(emb) => {
+            let masked_key = if emb.api_key.len() > 12 {
+                format!("{}...{}", &emb.api_key[..8], &emb.api_key[emb.api_key.len()-4..])
+            } else {
+                "***".to_string()
+            };
+            Json(json!({
+                "api_base": emb.api_base,
+                "api_key": masked_key,
+                "model": emb.model,
+                "dimensions": emb.dimensions,
+            })).into_response()
+        }
+        None => {
+            Json(json!({
+                "status": "not_configured",
+                "message": "Embedding provider has not been configured yet. Use PUT /api/embedding-config to set it up.",
+            })).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateEmbeddingConfigRequest {
+    pub api_base: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub dimensions: Option<usize>,
+}
+
+/// PUT /api/embedding-config — update embedding config at runtime (admin only)
+pub async fn update_embedding_config(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Json(payload): Json<UpdateEmbeddingConfigRequest>,
+) -> Response {
+    if !claims.is_admin {
+        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+    }
+    let mut emb_guard = state.config.embedding.write().await;
+    let emb = emb_guard.get_or_insert_with(|| crate::config::EmbeddingConfig {
+        api_base: String::new(),
+        api_key: String::new(),
+        model: String::new(),
+        dimensions: 1536,
+    });
+    if let Some(api_base) = payload.api_base {
+        emb.api_base = api_base;
+    }
+    if let Some(api_key) = payload.api_key {
+        emb.api_key = api_key;
+    }
+    if let Some(model) = payload.model {
+        emb.model = model;
+    }
+    if let Some(dimensions) = payload.dimensions {
+        emb.dimensions = dimensions;
+    }
+
+    // Persist to database
+    if let Ok(json_str) = serde_json::to_string(emb) {
+        if let Err(e) = db::set_system_config(&state.db, "embedding_config", &json_str).await {
+            tracing::error!("Failed to persist embedding config to DB: {e}");
+        }
+    }
+
+    (StatusCode::OK, "Embedding config updated").into_response()
 }

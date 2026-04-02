@@ -472,6 +472,11 @@ impl McpClientManager {
     pub fn server_names(&self) -> Vec<&str> {
         self.sessions.keys().map(|s| s.as_str()).collect()
     }
+
+    /// 获取指定服务器的可变会话引用。
+    pub fn get_session_mut(&mut self, server_name: &str) -> Option<&mut McpSession> {
+        self.sessions.get_mut(server_name)
+    }
 }
 
 impl Default for McpClientManager {

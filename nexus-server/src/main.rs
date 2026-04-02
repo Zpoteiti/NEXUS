@@ -5,12 +5,14 @@
 /// 4. 绝对不要在这里写具体的 WebSocket 收发逻辑或 LLM 提示词逻辑。
 
 mod agent_loop;
+mod api;
 mod auth;
 mod bus;
 mod channels;
 mod config;
 mod context;
 mod db;
+mod memory;
 mod providers;
 mod session;
 mod state;
@@ -45,6 +47,20 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("Failed to initialize database: {e}"));
 
+    // Load persisted configs from DB
+    if let Ok(Some(llm_json)) = db::get_system_config(&pool, "llm_config").await {
+        if let Ok(llm) = serde_json::from_str::<config::LlmConfig>(&llm_json) {
+            *config.llm.write().await = Some(llm);
+            info!("Loaded LLM config from database");
+        }
+    }
+    if let Ok(Some(emb_json)) = db::get_system_config(&pool, "embedding_config").await {
+        if let Ok(emb) = serde_json::from_str::<config::EmbeddingConfig>(&emb_json) {
+            *config.embedding.write().await = Some(emb);
+            info!("Loaded embedding config from database");
+        }
+    }
+
     // 创建 MessageBus
     let bus = Arc::new(MessageBus::new());
 
@@ -78,6 +94,19 @@ async fn main() {
         .route("/api/sessions/{session_id}", axum::routing::delete(auth::delete_session))
         // LLM config (admin only)
         .route("/api/llm-config", axum::routing::get(auth::get_llm_config).put(auth::update_llm_config))
+        // Embedding config (admin only)
+        .route("/api/embedding-config", axum::routing::get(auth::get_embedding_config).put(auth::update_embedding_config))
+        // Session messages
+        .route("/api/sessions/{session_id}/messages", axum::routing::get(api::get_session_messages))
+        // Devices
+        .route("/api/devices", axum::routing::get(api::list_devices))
+        // Memories
+        .route("/api/memories", axum::routing::get(api::list_memories))
+        // User soul & preferences
+        .route("/api/user/soul", axum::routing::get(api::get_soul).patch(api::update_soul))
+        .route("/api/user/preferences", axum::routing::get(api::get_preferences).patch(api::update_preferences))
+        // Admin: default soul
+        .route("/api/admin/default-soul", axum::routing::get(api::get_default_soul).put(api::set_default_soul))
         .layer(axum::middleware::from_fn_with_state(app_state.clone(), auth::jwt_middleware));
 
     let app = Router::new()
