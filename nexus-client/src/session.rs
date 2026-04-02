@@ -3,12 +3,13 @@
 /// Client only sends its token. Server resolves user_id, device_name from DB.
 /// LoginSuccess returns the device_name assigned by the user at token creation time.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use nexus_common::consts::{HEARTBEAT_INTERVAL_SEC, PROTOCOL_VERSION};
-use nexus_common::protocol::{ClientToServer, ServerToClient};
-use tokio::sync::mpsc;
+use nexus_common::protocol::{ClientToServer, FsPolicy, ServerToClient};
+use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -34,11 +35,11 @@ impl ClientSession {
     }
 }
 
-pub async fn connect_and_loop(config: ClientConfig) -> ClientSession {
+pub async fn connect_and_loop(config: ClientConfig, policy_lock: Arc<RwLock<FsPolicy>>) -> ClientSession {
     let (outbound_tx, outbound_rx) = mpsc::channel::<ClientToServer>(256);
     let (inbound_tx, inbound_rx) = mpsc::channel::<ServerToClient>(256);
 
-    tokio::spawn(connection_manager_loop(config, inbound_tx, outbound_rx));
+    tokio::spawn(connection_manager_loop(config, inbound_tx, outbound_rx, policy_lock));
 
     ClientSession {
         outbound_tx,
@@ -50,13 +51,14 @@ async fn connection_manager_loop(
     config: ClientConfig,
     inbound_tx: mpsc::Sender<ServerToClient>,
     mut outbound_rx: mpsc::Receiver<ClientToServer>,
+    policy_lock: Arc<RwLock<FsPolicy>>,
 ) {
     let mut backoff_sec = 1u64;
     loop {
         match connect_async(&config.server_ws_url).await {
             Ok((mut ws_stream, _)) => {
                 info!("connected to server: {}", config.server_ws_url);
-                match run_single_connection(&mut ws_stream, &config, &inbound_tx, &mut outbound_rx)
+                match run_single_connection(&mut ws_stream, &config, &inbound_tx, &mut outbound_rx, policy_lock.clone())
                     .await
                 {
                     Ok(()) => {
@@ -84,8 +86,10 @@ async fn run_single_connection(
     config: &ClientConfig,
     inbound_tx: &mpsc::Sender<ServerToClient>,
     outbound_rx: &mut mpsc::Receiver<ClientToServer>,
+    policy_lock: Arc<RwLock<FsPolicy>>,
 ) -> Result<(), String> {
-    let device_name = perform_handshake(ws_stream, &config.auth_token).await?;
+    let (device_name, initial_policy) = perform_handshake(ws_stream, &config.auth_token).await?;
+    *policy_lock.write().await = initial_policy;
 
     // Discover and register tools
     let (schemas, skills, hash) =
@@ -144,6 +148,18 @@ async fn run_single_connection(
 
                 let parsed = serde_json::from_str::<ServerToClient>(&text)
                     .map_err(|err| format!("invalid server message json: {err}"))?;
+
+                // Handle HeartbeatAck locally — update policy if changed
+                if let ServerToClient::HeartbeatAck { fs_policy } = &parsed {
+                    let current = policy_lock.read().await;
+                    if *current != *fs_policy {
+                        drop(current);
+                        info!("FsPolicy updated via heartbeat: {:?}", fs_policy);
+                        *policy_lock.write().await = fs_policy.clone();
+                    }
+                    continue;
+                }
+
                 if inbound_tx.send(parsed).await.is_err() {
                     return Err("inbound channel closed".to_string());
                 }
@@ -153,13 +169,13 @@ async fn run_single_connection(
 }
 
 /// Handshake: wait for RequireLogin, send SubmitToken, receive LoginSuccess.
-/// Returns the device_name assigned by server.
+/// Returns (device_name, fs_policy) assigned by server.
 async fn perform_handshake(
     ws_stream: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     auth_token: &str,
-) -> Result<String, String> {
+) -> Result<(String, FsPolicy), String> {
     let require_login = tokio::time::timeout(Duration::from_secs(30), ws_stream.next())
         .await
         .map_err(|_| "wait require-login timeout".to_string())?
@@ -197,9 +213,9 @@ async fn perform_handshake(
     let login_result_msg = serde_json::from_str::<ServerToClient>(&login_result_text)
         .map_err(|err| format!("invalid login-result json: {err}"))?;
     match login_result_msg {
-        ServerToClient::LoginSuccess { device_name, .. } => {
-            info!("device login success: device_name={}", device_name);
-            Ok(device_name)
+        ServerToClient::LoginSuccess { device_name, fs_policy, .. } => {
+            info!("device login success: device_name={}, fs_policy={:?}", device_name, fs_policy);
+            Ok((device_name, fs_policy))
         }
         ServerToClient::LoginFailed { reason } => Err(format!("login failed: {}", reason)),
         _ => Err("unexpected message during login".to_string()),
