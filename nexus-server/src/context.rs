@@ -68,6 +68,16 @@ pub async fn embed_text(config: &crate::config::EmbeddingConfig, text: &str) -> 
         .unwrap_or_default()
 }
 
+/// Semaphore-guarded wrapper around `embed_text` for concurrency control.
+pub async fn embed_text_throttled(
+    config: &crate::config::EmbeddingConfig,
+    text: &str,
+    semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Vec<f32> {
+    let _permit = semaphore.acquire().await.expect("semaphore closed");
+    embed_text(config, text).await
+}
+
 /// 系统提示词各段之间的分隔符（与 nanobot 保持一致）
 const SECTION_SEPARATOR: &str = "\n\n---\n\n";
 
@@ -132,7 +142,7 @@ pub async fn build_system_prompt(
     // 段 4 — RAG 注入
     let embedding_config = state.config.embedding.read().await.clone();
     if let Some(ref emb_config) = embedding_config {
-        let query_emb = embed_text(emb_config, user_input).await;
+        let query_emb = embed_text_throttled(emb_config, user_input, &state.embedding_semaphore).await;
         if !query_emb.is_empty() {
             let chunks = crate::db::vector_search_memory(&state.db, user_id, &query_emb, 5)
                 .await
