@@ -16,6 +16,8 @@ pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Value>,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

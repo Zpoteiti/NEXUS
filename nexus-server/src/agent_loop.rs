@@ -183,6 +183,7 @@ async fn run_single_turn(
         &state.db,
         &llm_config,
         &state.config.embedding,
+        &state.embedding_semaphore,
     )
     .await;
 
@@ -230,6 +231,7 @@ async fn run_single_turn(
         messages: messages.clone(),
         tools: tools.clone(),
         model: llm_config.model.clone(),
+        max_tokens: None,
     };
     let response = call_with_retry(&llm_config, request).await
         .map_err(|e| format!("LLM provider error: {}", e))?;
@@ -330,6 +332,7 @@ async fn execute_tool_calls_loop(
                 messages: current_messages.clone(),
                 tools: tools.clone(),
                 model: llm_config.model.clone(),
+                max_tokens: None,
             };
             let response = call_with_retry(llm_config, request).await
                 .map_err(|e| format!("LLM provider error: {}", e))?;

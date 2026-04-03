@@ -70,6 +70,7 @@ pub async fn maybe_consolidate(
     db: &PgPool,
     llm_config: &LlmConfig,
     embedding_config: &tokio::sync::RwLock<Option<EmbeddingConfig>>,
+    embedding_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
 ) {
     let budget = llm_config
         .context_window
@@ -130,8 +131,12 @@ pub async fn maybe_consolidate(
         }
 
         let emb_config = embedding_config.read().await.clone();
+        let consolidation_max_tokens = emb_config
+            .as_ref()
+            .map(|e| ((e.max_input_length as f64) * 0.8) as usize)
+            .unwrap_or(1024);
         let success =
-            consolidate_chunk(session_id, user_id, db, llm_config, emb_config.as_ref(), chunk)
+            consolidate_chunk(session_id, user_id, db, llm_config, emb_config.as_ref(), embedding_semaphore, chunk, consolidation_max_tokens)
                 .await;
 
         if !success {
@@ -201,7 +206,9 @@ async fn consolidate_chunk(
     db: &PgPool,
     llm_config: &LlmConfig,
     embedding_config: Option<&EmbeddingConfig>,
+    embedding_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     chunk: &[crate::db::StoredMessage],
+    consolidation_max_tokens: usize,
 ) -> bool {
     // Format messages as text
     let formatted = chunk
@@ -240,6 +247,7 @@ async fn consolidate_chunk(
         messages,
         tools: vec![save_memory_tool()],
         model: llm_config.model.clone(),
+        max_tokens: Some(consolidation_max_tokens),
     };
 
     let response = match call_with_retry(llm_config, request).await {
@@ -299,7 +307,7 @@ async fn consolidate_chunk(
 
     // Generate embedding if config available
     let embedding = if let Some(emb_config) = embedding_config {
-        let emb = crate::context::embed_text(emb_config, &memory_update).await;
+        let emb = crate::context::embed_text_throttled(emb_config, &memory_update, embedding_semaphore).await;
         if emb.is_empty() {
             None
         } else {
