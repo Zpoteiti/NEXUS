@@ -89,9 +89,24 @@ async fn handle_file_upload_request(
 ) -> FileUploadResponse {
     use base64::Engine;
 
-    let path = std::path::Path::new(&req.file_path);
+    // Validate and resolve path against FsPolicy before any file access
+    let resolved_path = {
+        let policy = fs_policy.read().await;
+        match crate::env::sanitize_path_with_policy(&req.file_path, crate::env::FsOp::Read, &*policy) {
+            Ok(p) => p,
+            Err(reason) => {
+                return FileUploadResponse {
+                    request_id: req.request_id.clone(),
+                    file_name: String::new(),
+                    content_base64: String::new(),
+                    mime_type: None,
+                    error: Some(format!("file access denied by device policy: {}", reason)),
+                };
+            }
+        }
+    };
 
-    let file_name = path
+    let file_name = resolved_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -104,23 +119,13 @@ async fn handle_file_upload_request(
         error: Some(error),
     };
 
-    // Validate path against FsPolicy before any file access
-    {
-        let policy = fs_policy.read().await;
-        if let Err(reason) =
-            crate::env::sanitize_path_with_policy(&req.file_path, crate::env::FsOp::Read, &*policy)
-        {
-            return make_error(format!("file access denied by device policy: {}", reason));
-        }
-    }
-
     // Check file exists
-    if !path.exists() {
-        return make_error(format!("File not found: {}", req.file_path));
+    if !resolved_path.exists() {
+        return make_error(format!("File not found: {}", resolved_path.display()));
     }
 
     // Check file size (max 25MB for Discord)
-    match tokio::fs::metadata(path).await {
+    match tokio::fs::metadata(&resolved_path).await {
         Ok(meta) if meta.len() > 25 * 1024 * 1024 => {
             return make_error(format!(
                 "File too large: {} bytes (max 25MB)",
@@ -133,8 +138,8 @@ async fn handle_file_upload_request(
         _ => {}
     }
 
-    // Read file
-    let bytes = match tokio::fs::read(path).await {
+    // Read file using the resolved (validated) path
+    let bytes = match tokio::fs::read(&resolved_path).await {
         Ok(b) => b,
         Err(e) => {
             return make_error(format!("Failed to read file: {}", e));

@@ -122,11 +122,13 @@ impl LocalTool for ShellTool {
 
 /// 实际执行 shell 命令，带超时控制。
 async fn run_shell_command(cmd: &str, timeout_sec: u64) -> Result<String, ToolError> {
+    let workspace = env::get_workspace_root();
     let mut child = if cfg!(windows) {
         Command::new("cmd")
             .args(["/C", cmd])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .current_dir(&workspace)
             .envs(env::min_env())
             .spawn()
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to spawn cmd: {}", e)))?
@@ -135,6 +137,7 @@ async fn run_shell_command(cmd: &str, timeout_sec: u64) -> Result<String, ToolEr
             .args(["-c", cmd])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .current_dir(&workspace)
             .envs(env::min_env())
             .spawn()
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to spawn sh: {}", e)))?

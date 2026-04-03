@@ -85,8 +85,7 @@ async fn execute_tool_inner(
 
     // 路由到对应工具
     let result = if FS_TOOLS.contains(&tool_name.as_str()) {
-        // Filesystem tools use policy-aware dispatch
-        let policy = fs_policy.read().await;
+        let policy = fs_policy.read().await.clone();
         execute_fs_tool(&tool_name, arguments, &policy).await
     } else if let Some(tool) = LOCAL_TOOL_REGISTRY.get(tool_name.as_str()) {
         tool.execute(arguments).await

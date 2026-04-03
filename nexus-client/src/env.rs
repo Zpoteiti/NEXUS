@@ -100,7 +100,29 @@ pub fn sanitize_path_with_policy(
         PathBuf::from(p)
     };
 
-    let resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+    // For writes, if the file doesn't exist yet, canonicalize the parent to
+    // catch symlinks that escape the sandbox. For reads, the file must exist
+    // so canonicalize on the full path is sufficient.
+    let resolved = if op == FsOp::Write {
+        match resolved.canonicalize() {
+            Ok(p) => p,
+            Err(_) => {
+                // File doesn't exist — canonicalize parent to resolve symlinks
+                if let Some(parent) = resolved.parent() {
+                    let canon_parent = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+                    if let Some(file_name) = resolved.file_name() {
+                        canon_parent.join(file_name)
+                    } else {
+                        canon_parent
+                    }
+                } else {
+                    resolved.clone()
+                }
+            }
+        }
+    } else {
+        resolved.canonicalize().unwrap_or_else(|_| resolved.clone())
+    };
 
     match policy {
         FsPolicy::Unrestricted => Ok(resolved),
