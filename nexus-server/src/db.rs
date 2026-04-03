@@ -141,6 +141,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             history_entry TEXT NOT NULL,
             memory_text TEXT NOT NULL,
             embedding vector,
+            truncated BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
         "#,
@@ -759,6 +760,61 @@ pub async fn list_memory_chunks(
     .bind(offset)
     .fetch_all(db)
     .await
+}
+
+// ============================================================================
+// Re-embed & Dedup
+// ============================================================================
+
+pub async fn get_all_memory_chunks_for_reembed(
+    db: &PgPool,
+) -> Result<Vec<(i32, String)>, sqlx::Error> {
+    sqlx::query_as::<_, (i32, String)>(
+        "SELECT id, memory_text FROM memory_chunks ORDER BY id"
+    )
+    .fetch_all(db)
+    .await
+}
+
+pub async fn clear_all_embeddings(db: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE memory_chunks SET embedding = NULL, truncated = FALSE")
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn update_memory_embedding(
+    db: &PgPool,
+    id: i32,
+    embedding: &[f32],
+    truncated: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE memory_chunks SET embedding = $1::vector, truncated = $2 WHERE id = $3"
+    )
+    .bind(embedding)
+    .bind(truncated)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+pub async fn find_similar_memory(
+    db: &PgPool,
+    user_id: &str,
+    embedding: &[f32],
+    threshold: f64,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT id FROM memory_chunks WHERE user_id = $1 AND embedding IS NOT NULL AND 1 - (embedding <=> $2::vector) > $3 LIMIT 1"
+    )
+    .bind(user_id)
+    .bind(embedding)
+    .bind(threshold)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.is_some())
 }
 
 // ============================================================================
