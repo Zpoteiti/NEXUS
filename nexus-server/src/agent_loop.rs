@@ -530,12 +530,25 @@ async fn execute_single_tool(
         let embedding = {
             let emb_config = state.config.embedding.read().await.clone();
             if let Some(ref cfg) = emb_config {
-                let emb = crate::context::embed_text(cfg, &content).await;
+                let emb = crate::context::embed_text_throttled(cfg, &content, &state.embedding_semaphore).await;
                 if emb.is_empty() { None } else { Some(emb) }
             } else {
                 None
             }
         };
+        // Dedup: skip if a very similar memory already exists
+        if let Some(ref emb) = embedding {
+            match crate::db::find_similar_memory(&state.db, user_id, emb, 0.92).await {
+                Ok(true) => {
+                    tracing::info!("save_memory: skipping duplicate (cosine > 0.92)");
+                    return Ok("Memory already exists (similar content found).".to_string());
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!("save_memory: dedup check failed: {}, proceeding with save", e);
+                }
+            }
+        }
         match crate::db::save_memory_chunk(
             &state.db, session_id, user_id,
             &format!("[{}] Agent saved: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M"), &content[..content.len().min(80)]),

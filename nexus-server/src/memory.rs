@@ -317,6 +317,26 @@ async fn consolidate_chunk(
         None
     };
 
+    // Dedup: skip if a very similar memory already exists
+    if let Some(ref emb) = embedding {
+        match crate::db::find_similar_memory(db, user_id, emb, 0.92).await {
+            Ok(true) => {
+                info!("consolidation: skipping duplicate memory (cosine > 0.92)");
+                // Still mark messages as consolidated so they don't re-trigger
+                let message_ids: Vec<String> = chunk.iter().map(|m| m.message_id.clone()).collect();
+                let _ = crate::db::mark_messages_consolidated(db, &message_ids).await;
+                if let Some(last) = message_ids.last() {
+                    let _ = crate::db::update_session_last_consolidated(db, session_id, last).await;
+                }
+                return true;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                warn!("consolidation: dedup check failed: {}, proceeding with save", e);
+            }
+        }
+    }
+
     // Save to DB
     if let Err(e) = crate::db::save_memory_chunk(
         db,
