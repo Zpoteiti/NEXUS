@@ -13,6 +13,8 @@ pub struct EmbeddingConfig {
     pub api_key: String,
     pub model: String,
     pub dimensions: usize,
+    pub max_input_length: usize,
+    pub max_concurrency: usize,
 }
 
 use std::sync::Arc;

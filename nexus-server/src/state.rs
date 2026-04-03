@@ -21,7 +21,7 @@ use std::time::Instant;
 use axum::extract::ws::Message;
 use nexus_common::protocol::{FileUploadResponse, FsPolicy, SkillFull, ToolExecutionResult};
 use sqlx::PgPool;
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{RwLock, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::bus::MessageBus;
@@ -55,6 +55,7 @@ pub struct AppState {
     /// ChannelManager 的 dispatch task handle，用于 graceful shutdown
     /// 使用 Mutex<Option<JoinHandle>> 而非直接存储 JoinHandle，因为 JoinHandle 不是 Clone
     pub channel_manager_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    pub embedding_semaphore: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -69,6 +70,7 @@ impl AppState {
             bus,
             session_manager,
             channel_manager_handle: Arc::new(RwLock::new(None)),
+            embedding_semaphore: Arc::new(Semaphore::new(10)),
         }
     }
 }
