@@ -202,8 +202,13 @@ pub async fn create_device_token(
         })
         .into_response(),
         Err(e) => {
-            tracing::error!("create device token error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create device token").into_response()
+            let msg = e.to_string();
+            if msg.contains("idx_device_tokens_user_device") || msg.contains("duplicate key") {
+                (StatusCode::CONFLICT, format!("Device '{}' already exists", payload.device_name)).into_response()
+            } else {
+                tracing::error!("create device token error: {e}");
+                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create device token").into_response()
+            }
         }
     }
 }
