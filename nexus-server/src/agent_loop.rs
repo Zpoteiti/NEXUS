@@ -322,15 +322,22 @@ async fn execute_tool_calls_loop(
                 "execute_tool_calls_loop: tool '{}' called {} times with identical arguments — injecting soft error",
                 tc.name, count
             );
-            let soft_error = format!(
-                "[Loop Detected] The tool '{}' has been called {} times with identical arguments without progress. Please try a fundamentally different strategy or approach to complete this task.",
-                tc.name, count
-            );
-            current_messages.push(json!({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": soft_error
-            }));
+            // Must provide a tool result for EVERY tool_call_id in the assistant message
+            for call in &current_tool_calls {
+                let content = if call.id == tc.id {
+                    format!(
+                        "[Loop Detected] The tool '{}' has been called {} times with identical arguments without progress. Please try a fundamentally different strategy or approach to complete this task.",
+                        tc.name, count
+                    )
+                } else {
+                    "[Skipped] Tool execution skipped due to loop detection on a parallel call.".to_string()
+                };
+                current_messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": content
+                }));
+            }
 
             let request = ChatCompletionRequest {
                 messages: current_messages.clone(),
