@@ -311,41 +311,54 @@ pub async fn get_session_history(
     .fetch_all(db)
     .await?;
 
-    let messages = rows
-        .iter()
-        .map(|row| {
-            let role: String = row.get("role");
-            let content: String = row.get("content");
-            let tool_call_id: Option<String> = row.get("tool_call_id");
-            let tool_name: Option<String> = row.get("tool_name");
-            let tool_arguments: Option<String> = row.get("tool_arguments");
+    // Reconstruct messages, merging consecutive assistant tool_call rows
+    // into a single assistant message with a tool_calls array.
+    let mut messages: Vec<serde_json::Value> = Vec::new();
 
-            if role == "assistant" && tool_name.is_some() {
-                serde_json::json!({
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": tool_arguments
-                        }
-                    }]
-                })
-            } else if role == "tool" {
-                serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": content
-                })
-            } else {
-                serde_json::json!({
-                    "role": role,
-                    "content": content
-                })
+    for row in &rows {
+        let role: String = row.get("role");
+        let content: String = row.get("content");
+        let tool_call_id: Option<String> = row.get("tool_call_id");
+        let tool_name: Option<String> = row.get("tool_name");
+        let tool_arguments: Option<String> = row.get("tool_arguments");
+
+        if role == "assistant" && tool_name.is_some() {
+            let tc = serde_json::json!({
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": tool_arguments
+                }
+            });
+            // Merge into previous assistant message if it has tool_calls
+            if let Some(last) = messages.last_mut() {
+                if last.get("role").and_then(|v| v.as_str()) == Some("assistant")
+                    && last.get("tool_calls").is_some()
+                {
+                    if let Some(arr) = last.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
+                        arr.push(tc);
+                        continue;
+                    }
+                }
             }
-        })
-        .collect();
+            messages.push(serde_json::json!({
+                "role": "assistant",
+                "tool_calls": [tc]
+            }));
+        } else if role == "tool" {
+            messages.push(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": content
+            }));
+        } else {
+            messages.push(serde_json::json!({
+                "role": role,
+                "content": content
+            }));
+        }
+    }
 
     Ok(messages)
 }
