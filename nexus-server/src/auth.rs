@@ -541,7 +541,8 @@ pub async fn get_embedding_config(
                 "api_base": emb.api_base,
                 "api_key": masked_key,
                 "model": emb.model,
-                "dimensions": emb.dimensions,
+                "max_input_length": emb.max_input_length,
+                "max_concurrency": emb.max_concurrency,
             })).into_response()
         }
         None => {
@@ -558,7 +559,6 @@ pub struct UpdateEmbeddingConfigRequest {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
-    pub dimensions: usize,
     pub max_input_length: usize,
     pub max_concurrency: usize,
 }
@@ -578,7 +578,6 @@ pub async fn update_embedding_config(
         api_base: payload.api_base,
         api_key: payload.api_key,
         model: payload.model,
-        dimensions: payload.dimensions,
         max_input_length: payload.max_input_length,
         max_concurrency: payload.max_concurrency,
     };

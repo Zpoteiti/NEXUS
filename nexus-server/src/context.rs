@@ -23,14 +23,10 @@ pub async fn embed_text(config: &crate::config::EmbeddingConfig, text: &str) -> 
     });
 
     let url = format!("{}/embeddings", config.api_base);
-    let mut body = serde_json::json!({
+    let body = serde_json::json!({
         "model": config.model,
         "input": text,
     });
-    // Only include dimensions if non-zero (some models like Qwen don't support Matryoshka)
-    if config.dimensions > 0 {
-        body["dimensions"] = serde_json::json!(config.dimensions);
-    }
 
     let response = match CLIENT
         .post(&url)
