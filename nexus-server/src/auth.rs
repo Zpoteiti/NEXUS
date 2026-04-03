@@ -555,13 +555,16 @@ pub async fn get_embedding_config(
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateEmbeddingConfigRequest {
-    pub api_base: Option<String>,
-    pub api_key: Option<String>,
-    pub model: Option<String>,
-    pub dimensions: Option<usize>,
+    pub api_base: String,
+    pub api_key: String,
+    pub model: String,
+    pub dimensions: usize,
+    pub max_input_length: usize,
+    pub max_concurrency: usize,
 }
 
-/// PUT /api/embedding-config — update embedding config at runtime (admin only)
+/// PUT /api/embedding-config — update embedding config at runtime (admin only).
+/// Replaces the entire config and triggers background re-embedding of all memory chunks.
 pub async fn update_embedding_config(
     State(state): State<AppState>,
     claims: axum::Extension<Claims>,
@@ -570,32 +573,79 @@ pub async fn update_embedding_config(
     if !claims.is_admin {
         return (StatusCode::FORBIDDEN, "Admin only").into_response();
     }
-    let mut emb_guard = state.config.embedding.write().await;
-    let emb = emb_guard.get_or_insert_with(|| crate::config::EmbeddingConfig {
-        api_base: String::new(),
-        api_key: String::new(),
-        model: String::new(),
-        dimensions: 1536,
-    });
-    if let Some(api_base) = payload.api_base {
-        emb.api_base = api_base;
-    }
-    if let Some(api_key) = payload.api_key {
-        emb.api_key = api_key;
-    }
-    if let Some(model) = payload.model {
-        emb.model = model;
-    }
-    if let Some(dimensions) = payload.dimensions {
-        emb.dimensions = dimensions;
-    }
+
+    let new_config = crate::config::EmbeddingConfig {
+        api_base: payload.api_base,
+        api_key: payload.api_key,
+        model: payload.model,
+        dimensions: payload.dimensions,
+        max_input_length: payload.max_input_length,
+        max_concurrency: payload.max_concurrency,
+    };
+
+    // Update config in memory
+    *state.config.embedding.write().await = Some(new_config.clone());
 
     // Persist to database
-    if let Ok(json_str) = serde_json::to_string(emb) {
+    if let Ok(json_str) = serde_json::to_string(&new_config) {
         if let Err(e) = db::set_system_config(&state.db, "embedding_config", &json_str).await {
             tracing::error!("Failed to persist embedding config to DB: {e}");
         }
     }
 
-    (StatusCode::OK, "Embedding config updated").into_response()
+    // Spawn background re-embed task
+    let db = state.db.clone();
+    let emb_config = new_config;
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(emb_config.max_concurrency));
+
+    tokio::spawn(async move {
+        tracing::info!("re-embed: starting background re-embedding of all memory chunks");
+
+        if let Err(e) = db::clear_all_embeddings(&db).await {
+            tracing::error!("re-embed: failed to clear embeddings: {}", e);
+            return;
+        }
+
+        let chunks = match db::get_all_memory_chunks_for_reembed(&db).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("re-embed: failed to fetch chunks: {}", e);
+                return;
+            }
+        };
+
+        tracing::info!("re-embed: processing {} chunks", chunks.len());
+        let mut success = 0u32;
+        let mut truncated_count = 0u32;
+        let mut failed = 0u32;
+
+        for (id, memory_text) in &chunks {
+            // Truncate if needed (rough estimate: 1 token ~ 3 chars)
+            let max_chars = emb_config.max_input_length * 3;
+            let (text_to_embed, is_truncated) = if memory_text.len() > max_chars {
+                (&memory_text[..max_chars], true)
+            } else {
+                (memory_text.as_str(), false)
+            };
+
+            let embedding = crate::context::embed_text_throttled(&emb_config, text_to_embed, &semaphore).await;
+            if embedding.is_empty() {
+                tracing::warn!("re-embed: failed to embed chunk id={}", id);
+                failed += 1;
+                continue;
+            }
+
+            if let Err(e) = db::update_memory_embedding(&db, *id, &embedding, is_truncated).await {
+                tracing::warn!("re-embed: failed to update chunk id={}: {}", id, e);
+                failed += 1;
+            } else {
+                success += 1;
+                if is_truncated { truncated_count += 1; }
+            }
+        }
+
+        tracing::info!("re-embed: done. {} success ({} truncated), {} failed", success, truncated_count, failed);
+    });
+
+    (StatusCode::OK, "Embedding config updated. Re-embedding started in background.").into_response()
 }
