@@ -432,7 +432,7 @@ pub struct DeviceTokenInfo {
     pub token: String,
     pub device_name: Option<String>,
     pub revoked: bool,
-    pub created_at: Option<chrono::NaiveDateTime>,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub async fn list_device_tokens(
