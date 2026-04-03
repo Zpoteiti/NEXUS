@@ -32,12 +32,21 @@ pub struct DiscordConfig {
 }
 
 pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
+    // pgvector extension (must be first — memory_chunks uses the vector type)
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
+        .execute(pool)
+        .await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
             email TEXT UNIQUE NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW()
+            password_hash TEXT NOT NULL DEFAULT '',
+            is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+            soul TEXT,
+            preferences JSONB,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         "#,
     )
@@ -49,32 +58,17 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
         CREATE TABLE IF NOT EXISTS device_tokens (
             token TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES users(user_id),
-            device_name TEXT,
+            device_name TEXT NOT NULL,
             revoked BOOLEAN NOT NULL DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT NOW()
+            fs_policy JSONB NOT NULL DEFAULT '{"mode":"sandbox"}',
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         "#,
     )
     .execute(pool)
     .await?;
 
-    sqlx::query("ALTER TABLE device_tokens ADD COLUMN IF NOT EXISTS fs_policy JSONB NOT NULL DEFAULT '{\"mode\":\"sandbox\"}'")
-        .execute(pool)
-        .await?;
-
-    sqlx::query("DROP INDEX IF EXISTS idx_device_tokens_user_device")
-        .execute(pool)
-        .await?;
-
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_device_tokens_user_device ON device_tokens (user_id, device_name) WHERE revoked = FALSE")
-        .execute(pool)
-        .await?;
-
-    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await?;
-
-    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE")
         .execute(pool)
         .await?;
 
@@ -115,6 +109,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             user_id TEXT PRIMARY KEY REFERENCES users(user_id),
             bot_token TEXT NOT NULL,
             bot_user_id TEXT,
+            owner_discord_id TEXT,
             enabled BOOLEAN NOT NULL DEFAULT TRUE,
             allowed_users TEXT[] NOT NULL DEFAULT '{}',
             created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -124,10 +119,6 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
-
-    sqlx::query("ALTER TABLE discord_configs ADD COLUMN IF NOT EXISTS owner_discord_id TEXT")
-        .execute(pool)
-        .await?;
 
     sqlx::query(
         r#"
@@ -141,12 +132,6 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // pgvector extension
-    sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
-        .execute(pool)
-        .await?;
-
-    // Memory chunks table
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS memory_chunks (
@@ -162,15 +147,6 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
-
-    // Soul & preferences columns on users
-    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS soul TEXT")
-        .execute(pool)
-        .await?;
-
-    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS preferences JSONB")
-        .execute(pool)
-        .await?;
 
     Ok(())
 }
