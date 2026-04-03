@@ -43,6 +43,13 @@ pub struct ClientConfig {
     pub skills_dir: PathBuf,
 }
 
+impl ClientConfig {
+    /// Skills directory is always `{workspace}/skills`.
+    pub fn skills_dir_from_workspace() -> PathBuf {
+        crate::env::get_workspace_root().join("skills")
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct McpServerJson {
     #[serde(default)]
@@ -66,7 +73,6 @@ struct McpServerJson {
     enabled: bool,
 }
 
-const DEFAULT_SERVER_WS_URL: &str = "ws://127.0.0.1:8080/ws";
 
 fn default_true() -> bool {
     true
@@ -184,17 +190,16 @@ pub fn load_config() -> ClientConfig {
     dotenvy::dotenv().ok();
 
     let server_ws_url = first_non_empty_env(&["NEXUS_SERVER_WS_URL", "NEXUS_WS_URL"])
-        .unwrap_or_else(|| DEFAULT_SERVER_WS_URL.to_string());
+        .unwrap_or_else(|| panic!("NEXUS_SERVER_WS_URL is required (e.g. ws://127.0.0.1:8080/ws)"));
     validate_server_ws_url(&server_ws_url);
 
     let auth_token = first_non_empty_env(&["NEXUS_AUTH_TOKEN", "NEXUS_DEVICE_TOKEN"])
-        .unwrap_or_else(|| panic!("环境变量 NEXUS_AUTH_TOKEN 未设置，Client 无法完成设备鉴权"));
+        .unwrap_or_else(|| panic!("NEXUS_AUTH_TOKEN is required"));
     validate_auth_token(&auth_token);
 
+    // MCP servers will be configured via browser → gateway → server → client (M4)
     let mcp_servers = parse_mcp_servers();
-    let skills_dir = first_non_empty_env(&["NEXUS_SKILLS_DIR", "NEXUS_SKILLS_PATH"])
-        .map(PathBuf::from)
-        .unwrap_or_else(default_skills_dir);
+    let skills_dir = ClientConfig::skills_dir_from_workspace();
 
     ClientConfig {
         server_ws_url,
