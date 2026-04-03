@@ -108,6 +108,14 @@ fn parse_frontmatter(content: &str) -> Option<SkillMeta> {
 pub fn scan_skills(skills_dir: &Path) -> Vec<SkillFull> {
     let mut skills = Vec::new();
 
+    if !skills_dir.exists() {
+        if let Err(e) = fs::create_dir_all(skills_dir) {
+            tracing::warn!("failed to create skills directory '{}': {}", skills_dir.display(), e);
+        } else {
+            tracing::info!("created skills directory '{}'", skills_dir.display());
+        }
+    }
+
     let entries = match fs::read_dir(skills_dir) {
         Ok(e) => e,
         Err(e) => {

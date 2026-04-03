@@ -41,6 +41,13 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let config = config::load_config();
+
+    // Ensure workspace directory exists
+    let workspace = env::get_workspace_root();
+    if let Err(e) = std::fs::create_dir_all(&workspace) {
+        warn!("failed to create workspace directory '{}': {}", workspace.display(), e);
+    }
+
     let fs_policy = Arc::new(RwLock::new(FsPolicy::default()));
     let mut session = session::connect_and_loop(config, fs_policy.clone()).await;
 
