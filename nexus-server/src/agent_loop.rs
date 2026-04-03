@@ -274,20 +274,24 @@ async fn execute_tool_calls_loop(
     let mut pending_media: Vec<String> = Vec::new();
 
     loop {
+        // Build a single assistant message with all tool calls
+        let tool_calls_json: Vec<Value> = current_tool_calls.iter().map(|tc| {
+            json!({
+                "id": tc.id,
+                "type": "function",
+                "function": { "name": tc.name, "arguments": tc.arguments.to_string() }
+            })
+        }).collect();
+        current_messages.push(json!({
+            "role": "assistant",
+            "tool_calls": tool_calls_json
+        }));
+        // Save each tool call to DB
         for tc in &current_tool_calls {
-            // Save assistant tool_call to DB
             let _ = crate::db::save_message(
                 &state.db, session_id, "assistant", "",
                 Some(&tc.id), Some(&tc.name), Some(&tc.arguments.to_string()),
             ).await;
-            current_messages.push(json!({
-                "role": "assistant",
-                "tool_calls": [{
-                    "id": tc.id,
-                    "type": "function",
-                    "function": { "name": tc.name, "arguments": tc.arguments.to_string() }
-                }]
-            }));
         }
 
         let mut loop_detected: Option<(&ToolCallParsed, usize)> = None;
