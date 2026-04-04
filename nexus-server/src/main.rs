@@ -101,6 +101,7 @@ async fn main() {
         // Devices
         .route("/api/devices", axum::routing::get(api::list_devices))
         .route("/api/devices/{device_name}/policy", axum::routing::get(auth::get_device_policy).patch(auth::update_device_policy))
+        .route("/api/devices/{device_name}/mcp", axum::routing::get(auth::get_device_mcp).put(auth::update_device_mcp))
         // Memories
         .route("/api/memories", axum::routing::get(api::list_memories))
         // User soul & preferences

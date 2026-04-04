@@ -523,6 +523,53 @@ pub async fn update_device_policy(
 }
 
 // ============================================================================
+// Device MCP config handlers
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateDeviceMcpRequest {
+    pub mcp_servers: Vec<nexus_common::protocol::McpServerEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeviceMcpResponse {
+    pub device_name: String,
+    pub mcp_servers: Vec<nexus_common::protocol::McpServerEntry>,
+}
+
+/// GET /api/devices/{device_name}/mcp — get MCP config for a device
+pub async fn get_device_mcp(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(device_name): Path<String>,
+) -> Response {
+    match db::get_device_mcp_config(&state.db, &claims.sub, &device_name).await {
+        Ok(servers) => Json(DeviceMcpResponse {
+            device_name,
+            mcp_servers: servers,
+        }).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "Device not found").into_response(),
+    }
+}
+
+/// PUT /api/devices/{device_name}/mcp — update MCP config for a device
+pub async fn update_device_mcp(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(device_name): Path<String>,
+    Json(payload): Json<UpdateDeviceMcpRequest>,
+) -> Response {
+    match db::update_device_mcp_config(&state.db, &claims.sub, &device_name, &payload.mcp_servers).await {
+        Ok(true) => Json(DeviceMcpResponse {
+            device_name,
+            mcp_servers: payload.mcp_servers,
+        }).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "Device not found or revoked").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")).into_response(),
+    }
+}
+
+// ============================================================================
 // Embedding config handlers
 // ============================================================================
 

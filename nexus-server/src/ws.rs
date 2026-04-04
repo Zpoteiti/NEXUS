@@ -94,8 +94,11 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
     // Use token as internal device key
     let device_key = token.clone();
 
-    // Fetch current policy before registering device
+    // Fetch current policy and MCP config before registering device
     let fs_policy = db::get_device_policy(&state.db, &user_id, &device_name)
+        .await
+        .unwrap_or_default();
+    let mcp_servers = db::get_device_mcp_config(&state.db, &user_id, &device_name)
         .await
         .unwrap_or_default();
 
@@ -136,6 +139,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         user_id: user_id.clone(),
         device_name: device_name.clone(),
         fs_policy,
+        mcp_servers,
     };
     let login_success_text = match serde_json::to_string(&login_success) {
         Ok(text) => text,
@@ -176,8 +180,11 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
 
         match incoming {
             ClientToServer::Heartbeat { hash: _, status: _ } => {
-                // Refresh policy from DB (cheap: only on heartbeat interval, not per-message)
+                // Refresh policy and MCP config from DB
                 let fresh_policy = db::get_device_policy(&state.db, &user_id, &device_name)
+                    .await
+                    .unwrap_or_default();
+                let fresh_mcp = db::get_device_mcp_config(&state.db, &user_id, &device_name)
                     .await
                     .unwrap_or_default();
 
@@ -188,7 +195,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 }
                 drop(devices);
 
-                let ack = ServerToClient::HeartbeatAck { fs_policy: fresh_policy };
+                let ack = ServerToClient::HeartbeatAck { fs_policy: fresh_policy, mcp_servers: fresh_mcp };
                 let ack_text = serde_json::to_string(&ack).unwrap_or_default();
                 let _ = ws_tx.send(Message::Text(ack_text.into())).await;
             }

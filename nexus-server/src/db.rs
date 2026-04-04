@@ -61,6 +61,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             device_name TEXT NOT NULL,
             revoked BOOLEAN NOT NULL DEFAULT FALSE,
             fs_policy JSONB NOT NULL DEFAULT '{"mode":"sandbox"}',
+            mcp_config JSONB NOT NULL DEFAULT '[]',
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
         "#,
@@ -862,6 +863,48 @@ pub async fn update_device_policy(
 
     let result = sqlx::query(
         "UPDATE device_tokens SET fs_policy = $1 WHERE user_id = $2 AND device_name = $3 AND revoked = FALSE"
+    )
+    .bind(json)
+    .bind(user_id)
+    .bind(device_name)
+    .execute(db)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+// ============================================================================
+// Device MCP Config
+// ============================================================================
+
+pub async fn get_device_mcp_config(
+    db: &PgPool,
+    user_id: &str,
+    device_name: &str,
+) -> Result<Vec<nexus_common::protocol::McpServerEntry>, sqlx::Error> {
+    let row: (serde_json::Value,) = sqlx::query_as(
+        "SELECT COALESCE(mcp_config, '[]'::jsonb) FROM device_tokens WHERE user_id = $1 AND device_name = $2 AND revoked = FALSE"
+    )
+    .bind(user_id)
+    .bind(device_name)
+    .fetch_one(db)
+    .await?;
+
+    serde_json::from_value(row.0)
+        .map_err(|e| sqlx::Error::Protocol(format!("invalid mcp_config JSON: {e}")))
+}
+
+pub async fn update_device_mcp_config(
+    db: &PgPool,
+    user_id: &str,
+    device_name: &str,
+    config: &[nexus_common::protocol::McpServerEntry],
+) -> Result<bool, sqlx::Error> {
+    let json = serde_json::to_value(config)
+        .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize mcp_config: {e}")))?;
+
+    let result = sqlx::query(
+        "UPDATE device_tokens SET mcp_config = $1 WHERE user_id = $2 AND device_name = $3 AND revoked = FALSE"
     )
     .bind(json)
     .bind(user_id)

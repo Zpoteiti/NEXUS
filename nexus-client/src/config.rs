@@ -50,6 +50,24 @@ impl ClientConfig {
     }
 }
 
+/// Convert server McpServerEntry list to client McpServerConfig list.
+pub fn mcp_entries_to_configs(entries: &[nexus_common::protocol::McpServerEntry]) -> Vec<McpServerConfig> {
+    entries.iter().filter(|e| e.enabled).map(|e| {
+        let transport_type = parse_transport_type(e.transport_type.as_deref());
+        McpServerConfig {
+            name: e.name.clone(),
+            transport_type,
+            command: e.command.clone(),
+            args: e.args.clone(),
+            env: e.env.clone(),
+            url: e.url.clone(),
+            headers: e.headers.clone(),
+            tool_timeout: e.tool_timeout,
+            enabled: e.enabled,
+        }
+    }).collect()
+}
+
 #[derive(Debug, Deserialize)]
 struct McpServerJson {
     #[serde(default)]
@@ -197,14 +215,13 @@ pub fn load_config() -> ClientConfig {
         .unwrap_or_else(|| panic!("NEXUS_AUTH_TOKEN is required"));
     validate_auth_token(&auth_token);
 
-    // MCP servers will be configured via browser → gateway → server → client (M4)
-    let mcp_servers = parse_mcp_servers();
+    // MCP servers are now configured via REST API and delivered at handshake/heartbeat
     let skills_dir = ClientConfig::skills_dir_from_workspace();
 
     ClientConfig {
         server_ws_url,
         auth_token,
-        mcp_servers,
+        mcp_servers: Vec::new(),
         skills_dir,
     }
 }

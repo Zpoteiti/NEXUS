@@ -30,6 +30,29 @@ impl Default for FsPolicy {
     }
 }
 
+/// MCP server configuration entry, stored per-device in the DB.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpServerEntry {
+    pub name: String,
+    #[serde(default)]
+    pub transport_type: Option<String>,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub tool_timeout: Option<u64>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool { true }
+
 /// Skill 全量信息，用于 Client → Server 注册。
 ///
 /// - always=false: content = None（服务端只有摘要，正文由 Agent 自行 read_file）
@@ -56,12 +79,14 @@ pub enum ServerToClient {
         user_id: String,
         device_name: String,
         fs_policy: FsPolicy,
+        mcp_servers: Vec<McpServerEntry>,
     },
     LoginFailed {
         reason: String,
     },
     HeartbeatAck {
         fs_policy: FsPolicy,
+        mcp_servers: Vec<McpServerEntry>,
     },
 }
 

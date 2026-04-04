@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use nexus_common::consts::{HEARTBEAT_INTERVAL_SEC, PROTOCOL_VERSION};
-use nexus_common::protocol::{ClientToServer, FsPolicy, ServerToClient};
+use nexus_common::protocol::{ClientToServer, FsPolicy, McpServerEntry, ServerToClient};
 use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
@@ -35,11 +35,15 @@ impl ClientSession {
     }
 }
 
-pub async fn connect_and_loop(config: ClientConfig, policy_lock: Arc<RwLock<FsPolicy>>) -> ClientSession {
+pub async fn connect_and_loop(
+    config: ClientConfig,
+    policy_lock: Arc<RwLock<FsPolicy>>,
+    mcp_config_lock: Arc<RwLock<Vec<McpServerEntry>>>,
+) -> ClientSession {
     let (outbound_tx, outbound_rx) = mpsc::channel::<ClientToServer>(256);
     let (inbound_tx, inbound_rx) = mpsc::channel::<ServerToClient>(256);
 
-    tokio::spawn(connection_manager_loop(config, inbound_tx, outbound_rx, policy_lock));
+    tokio::spawn(connection_manager_loop(config, inbound_tx, outbound_rx, policy_lock, mcp_config_lock));
 
     ClientSession {
         outbound_tx,
@@ -52,13 +56,14 @@ async fn connection_manager_loop(
     inbound_tx: mpsc::Sender<ServerToClient>,
     mut outbound_rx: mpsc::Receiver<ClientToServer>,
     policy_lock: Arc<RwLock<FsPolicy>>,
+    mcp_config_lock: Arc<RwLock<Vec<McpServerEntry>>>,
 ) {
     let mut backoff_sec = 1u64;
     loop {
         match connect_async(&config.server_ws_url).await {
             Ok((mut ws_stream, _)) => {
                 info!("connected to server: {}", config.server_ws_url);
-                match run_single_connection(&mut ws_stream, &config, &inbound_tx, &mut outbound_rx, policy_lock.clone())
+                match run_single_connection(&mut ws_stream, &config, &inbound_tx, &mut outbound_rx, policy_lock.clone(), mcp_config_lock.clone())
                     .await
                 {
                     Ok(()) => {
@@ -87,13 +92,18 @@ async fn run_single_connection(
     inbound_tx: &mpsc::Sender<ServerToClient>,
     outbound_rx: &mut mpsc::Receiver<ClientToServer>,
     policy_lock: Arc<RwLock<FsPolicy>>,
+    mcp_config_lock: Arc<RwLock<Vec<McpServerEntry>>>,
 ) -> Result<(), String> {
-    let (device_name, initial_policy) = perform_handshake(ws_stream, &config.auth_token).await?;
+    let (device_name, initial_policy, initial_mcp) = perform_handshake(ws_stream, &config.auth_token).await?;
     *policy_lock.write().await = initial_policy;
+    *mcp_config_lock.write().await = initial_mcp.clone();
+
+    // Convert server MCP config to client MCP config format
+    let mcp_servers = crate::config::mcp_entries_to_configs(&initial_mcp);
 
     // Discover and register tools
     let (schemas, skills, hash) =
-        crate::discovery::discover_all(&config.mcp_servers, &config.skills_dir).await;
+        crate::discovery::discover_all(&mcp_servers, &config.skills_dir).await;
 
     let register = ClientToServer::RegisterTools { schemas, skills };
     send_client_message(ws_stream, &register).await?;
@@ -104,8 +114,10 @@ async fn run_single_connection(
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
+                let current_mcp = mcp_config_lock.read().await.clone();
+                let current_mcp_configs = crate::config::mcp_entries_to_configs(&current_mcp);
                 let (current_schemas, current_skills, current_hash) =
-                    crate::discovery::discover_all(&config.mcp_servers, &config.skills_dir).await;
+                    crate::discovery::discover_all(&current_mcp_configs, &config.skills_dir).await;
 
                 let heartbeat_event = ClientToServer::Heartbeat {
                     hash: current_hash.clone(),
@@ -149,13 +161,19 @@ async fn run_single_connection(
                 let parsed = serde_json::from_str::<ServerToClient>(&text)
                     .map_err(|err| format!("invalid server message json: {err}"))?;
 
-                // Handle HeartbeatAck locally — update policy if changed
-                if let ServerToClient::HeartbeatAck { fs_policy } = &parsed {
-                    let current = policy_lock.read().await;
-                    if *current != *fs_policy {
-                        drop(current);
+                // Handle HeartbeatAck locally — update policy and MCP config if changed
+                if let ServerToClient::HeartbeatAck { fs_policy, mcp_servers } = &parsed {
+                    let current_policy = policy_lock.read().await;
+                    if *current_policy != *fs_policy {
+                        drop(current_policy);
                         info!("FsPolicy updated via heartbeat: {:?}", fs_policy);
                         *policy_lock.write().await = fs_policy.clone();
+                    }
+                    let current_mcp = mcp_config_lock.read().await;
+                    if *current_mcp != *mcp_servers {
+                        drop(current_mcp);
+                        info!("MCP config updated via heartbeat: {} servers", mcp_servers.len());
+                        *mcp_config_lock.write().await = mcp_servers.clone();
                     }
                     continue;
                 }
@@ -169,13 +187,13 @@ async fn run_single_connection(
 }
 
 /// Handshake: wait for RequireLogin, send SubmitToken, receive LoginSuccess.
-/// Returns (device_name, fs_policy) assigned by server.
+/// Returns (device_name, fs_policy, mcp_servers) assigned by server.
 async fn perform_handshake(
     ws_stream: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     auth_token: &str,
-) -> Result<(String, FsPolicy), String> {
+) -> Result<(String, FsPolicy, Vec<McpServerEntry>), String> {
     let require_login = tokio::time::timeout(Duration::from_secs(30), ws_stream.next())
         .await
         .map_err(|_| "wait require-login timeout".to_string())?
@@ -213,9 +231,9 @@ async fn perform_handshake(
     let login_result_msg = serde_json::from_str::<ServerToClient>(&login_result_text)
         .map_err(|err| format!("invalid login-result json: {err}"))?;
     match login_result_msg {
-        ServerToClient::LoginSuccess { device_name, fs_policy, .. } => {
-            info!("device login success: device_name={}, fs_policy={:?}", device_name, fs_policy);
-            Ok((device_name, fs_policy))
+        ServerToClient::LoginSuccess { device_name, fs_policy, mcp_servers, .. } => {
+            info!("device login success: device_name={}, fs_policy={:?}, mcp_servers={}", device_name, fs_policy, mcp_servers.len());
+            Ok((device_name, fs_policy, mcp_servers))
         }
         ServerToClient::LoginFailed { reason } => Err(format!("login failed: {}", reason)),
         _ => Err("unexpected message during login".to_string()),

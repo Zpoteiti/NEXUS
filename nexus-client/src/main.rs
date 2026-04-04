@@ -31,7 +31,7 @@ mod session;
 mod skills;
 pub mod tools;
 
-use nexus_common::protocol::{ClientToServer, FileUploadRequest, FileUploadResponse, FsPolicy, ServerToClient};
+use nexus_common::protocol::{ClientToServer, FileUploadRequest, FileUploadResponse, FsPolicy, McpServerEntry, ServerToClient};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -49,7 +49,8 @@ async fn main() {
     }
 
     let fs_policy = Arc::new(RwLock::new(FsPolicy::default()));
-    let mut session = session::connect_and_loop(config, fs_policy.clone()).await;
+    let mcp_config: Arc<RwLock<Vec<McpServerEntry>>> = Arc::new(RwLock::new(Vec::new()));
+    let mut session = session::connect_and_loop(config, fs_policy.clone(), mcp_config).await;
 
     info!("nexus-client started, waiting for server messages...");
 
