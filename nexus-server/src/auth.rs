@@ -407,9 +407,10 @@ pub async fn get_llm_config(
                 "***".to_string()
             };
             Json(json!({
-                "api_base": llm.api_base,
-                "api_key": masked_key,
+                "provider": llm.provider,
                 "model": llm.model,
+                "api_key": masked_key,
+                "api_base": llm.api_base,
                 "context_window": llm.context_window,
                 "max_output_tokens": llm.max_output_tokens,
             })).into_response()
@@ -425,9 +426,10 @@ pub async fn get_llm_config(
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateLlmConfigRequest {
-    pub api_base: Option<String>,
-    pub api_key: Option<String>,
+    pub provider: Option<String>,
     pub model: Option<String>,
+    pub api_key: Option<String>,
+    pub api_base: Option<String>,
     pub context_window: Option<usize>,
     pub max_output_tokens: Option<usize>,
 }
@@ -443,20 +445,29 @@ pub async fn update_llm_config(
     }
     let mut llm_guard = state.config.llm.write().await;
     let llm = llm_guard.get_or_insert_with(|| crate::config::LlmConfig {
-        api_base: String::new(),
-        api_key: String::new(),
+        provider: String::new(),
         model: String::new(),
+        api_key: String::new(),
+        api_base: None,
         context_window: 204800,
         max_output_tokens: 131072,
     });
-    if let Some(api_base) = payload.api_base {
-        llm.api_base = api_base;
+    if let Some(provider) = payload.provider {
+        llm.provider = provider;
+    }
+    if let Some(model) = payload.model {
+        llm.model = model;
     }
     if let Some(api_key) = payload.api_key {
         llm.api_key = api_key;
     }
-    if let Some(model) = payload.model {
-        llm.model = model;
+    // api_base is optional — only set if explicitly provided
+    if let Some(api_base) = payload.api_base {
+        if api_base.is_empty() {
+            llm.api_base = None;
+        } else {
+            llm.api_base = Some(api_base);
+        }
     }
     if let Some(context_window) = payload.context_window {
         llm.context_window = context_window;
@@ -469,6 +480,19 @@ pub async fn update_llm_config(
     if let Ok(json_str) = serde_json::to_string(llm) {
         if let Err(e) = db::set_system_config(&state.db, "llm_config", &json_str).await {
             tracing::error!("Failed to persist LLM config to DB: {e}");
+        }
+    }
+
+    // Register updated model with LiteLLM proxy
+    if !llm.provider.is_empty() && !llm.model.is_empty() && !llm.api_key.is_empty() {
+        if let Err(e) = state.litellm.add_model(
+            &llm.provider,
+            &llm.model,
+            &llm.api_key,
+            llm.api_base.as_deref(),
+        ).await {
+            tracing::error!("Failed to register model with LiteLLM: {e}");
+            return Json(json!({"message": "LLM config saved but LiteLLM registration failed", "error": e})).into_response();
         }
     }
 

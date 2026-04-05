@@ -188,7 +188,7 @@ async fn run_single_turn(
     let user_id = &event.sender_id;
     let session_id = &event.session_id;
 
-    let llm_config = match state.config.llm.read().await.clone() {
+    let base_llm_config = match state.config.llm.read().await.clone() {
         Some(config) => config,
         None => {
             state.bus.publish_outbound(make_outbound(event,
@@ -197,6 +197,8 @@ async fn run_single_turn(
             return Ok(TurnResult { reply: "LLM not configured".into(), media: Vec::new() });
         }
     };
+    // Route through LiteLLM proxy
+    let llm_config = state.litellm_llm_config(&base_llm_config);
 
     // Context compression check
     crate::memory::maybe_consolidate(

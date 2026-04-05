@@ -35,7 +35,8 @@ pub async fn chat_completion(
     config: &LlmConfig,
     request: ChatCompletionRequest,
 ) -> Result<ChatCompletionResponse, ProviderError> {
-    let url = format!("{}/chat/completions", config.api_base);
+    let base = config.api_base.as_deref().unwrap_or("https://api.openai.com/v1");
+    let url = format!("{}/chat/completions", base);
 
     debug!("POST {} model={}", url, request.model);
 

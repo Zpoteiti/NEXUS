@@ -13,6 +13,7 @@ mod config;
 mod context;
 mod cron;
 mod db;
+mod litellm;
 mod memory;
 mod providers;
 mod server_mcp;
@@ -51,9 +52,33 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("Failed to initialize database: {e}"));
 
+    // Initialize LiteLLM proxy manager
+    let litellm_mgr = Arc::new(litellm::LiteLlmManager::new(
+        config.litellm_port,
+        Some(config.database_url.clone()),
+    ));
+
+    // Set up LiteLLM: create venv, install, and start proxy
+    if let Err(e) = litellm_mgr.ensure_setup().await {
+        error!("LiteLLM setup failed: {}", e);
+        error!("LLM functionality will be unavailable until LiteLLM is set up.");
+    } else if let Err(e) = litellm_mgr.start().await {
+        error!("LiteLLM start failed: {}", e);
+        error!("LLM functionality will be unavailable until LiteLLM is running.");
+    }
+
     // Load persisted configs from DB
     if let Ok(Some(llm_json)) = db::get_system_config(&pool, "llm_config").await {
         if let Ok(llm) = serde_json::from_str::<config::LlmConfig>(&llm_json) {
+            // Register the model with LiteLLM proxy
+            if let Err(e) = litellm_mgr.add_model(
+                &llm.provider,
+                &llm.model,
+                &llm.api_key,
+                llm.api_base.as_deref(),
+            ).await {
+                error!("Failed to register LLM model with LiteLLM: {}", e);
+            }
             *config.llm.write().await = Some(llm);
             info!("Loaded LLM config from database");
         }
@@ -72,7 +97,7 @@ async fn main() {
     let session_manager = Arc::new(SessionManager::new());
 
     // 创建 AppState
-    let state = state::AppState::new(pool, config.clone(), bus.clone(), session_manager);
+    let state = state::AppState::new(pool, config.clone(), bus.clone(), session_manager, litellm_mgr.clone());
     let state_arc = Arc::new(state);
 
     // Load server MCP config from DB and initialize
@@ -209,6 +234,9 @@ async fn main() {
         .unwrap_or_else(|e| panic!("Axum server error: {e}"));
 
     info!("HTTP server stopped, cleaning up...");
+
+    // Stop LiteLLM proxy
+    litellm_mgr.stop().await;
 
     // Signal the bus to shut down so the dispatch loop exits
     state_arc.bus.shutdown();

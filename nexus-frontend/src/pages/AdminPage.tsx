@@ -98,14 +98,88 @@ function ConfigForm({ endpoint, fields }: { endpoint: string; fields: { key: str
   )
 }
 
+const LLM_PROVIDERS = [
+  'openai', 'anthropic', 'gemini', 'deepseek', 'mistral', 'groq',
+  'ollama', 'azure', 'bedrock', 'vertex_ai', 'openai_compatible',
+]
+
 function LlmConfigTab() {
-  return <ConfigForm endpoint="/api/llm-config" fields={[
-    { key: 'model', label: 'Model' },
-    { key: 'api_base', label: 'API Base URL' },
-    { key: 'api_key', label: 'API Key' },
-    { key: 'context_window', label: 'Context Window', type: 'number' },
-    { key: 'max_output_tokens', label: 'Max Output Tokens', type: 'number' },
-  ]} />
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    apiRequest('/api/llm-config').then(r => r.json()).then(data => {
+      setValues({
+        provider: data.provider?.toString() || '',
+        model: data.model?.toString() || '',
+        api_key: data.api_key?.toString() || '',
+        api_base: data.api_base?.toString() || '',
+        context_window: data.context_window?.toString() || '',
+        max_output_tokens: data.max_output_tokens?.toString() || '',
+      })
+    }).catch(() => {})
+  }, [])
+
+  async function save() {
+    setError('')
+    const body: Record<string, unknown> = {
+      provider: values.provider,
+      model: values.model,
+      api_key: values.api_key,
+      api_base: values.api_base || undefined,
+      context_window: parseInt(values.context_window) || 0,
+      max_output_tokens: parseInt(values.max_output_tokens) || 0,
+    }
+    const res = await apiRequest('/api/llm-config', { method: 'PUT', body: JSON.stringify(body) })
+    if (res.ok) { setSaved(true); setTimeout(() => setSaved(false), 2000) }
+    else { const data = await res.json().catch(() => ({})); setError(data.message || 'Failed to save') }
+  }
+
+  const showApiBase = ['ollama', 'openai_compatible', 'azure'].includes(values.provider)
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
+        <select
+          value={values.provider || ''}
+          onChange={e => setValues({ ...values, provider: e.target.value })}
+          className="w-full px-3 py-2 border rounded text-sm"
+        >
+          <option value="">Select a provider...</option>
+          {LLM_PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
+        <input value={values.model || ''} onChange={e => setValues({ ...values, model: e.target.value })} className="w-full px-3 py-2 border rounded text-sm" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+        <input value={values.api_key || ''} onChange={e => setValues({ ...values, api_key: e.target.value })} className="w-full px-3 py-2 border rounded text-sm" />
+      </div>
+      {showApiBase && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">API Base URL (optional)</label>
+          <input value={values.api_base || ''} onChange={e => setValues({ ...values, api_base: e.target.value })} className="w-full px-3 py-2 border rounded text-sm" placeholder="e.g. http://localhost:11434" />
+        </div>
+      )}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Context Window</label>
+        <input value={values.context_window || ''} onChange={e => setValues({ ...values, context_window: e.target.value })} type="number" className="w-full px-3 py-2 border rounded text-sm" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Max Output Tokens</label>
+        <input value={values.max_output_tokens || ''} onChange={e => setValues({ ...values, max_output_tokens: e.target.value })} type="number" className="w-full px-3 py-2 border rounded text-sm" />
+      </div>
+      {error && <p className="text-red-600 text-sm">{error}</p>}
+      <div className="flex items-center gap-3">
+        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
+        {saved && <span className="text-green-600 text-sm">Saved!</span>}
+      </div>
+    </div>
+  )
 }
 
 function EmbeddingConfigTab() {
