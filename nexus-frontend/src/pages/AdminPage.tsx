@@ -151,7 +151,7 @@ function DefaultSoulTab() {
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
-    apiRequest('/api/admin/default-soul').then(r => r.json()).then(d => setSoul(d.soul || '')).catch(() => {})
+    apiRequest('/api/admin/default-soul').then(r => r.json()).then(d => setSoul(d.default_soul || '')).catch(() => {})
   }, [])
 
   async function save() {

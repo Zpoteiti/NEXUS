@@ -27,10 +27,19 @@ export function useWebSocket(): UseWebSocketReturn {
   const [connected, setConnected] = useState(false)
   const ws = useRef<WebSocket | null>(null)
   const reconnectTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const shouldReconnect = useRef(true)
 
   const connect = useCallback(function connectWs() {
+    if (!shouldReconnect.current) return
+
     const token = localStorage.getItem('jwt')
     if (!token) return
+
+    // Clear any pending reconnect timer before creating a new connection
+    if (reconnectTimeout.current) {
+      clearTimeout(reconnectTimeout.current)
+      reconnectTimeout.current = undefined
+    }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}/ws/chat?token=${token}`
@@ -72,8 +81,10 @@ export function useWebSocket(): UseWebSocketReturn {
 
     socket.onclose = () => {
       setConnected(false)
-      // Auto-reconnect after 3 seconds
-      reconnectTimeout.current = setTimeout(connect, 3000)
+      // Only auto-reconnect if not cleaning up
+      if (shouldReconnect.current) {
+        reconnectTimeout.current = setTimeout(connect, 3000)
+      }
     }
 
     socket.onerror = () => {
@@ -84,9 +95,14 @@ export function useWebSocket(): UseWebSocketReturn {
   }, [])
 
   useEffect(() => {
+    shouldReconnect.current = true
     connect()
     return () => {
-      clearTimeout(reconnectTimeout.current)
+      shouldReconnect.current = false
+      if (reconnectTimeout.current) {
+        clearTimeout(reconnectTimeout.current)
+        reconnectTimeout.current = undefined
+      }
       ws.current?.close()
     }
   }, [connect])

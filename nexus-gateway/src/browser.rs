@@ -27,18 +27,22 @@ pub async fn browser_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    // Try Authorization header first, then fall back to ?token= query param
+    // (browsers cannot send custom headers on WebSocket upgrade requests)
     let token = headers
         .get("Authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .or_else(|| query.get("token").map(|s| s.as_str()));
 
     let user_id = match token {
         Some(t) => match verify_jwt(t, &state.jwt_secret) {
             Ok(claims) => claims.sub,
             Err(_) => return (axum::http::StatusCode::UNAUTHORIZED, "Invalid token").into_response(),
         },
-        None => return (axum::http::StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
+        None => return (axum::http::StatusCode::UNAUTHORIZED, "Missing token").into_response(),
     };
 
     ws.on_upgrade(move |socket| browser_connection(socket, state, user_id))
@@ -91,7 +95,10 @@ async fn browser_connection(socket: WebSocket, state: SharedState, user_id: Stri
 
         match inbound {
             BrowserInbound::Message { content } => {
-                if let Err(e) = forward_browser_message(&state, &chat_id, &user_id, &content).await {
+                let current_session = state.browser_conns.get(&chat_id)
+                    .map(|c| c.session_id.clone())
+                    .unwrap_or_default();
+                if let Err(e) = forward_browser_message(&state, &chat_id, &user_id, &content, &current_session).await {
                     warn!("browser forward failed: {}", e);
                     let err_json = serde_json::to_string(&BrowserOutbound::Error {
                         reason: "Nexus server not connected".to_string(),
@@ -140,11 +147,13 @@ pub async fn forward_browser_message(
     chat_id: &str,
     user_id: &str,
     content: &str,
+    session_id: &str,
 ) -> Result<(), String> {
     let msg = NexusOutbound::Message {
         chat_id: chat_id.to_string(),
         sender_id: user_id.to_string(),
         content: content.to_string(),
+        session_id: session_id.to_string(),
     };
     let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
 
@@ -166,7 +175,7 @@ mod tests {
         let (nexus_tx, mut nexus_rx) = tokio::sync::mpsc::channel::<String>(8);
         *state.nexus_tx.write().await = Some(nexus_tx);
 
-        let result = forward_browser_message(&state, "test-chat", "test-user-id", "hello nexus").await;
+        let result = forward_browser_message(&state, "test-chat", "test-user-id", "hello nexus", "gateway:test-user-id:sess1").await;
         assert!(result.is_ok());
 
         let msg = nexus_rx.recv().await.unwrap();
@@ -175,12 +184,13 @@ mod tests {
         assert_eq!(parsed["chat_id"], "test-chat");
         assert_eq!(parsed["sender_id"], "test-user-id");
         assert_eq!(parsed["content"], "hello nexus");
+        assert_eq!(parsed["session_id"], "gateway:test-user-id:sess1");
     }
 
     #[tokio::test]
     async fn forward_to_nexus_when_disconnected_returns_err() {
         let state = AppState::new("token".into(), "test-secret".into(), "http://localhost:8080".into());
-        let result = forward_browser_message(&state, "chat1", "test-user-id", "hello").await;
+        let result = forward_browser_message(&state, "chat1", "test-user-id", "hello", "gateway:test-user-id:sess1").await;
         assert!(result.is_err());
     }
 

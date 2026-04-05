@@ -17,7 +17,7 @@ pub enum BrowserInbound {
 #[serde(tag = "type")]
 pub enum BrowserOutbound {
     #[serde(rename = "message")]
-    Message { content: String, session_id: String },
+    Message { content: String, session_id: String, #[serde(skip_serializing_if = "Option::is_none")] media: Option<Vec<String>> },
     #[serde(rename = "progress")]
     Progress { content: String, session_id: String },
     #[serde(rename = "error")]
@@ -42,7 +42,7 @@ pub enum NexusInbound {
 pub enum NexusOutbound {
     AuthOk,
     AuthFail { reason: String },
-    Message { chat_id: String, sender_id: String, content: String },
+    Message { chat_id: String, sender_id: String, content: String, session_id: String },
 }
 
 #[cfg(test)]
@@ -99,6 +99,7 @@ mod tests {
             chat_id: "abc".to_string(),
             sender_id: "user1".to_string(),
             content: "hello".to_string(),
+            session_id: "gateway:user1:test".to_string(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"message""#));

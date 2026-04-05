@@ -51,6 +51,11 @@ export async function uploadFile(file: File) {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: formData,
   })
+  if (res.status === 401) {
+    localStorage.removeItem('jwt')
+    window.location.href = '/login'
+    throw new Error('Unauthorized')
+  }
   if (!res.ok) throw new Error('File upload failed')
   return res.json()
 }

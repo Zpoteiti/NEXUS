@@ -34,7 +34,7 @@ pub enum NexusToGateway {
 pub enum GatewayToNexus {
     AuthOk,
     AuthFail { reason: String },
-    Message { chat_id: String, sender_id: String, content: String },
+    Message { chat_id: String, sender_id: String, content: String, #[serde(default)] session_id: Option<String> },
 }
 
 // ============================================================================
@@ -76,8 +76,13 @@ impl GatewayChannel {
         chat_id: String,
         sender_id: String,
         content: String,
+        forwarded_session_id: Option<String>,
     ) {
-        let session_id = make_session_id(&chat_id);
+        // Use the session_id forwarded by the gateway if available,
+        // otherwise fall back to generating one from chat_id.
+        let session_id = forwarded_session_id
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| make_session_id(&chat_id));
         let event = InboundEvent {
             channel: "gateway".to_string(),
             sender_id,
@@ -166,8 +171,9 @@ impl GatewayChannel {
                             chat_id,
                             sender_id,
                             content,
+                            session_id,
                         }) => {
-                            self.handle_inbound(chat_id, sender_id, content).await;
+                            self.handle_inbound(chat_id, sender_id, content, session_id).await;
                         }
                         Ok(GatewayToNexus::AuthOk | GatewayToNexus::AuthFail { .. }) => {
                             warn!("GatewayChannel: unexpected auth message in read loop");
@@ -295,9 +301,16 @@ mod tests {
 
     #[test]
     fn parse_gateway_message_ok() {
+        let json = r#"{"type":"message","chat_id":"c1","sender_id":"u1","content":"hi","session_id":"gateway:u1:sess1"}"#;
+        let msg: GatewayToNexus = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, GatewayToNexus::Message { session_id: Some(s), .. } if s == "gateway:u1:sess1"));
+    }
+
+    #[test]
+    fn parse_gateway_message_without_session_id() {
         let json = r#"{"type":"message","chat_id":"c1","sender_id":"u1","content":"hi"}"#;
         let msg: GatewayToNexus = serde_json::from_str(json).unwrap();
-        assert!(matches!(msg, GatewayToNexus::Message { .. }));
+        assert!(matches!(msg, GatewayToNexus::Message { session_id: None, .. }));
     }
 
     #[test]

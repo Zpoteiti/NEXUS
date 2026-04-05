@@ -42,7 +42,7 @@ async fn main() {
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/ws/browser", get(browser::browser_ws_handler))
+        .route("/ws/chat", get(browser::browser_ws_handler))
         .route("/ws/nexus", get(gateway::nexus_ws_handler))
         .route("/api/{*path}", any(proxy::api_proxy))
         .fallback_service(

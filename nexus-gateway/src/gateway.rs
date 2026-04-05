@@ -124,6 +124,13 @@ pub async fn route_nexus_send(
 
     if let Some(conn) = state.browser_conns.get(chat_id) {
         let session_id = conn.session_id.clone();
+
+        // Extract media URLs from metadata if present
+        let media = metadata
+            .and_then(|m| m.get("media"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>());
+
         let msg = if is_progress {
             serde_json::to_string(&BrowserOutbound::Progress {
                 content: content.to_string(),
@@ -134,6 +141,7 @@ pub async fn route_nexus_send(
             serde_json::to_string(&BrowserOutbound::Message {
                 content: content.to_string(),
                 session_id,
+                media,
             })
             .unwrap()
         };
@@ -178,6 +186,7 @@ mod tests {
         assert_eq!(parsed["type"], "message");
         assert_eq!(parsed["content"], "hello browser");
         assert_eq!(parsed["session_id"], "gateway:user1:test-session");
+        assert!(parsed.get("media").is_none() || parsed["media"].is_null());
     }
 
     #[tokio::test]

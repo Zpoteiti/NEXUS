@@ -293,7 +293,6 @@ pub async fn upload_file(
         return Json(serde_json::json!({
             "file_id": file_id,
             "file_name": file_name,
-            "file_path": file_path,
         }))
         .into_response();
     }
@@ -309,15 +308,9 @@ pub async fn download_file(
     Extension(claims): Extension<Claims>,
     Path(file_id): Path<String>,
 ) -> Response {
-    // Search in user upload directory
+    // Only serve files from the requesting user's upload directory
     let user_dir = format!("/tmp/nexus-uploads/{}", claims.sub);
     if let Some(resp) = try_serve_file_from_dir(&user_dir, &file_id).await {
-        return resp;
-    }
-
-    // Search in shared media directory
-    let media_dir = "/tmp/nexus-media";
-    if let Some(resp) = try_serve_file_from_dir(media_dir, &file_id).await {
         return resp;
     }
 
@@ -341,6 +334,8 @@ async fn try_serve_file_from_dir(dir: &str, file_id: &str) -> Option<Response> {
             let content_type = mime_from_filename(&name);
             let headers = [
                 (axum::http::header::CONTENT_TYPE, content_type),
+                (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", name)),
+                (axum::http::header::HeaderName::from_static("x-content-type-options"), "nosniff".to_string()),
             ];
             return Some((headers, bytes).into_response());
         }

@@ -90,6 +90,19 @@ export default function ChatPage() {
     navigate('/login')
   }
 
+  // Determine if the current session is read-only (from external channel)
+  const isReadOnly = (() => {
+    if (!sessionId) return false
+    return sessionId.startsWith('discord:') || sessionId.startsWith('cron:')
+  })()
+
+  const readOnlySource = (() => {
+    if (!sessionId) return ''
+    if (sessionId.startsWith('discord:')) return 'Discord'
+    if (sessionId.startsWith('cron:')) return 'Cron'
+    return ''
+  })()
+
   function getSessionLabel(s: Session): { icon: string; label: string; readonly: boolean } {
     const id = s.session_id
     if (id.startsWith('discord:')) return { icon: '🎮', label: `Discord ${id.split(':')[1]?.slice(0, 8)}`, readonly: true }
@@ -215,23 +228,29 @@ export default function ChatPage() {
 
         {/* Input */}
         <div className="bg-white border-t border-gray-200 p-4">
-          <div className="flex gap-2">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Type a message..."
-              rows={1}
-              className="flex-1 px-3 py-2 border border-gray-300 rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || !connected}
-              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Send
-            </button>
-          </div>
+          {isReadOnly ? (
+            <div className="text-center text-sm text-gray-500 py-2">
+              This session is read-only (from {readOnlySource})
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Type a message..."
+                rows={1}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() || !connected}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Send
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
