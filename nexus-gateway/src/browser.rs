@@ -8,16 +8,16 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::protocol::{BrowserInbound, BrowserOutbound, NexusOutbound};
-use crate::state::SharedState;
+use crate::state::{BrowserConnection, SharedState};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-struct Claims {
+pub struct Claims {
     sub: String,
     is_admin: bool,
     exp: usize,
 }
 
-fn verify_jwt(token: &str, secret: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+pub fn verify_jwt(token: &str, secret: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     let key = jsonwebtoken::DecodingKey::from_secret(secret.as_bytes());
     let data = jsonwebtoken::decode::<Claims>(token, &key, &jsonwebtoken::Validation::default())?;
     Ok(data.claims)
@@ -47,11 +47,22 @@ pub async fn browser_ws_handler(
 
 async fn browser_connection(socket: WebSocket, state: SharedState, user_id: String) {
     let chat_id = Uuid::new_v4().to_string();
+    let session_id = format!("gateway:{}:{}", user_id, Uuid::new_v4());
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<String>(64);
 
-    state.browser_conns.insert(chat_id.clone(), tx);
-    info!("browser connected: chat_id={} user_id={}", chat_id, user_id);
+    state.browser_conns.insert(chat_id.clone(), BrowserConnection {
+        tx: tx.clone(),
+        user_id: user_id.clone(),
+        session_id: session_id.clone(),
+    });
+    info!("browser connected: chat_id={} user_id={} session_id={}", chat_id, user_id, session_id);
+
+    // Send initial session_created to browser
+    let init_msg = serde_json::to_string(&BrowserOutbound::SessionCreated {
+        session_id: session_id.clone(),
+    }).unwrap();
+    let _ = tx.send(init_msg).await;
 
     // Writer task: push messages to browser
     let writer = tokio::spawn(async move {
@@ -78,16 +89,41 @@ async fn browser_connection(socket: WebSocket, state: SharedState, user_id: Stri
             }
         };
 
-        let BrowserInbound::Message { content } = inbound;
-
-        if let Err(e) = forward_browser_message(&state, &chat_id, &user_id, &content).await {
-            warn!("browser forward failed: {}", e);
-            let err_json = serde_json::to_string(&BrowserOutbound::Error {
-                reason: "Nexus server not connected".to_string(),
-            })
-            .unwrap();
-            if let Some(tx) = state.browser_conns.get(&chat_id) {
-                let _ = tx.send(err_json).await;
+        match inbound {
+            BrowserInbound::Message { content } => {
+                if let Err(e) = forward_browser_message(&state, &chat_id, &user_id, &content).await {
+                    warn!("browser forward failed: {}", e);
+                    let err_json = serde_json::to_string(&BrowserOutbound::Error {
+                        reason: "Nexus server not connected".to_string(),
+                    })
+                    .unwrap();
+                    if let Some(conn) = state.browser_conns.get(&chat_id) {
+                        let _ = conn.tx.send(err_json).await;
+                    }
+                }
+            }
+            BrowserInbound::NewSession => {
+                let new_session_id = format!("gateway:{}:{}", user_id, Uuid::new_v4());
+                if let Some(mut conn) = state.browser_conns.get_mut(&chat_id) {
+                    conn.session_id = new_session_id.clone();
+                }
+                let msg = serde_json::to_string(&BrowserOutbound::SessionCreated {
+                    session_id: new_session_id,
+                }).unwrap();
+                if let Some(conn) = state.browser_conns.get(&chat_id) {
+                    let _ = conn.tx.send(msg).await;
+                }
+            }
+            BrowserInbound::SwitchSession { session_id } => {
+                if let Some(mut conn) = state.browser_conns.get_mut(&chat_id) {
+                    conn.session_id = session_id.clone();
+                }
+                let msg = serde_json::to_string(&BrowserOutbound::SessionSwitched {
+                    session_id,
+                }).unwrap();
+                if let Some(conn) = state.browser_conns.get(&chat_id) {
+                    let _ = conn.tx.send(msg).await;
+                }
             }
         }
     }
@@ -126,7 +162,7 @@ mod tests {
 
     #[tokio::test]
     async fn forward_to_nexus_when_connected() {
-        let state = AppState::new("token".to_string(), "test-secret".to_string());
+        let state = AppState::new("token".into(), "test-secret".into(), "http://localhost:8080".into());
         let (nexus_tx, mut nexus_rx) = tokio::sync::mpsc::channel::<String>(8);
         *state.nexus_tx.write().await = Some(nexus_tx);
 
@@ -143,8 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn forward_to_nexus_when_disconnected_returns_err() {
-        let state = AppState::new("token".to_string(), "test-secret".to_string());
-        // nexus_tx is None — no nexus connected
+        let state = AppState::new("token".into(), "test-secret".into(), "http://localhost:8080".into());
         let result = forward_browser_message(&state, "chat1", "test-user-id", "hello").await;
         assert!(result.is_err());
     }

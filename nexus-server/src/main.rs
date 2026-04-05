@@ -161,6 +161,9 @@ async fn main() {
         // Cron jobs
         .route("/api/cron-jobs", axum::routing::get(auth::list_cron_jobs_api).post(auth::create_cron_job_api))
         .route("/api/cron-jobs/{job_id}", axum::routing::delete(auth::delete_cron_job_api).patch(auth::update_cron_job_api))
+        // File upload/download
+        .route("/api/files", axum::routing::post(api::upload_file))
+        .route("/api/files/{file_id}", axum::routing::get(api::download_file))
         // Admin: server MCP config
         .route("/api/server-mcp", axum::routing::get(auth::get_server_mcp).put(auth::update_server_mcp))
         .layer(axum::middleware::from_fn_with_state(app_state.clone(), auth::jwt_middleware));

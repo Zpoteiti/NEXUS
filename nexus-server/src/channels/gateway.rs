@@ -25,7 +25,7 @@ use crate::state::AppState;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NexusToGateway {
     Auth { token: String },
-    Send { chat_id: String, content: String },
+    Send { chat_id: String, content: String, #[serde(skip_serializing_if = "Option::is_none")] metadata: Option<serde_json::Value> },
 }
 
 /// Messages nexus-server receives FROM the gateway
@@ -192,6 +192,31 @@ impl GatewayChannel {
         *self.ws_out.write().await = None;
         Ok(())
     }
+
+    /// Send a message to the gateway with optional metadata.
+    async fn send_with_metadata(
+        &self,
+        chat_id: &str,
+        content: &str,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<(), nexus_common::error::NexusError> {
+        use nexus_common::error::{ErrorCode, NexusError};
+        let guard = self.ws_out.read().await;
+        match guard.as_ref() {
+            Some(tx) => {
+                let msg = serde_json::to_string(&NexusToGateway::Send {
+                    chat_id: chat_id.to_string(),
+                    content: content.to_string(),
+                    metadata,
+                })
+                .map_err(|e| NexusError::new(ErrorCode::InternalError, format!("serialize send: {}", e)))?;
+                tx.send(msg)
+                    .await
+                    .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("channel send error: {}", e)))
+            }
+            None => Err(NexusError::new(ErrorCode::ConnectionFailed, "GatewayChannel not connected")),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -238,21 +263,20 @@ impl Channel for GatewayChannel {
     }
 
     async fn send(&self, chat_id: &str, content: &str) -> Result<(), nexus_common::error::NexusError> {
-        use nexus_common::error::{ErrorCode, NexusError};
-        let guard = self.ws_out.read().await;
-        match guard.as_ref() {
-            Some(tx) => {
-                let msg = serde_json::to_string(&NexusToGateway::Send {
-                    chat_id: chat_id.to_string(),
-                    content: content.to_string(),
-                })
-                .map_err(|e| NexusError::new(ErrorCode::InternalError, format!("serialize send: {}", e)))?;
-                tx.send(msg)
-                    .await
-                    .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("channel send error: {}", e)))
-            }
-            None => Err(NexusError::new(ErrorCode::ConnectionFailed, "GatewayChannel not connected")),
-        }
+        self.send_with_metadata(chat_id, content, None).await
+    }
+
+    async fn send_progress(&self, chat_id: &str, content: &str) -> Result<(), nexus_common::error::NexusError> {
+        self.send_with_metadata(chat_id, content, Some(serde_json::json!({"_progress": true}))).await
+    }
+
+    async fn send_with_media(
+        &self,
+        chat_id: &str,
+        content: &str,
+        media: &[String],
+    ) -> Result<(), nexus_common::error::NexusError> {
+        self.send_with_metadata(chat_id, content, Some(serde_json::json!({"media": media}))).await
     }
 }
 
@@ -296,9 +320,23 @@ mod tests {
         let msg = NexusToGateway::Send {
             chat_id: "c1".to_string(),
             content: "hello".to_string(),
+            metadata: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"send""#));
         assert!(json.contains("c1"));
+        // metadata should be omitted when None
+        assert!(!json.contains("metadata"));
+    }
+
+    #[test]
+    fn serialize_send_with_progress_metadata() {
+        let msg = NexusToGateway::Send {
+            chat_id: "c1".to_string(),
+            content: "thinking".to_string(),
+            metadata: Some(serde_json::json!({"_progress": true})),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""_progress":true"#));
     }
 }

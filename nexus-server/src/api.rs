@@ -7,7 +7,7 @@
 /// - 替代 `nanobot/session/manager.py` 中的 `list_sessions` 等文件查询方法，将其转化为 JSON API 接口。
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     response::{IntoResponse, Response},
     Extension, Json,
 };
@@ -18,6 +18,9 @@ use nexus_common::error::{ApiError, ErrorCode};
 use crate::auth::Claims;
 use crate::db;
 use crate::state::AppState;
+
+/// Max upload size: 25 MB
+const MAX_UPLOAD_SIZE: usize = 25 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct PaginationParams {
@@ -239,4 +242,137 @@ pub async fn set_default_soul(
             ApiError::new(ErrorCode::InternalError, "failed to set default soul").into_response()
         }
     }
+}
+
+// ============================================================================
+// POST /api/files  (multipart upload)
+// ============================================================================
+
+pub async fn upload_file(
+    Extension(claims): Extension<Claims>,
+    mut multipart: Multipart,
+) -> Response {
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name != "file" {
+            continue;
+        }
+
+        let file_name = field
+            .file_name()
+            .unwrap_or("upload")
+            .to_string();
+
+        let bytes = match field.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("upload_file: failed to read field bytes: {e}");
+                return ApiError::new(ErrorCode::ValidationFailed, "failed to read upload data").into_response();
+            }
+        };
+
+        if bytes.len() > MAX_UPLOAD_SIZE {
+            return ApiError::new(ErrorCode::ValidationFailed, "file exceeds 25MB limit").into_response();
+        }
+
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let dir = format!("/tmp/nexus-uploads/{}", claims.sub);
+        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+            tracing::error!("upload_file: failed to create dir {dir}: {e}");
+            return ApiError::new(ErrorCode::InternalError, "failed to create upload directory").into_response();
+        }
+
+        let stored_name = format!("{}_{}", file_id, file_name);
+        let file_path = format!("{}/{}", dir, stored_name);
+
+        if let Err(e) = tokio::fs::write(&file_path, &bytes).await {
+            tracing::error!("upload_file: failed to write file: {e}");
+            return ApiError::new(ErrorCode::InternalError, "failed to save file").into_response();
+        }
+
+        return Json(serde_json::json!({
+            "file_id": file_id,
+            "file_name": file_name,
+            "file_path": file_path,
+        }))
+        .into_response();
+    }
+
+    ApiError::new(ErrorCode::ValidationFailed, "no 'file' field found in multipart data").into_response()
+}
+
+// ============================================================================
+// GET /api/files/{file_id}  (download)
+// ============================================================================
+
+pub async fn download_file(
+    Extension(claims): Extension<Claims>,
+    Path(file_id): Path<String>,
+) -> Response {
+    // Search in user upload directory
+    let user_dir = format!("/tmp/nexus-uploads/{}", claims.sub);
+    if let Some(resp) = try_serve_file_from_dir(&user_dir, &file_id).await {
+        return resp;
+    }
+
+    // Search in shared media directory
+    let media_dir = "/tmp/nexus-media";
+    if let Some(resp) = try_serve_file_from_dir(media_dir, &file_id).await {
+        return resp;
+    }
+
+    ApiError::new(ErrorCode::NotFound, "file not found").into_response()
+}
+
+/// Search a directory for a file whose name starts with `file_id` and serve it.
+async fn try_serve_file_from_dir(dir: &str, file_id: &str) -> Option<Response> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(file_id) {
+            let path = entry.path();
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
+            let content_type = mime_from_filename(&name);
+            let headers = [
+                (axum::http::header::CONTENT_TYPE, content_type),
+            ];
+            return Some((headers, bytes).into_response());
+        }
+    }
+    None
+}
+
+/// Guess MIME type from file extension.
+fn mime_from_filename(name: &str) -> String {
+    let lower = name.to_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".pdf") {
+        "application/pdf"
+    } else if lower.ends_with(".json") {
+        "application/json"
+    } else if lower.ends_with(".txt") || lower.ends_with(".log") {
+        "text/plain"
+    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
+        "text/html"
+    } else if lower.ends_with(".mp4") {
+        "video/mp4"
+    } else if lower.ends_with(".mp3") {
+        "audio/mpeg"
+    } else {
+        "application/octet-stream"
+    }
+    .to_string()
 }

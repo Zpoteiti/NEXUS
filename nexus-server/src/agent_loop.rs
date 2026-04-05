@@ -62,6 +62,18 @@ fn detect_image_mime(path: &str) -> Option<&'static str> {
     }
 }
 
+async fn emit_progress(state: &AppState, channel: &str, chat_id: &str, hint: &str) {
+    let mut metadata = HashMap::new();
+    metadata.insert("_progress".to_string(), serde_json::json!(true));
+    let _ = state.bus.publish_outbound(OutboundEvent {
+        channel: channel.to_string(),
+        chat_id: chat_id.to_string(),
+        content: hint.to_string(),
+        media: Vec::new(),
+        metadata,
+    }).await;
+}
+
 fn make_outbound(event: &InboundEvent, content: String) -> OutboundEvent {
     OutboundEvent {
         channel: event.channel.clone(),
@@ -278,6 +290,8 @@ async fn run_single_turn(
     messages.push(user_message);
 
     let _ = crate::db::save_message(&state.db, session_id, "user", user_input, None, None, None).await;
+
+    emit_progress(state, &event.channel, &event.chat_id, "⏳ Thinking...").await;
 
     info!("agent_session {} calling LLM with {} tools", session_id, tools.len());
     let request = ChatCompletionRequest {
@@ -501,6 +515,8 @@ async fn execute_tool_calls_loop(
             &current_messages, iteration, event_channel, event_chat_id,
         ).await;
 
+        emit_progress(state, event_channel, event_chat_id, "⏳ Analyzing results...").await;
+
         let request = ChatCompletionRequest {
             messages: current_messages.clone(),
             tools: tools.clone(),
@@ -514,6 +530,7 @@ async fn execute_tool_calls_loop(
 
         match choice.finish_reason.as_str() {
             "stop" => {
+                emit_progress(state, event_channel, event_chat_id, "💬 Composing response...").await;
                 let reply = choice.message.content.clone().unwrap_or_default();
                 let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None, None, None).await;
                 // Clear checkpoint on successful completion

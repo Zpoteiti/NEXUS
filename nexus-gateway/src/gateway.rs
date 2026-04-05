@@ -91,8 +91,8 @@ async fn nexus_connection(socket: WebSocket, state: SharedState) {
         };
 
         match serde_json::from_str::<NexusInbound>(&text) {
-            Ok(NexusInbound::Send { chat_id, content }) => {
-                route_nexus_send(&state, &chat_id, &content).await;
+            Ok(NexusInbound::Send { chat_id, content, metadata }) => {
+                route_nexus_send(&state, &chat_id, &content, metadata.as_ref()).await;
             }
             Ok(NexusInbound::Auth { .. }) => {
                 warn!("nexus gateway: unexpected re-auth, ignoring");
@@ -115,14 +115,30 @@ pub async fn route_nexus_send(
     state: &crate::state::AppState,
     chat_id: &str,
     content: &str,
+    metadata: Option<&serde_json::Value>,
 ) {
-    let msg = serde_json::to_string(&BrowserOutbound::Message {
-        content: content.to_string(),
-    })
-    .unwrap();
+    let is_progress = metadata
+        .and_then(|m| m.get("_progress"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
-    if let Some(tx) = state.browser_conns.get(chat_id) {
-        if tx.send(msg).await.is_err() {
+    if let Some(conn) = state.browser_conns.get(chat_id) {
+        let session_id = conn.session_id.clone();
+        let msg = if is_progress {
+            serde_json::to_string(&BrowserOutbound::Progress {
+                content: content.to_string(),
+                session_id,
+            })
+            .unwrap()
+        } else {
+            serde_json::to_string(&BrowserOutbound::Message {
+                content: content.to_string(),
+                session_id,
+            })
+            .unwrap()
+        };
+
+        if conn.tx.send(msg).await.is_err() {
             warn!("nexus gateway: browser {} disconnected before send", chat_id);
         }
     } else {
@@ -147,23 +163,47 @@ mod tests {
 
     #[tokio::test]
     async fn route_send_to_browser() {
-        let state = AppState::new("token".to_string(), "test-secret".to_string());
+        let state = AppState::new("token".into(), "test-secret".into(), "http://localhost:8080".into());
         let (browser_tx, mut browser_rx) = mpsc::channel::<String>(8);
-        state.browser_conns.insert("chat-abc".to_string(), browser_tx);
+        state.browser_conns.insert("chat-abc".to_string(), crate::state::BrowserConnection {
+            tx: browser_tx,
+            user_id: "user1".to_string(),
+            session_id: "gateway:user1:test-session".to_string(),
+        });
 
-        route_nexus_send(&state, "chat-abc", "hello browser").await;
+        route_nexus_send(&state, "chat-abc", "hello browser", None).await;
 
         let msg = browser_rx.recv().await.unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
         assert_eq!(parsed["type"], "message");
         assert_eq!(parsed["content"], "hello browser");
+        assert_eq!(parsed["session_id"], "gateway:user1:test-session");
+    }
+
+    #[tokio::test]
+    async fn route_send_progress_to_browser() {
+        let state = AppState::new("token".into(), "test-secret".into(), "http://localhost:8080".into());
+        let (browser_tx, mut browser_rx) = mpsc::channel::<String>(8);
+        state.browser_conns.insert("chat-abc".to_string(), crate::state::BrowserConnection {
+            tx: browser_tx,
+            user_id: "user1".to_string(),
+            session_id: "gateway:user1:test-session".to_string(),
+        });
+
+        let metadata = serde_json::json!({"_progress": true});
+        route_nexus_send(&state, "chat-abc", "thinking...", Some(&metadata)).await;
+
+        let msg = browser_rx.recv().await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["type"], "progress");
+        assert_eq!(parsed["content"], "thinking...");
     }
 
     #[tokio::test]
     async fn route_send_to_unknown_chat_id_is_noop() {
-        let state = AppState::new("token".to_string(), "test-secret".to_string());
+        let state = AppState::new("token".into(), "test-secret".into(), "http://localhost:8080".into());
         // chat_id not registered — should not panic
-        route_nexus_send(&state, "unknown-chat", "hello").await;
+        route_nexus_send(&state, "unknown-chat", "hello", None).await;
     }
 
     #[test]
