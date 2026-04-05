@@ -1184,9 +1184,17 @@ pub async fn update_cron_job(
 }
 
 /// Compute the next run time from a cron expression.
+/// Accepts both standard 5-field crontab (min hour day month dow) and
+/// the cron crate's 7-field format (sec min hour day month dow year).
 fn compute_next_cron_run(expr: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     use std::str::FromStr;
-    let schedule = cron::Schedule::from_str(expr).ok()?;
+    // Convert 5-field standard crontab to 7-field by adding seconds (0) and year (*)
+    let full_expr = match expr.split_whitespace().count() {
+        5 => format!("0 {} *", expr),  // prepend seconds=0, append year=*
+        6 => format!("0 {}", expr),    // prepend seconds=0
+        _ => expr.to_string(),         // assume 7-field or let cron crate handle
+    };
+    let schedule = cron::Schedule::from_str(&full_expr).ok()?;
     schedule.upcoming(chrono::Utc).next()
 }
 
