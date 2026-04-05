@@ -12,6 +12,8 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode}
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use nexus_common::error::{ApiError, ErrorCode};
+
 use crate::db;
 use crate::state::AppState;
 
@@ -87,11 +89,11 @@ pub async fn register(
         Ok(Ok(h)) => h,
         Ok(Err(e)) => {
             tracing::error!("bcrypt hash error: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Password hashing failed").into_response();
+            return ApiError::new(ErrorCode::InternalError, "password hashing failed").into_response();
         }
         Err(e) => {
             tracing::error!("spawn_blocking join error: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+            return ApiError::new(ErrorCode::InternalError, "internal error").into_response();
         }
     };
 
@@ -105,15 +107,15 @@ pub async fn register(
             .into_response(),
             Err(e) => {
                 tracing::error!("JWT sign error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to sign token").into_response()
+                ApiError::new(ErrorCode::InternalError, "failed to sign token").into_response()
             }
         },
         Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-            (StatusCode::CONFLICT, "Email already registered").into_response()
+            ApiError::new(ErrorCode::Conflict, "email already registered").into_response()
         }
         Err(e) => {
             tracing::error!("create_user error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Registration failed").into_response()
+            ApiError::new(ErrorCode::InternalError, "registration failed").into_response()
         }
     }
 }
@@ -124,10 +126,10 @@ pub async fn login(
 ) -> Response {
     let user = match db::get_user_by_email(&state.db, &payload.email).await {
         Ok(Some(u)) => u,
-        Ok(None) => return (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response(),
+        Ok(None) => return ApiError::new(ErrorCode::Unauthorized, "invalid credentials").into_response(),
         Err(e) => {
             tracing::error!("get_user_by_email error: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Login failed").into_response();
+            return ApiError::new(ErrorCode::InternalError, "login failed").into_response();
         }
     };
 
@@ -139,16 +141,16 @@ pub async fn login(
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             tracing::error!("bcrypt verify error: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Login failed").into_response();
+            return ApiError::new(ErrorCode::InternalError, "login failed").into_response();
         }
         Err(e) => {
             tracing::error!("spawn_blocking join error: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+            return ApiError::new(ErrorCode::InternalError, "internal error").into_response();
         }
     };
 
     if !valid {
-        return (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response();
+        return ApiError::new(ErrorCode::Unauthorized, "invalid credentials").into_response();
     }
 
     match sign_jwt(&user.user_id, user.is_admin, &state.config.jwt_secret) {
@@ -160,7 +162,7 @@ pub async fn login(
         .into_response(),
         Err(e) => {
             tracing::error!("JWT sign error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to sign token").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to sign token").into_response()
         }
     }
 }
@@ -204,10 +206,10 @@ pub async fn create_device_token(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("idx_device_tokens_user_device") || msg.contains("duplicate key") {
-                (StatusCode::CONFLICT, format!("Device '{}' already exists", payload.device_name)).into_response()
+                ApiError::new(ErrorCode::Conflict, format!("device '{}' already exists", payload.device_name)).into_response()
             } else {
                 tracing::error!("create device token error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create device token").into_response()
+                ApiError::new(ErrorCode::InternalError, "failed to create device token").into_response()
             }
         }
     }
@@ -249,7 +251,7 @@ pub async fn upsert_discord_config(
         .into_response(),
         Err(e) => {
             tracing::error!("upsert discord config error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save discord config").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to save discord config").into_response()
         }
     }
 }
@@ -277,10 +279,10 @@ pub async fn jwt_middleware(
             }
             Err(e) => {
                 tracing::debug!("JWT verification failed: {e}");
-                (StatusCode::UNAUTHORIZED, "Invalid or expired token").into_response()
+                ApiError::new(ErrorCode::Unauthorized, "invalid or expired token").into_response()
             }
         },
-        None => (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
+        None => ApiError::new(ErrorCode::Unauthorized, "missing authorization header").into_response(),
     }
 }
 
@@ -297,7 +299,7 @@ pub async fn list_device_tokens(
         Ok(tokens) => Json(tokens).into_response(),
         Err(e) => {
             tracing::error!("list_device_tokens error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list tokens").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to list tokens").into_response()
         }
     }
 }
@@ -309,11 +311,11 @@ pub async fn revoke_device_token(
     Path(token): Path<String>,
 ) -> Response {
     match db::revoke_device_token(&state.db, &token, &claims.sub).await {
-        Ok(true) => (StatusCode::OK, "Token revoked").into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "Token not found or already revoked").into_response(),
+        Ok(true) => Json(json!({"message": "Token revoked"})).into_response(),
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "token not found or already revoked").into_response(),
         Err(e) => {
             tracing::error!("revoke_device_token error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to revoke token").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to revoke token").into_response()
         }
     }
 }
@@ -330,10 +332,10 @@ pub async fn get_discord_config(
             "enabled": config.enabled,
             "allowed_users": config.allowed_users,
         })).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "No Discord config found").into_response(),
+        Ok(None) => ApiError::new(ErrorCode::NotFound, "no discord config found").into_response(),
         Err(e) => {
             tracing::error!("get_discord_config error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get config").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to get config").into_response()
         }
     }
 }
@@ -344,11 +346,11 @@ pub async fn delete_discord_config(
     claims: axum::Extension<Claims>,
 ) -> Response {
     match db::delete_discord_config(&state.db, &claims.sub).await {
-        Ok(true) => (StatusCode::OK, "Discord config deleted").into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "No Discord config found").into_response(),
+        Ok(true) => Json(json!({"message": "Discord config deleted"})).into_response(),
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "no discord config found").into_response(),
         Err(e) => {
             tracing::error!("delete_discord_config error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete config").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to delete config").into_response()
         }
     }
 }
@@ -362,7 +364,7 @@ pub async fn list_sessions(
         Ok(sessions) => Json(sessions).into_response(),
         Err(e) => {
             tracing::error!("list_sessions error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list sessions").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to list sessions").into_response()
         }
     }
 }
@@ -378,12 +380,12 @@ pub async fn delete_session(
             // Clean up in-memory session if active
             state.bus.unregister_session(&session_id);
             state.session_manager.remove_session(&session_id).await;
-            (StatusCode::OK, "Session deleted").into_response()
+            Json(json!({"message": "Session deleted"})).into_response()
         }
-        Ok(false) => (StatusCode::NOT_FOUND, "Session not found").into_response(),
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "session not found").into_response(),
         Err(e) => {
             tracing::error!("delete_session error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete session").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to delete session").into_response()
         }
     }
 }
@@ -394,7 +396,7 @@ pub async fn get_llm_config(
     claims: axum::Extension<Claims>,
 ) -> Response {
     if !claims.is_admin {
-        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
     }
     let llm = state.config.llm.read().await;
     match llm.as_ref() {
@@ -437,7 +439,7 @@ pub async fn update_llm_config(
     Json(payload): Json<UpdateLlmConfigRequest>,
 ) -> Response {
     if !claims.is_admin {
-        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
     }
     let mut llm_guard = state.config.llm.write().await;
     let llm = llm_guard.get_or_insert_with(|| crate::config::LlmConfig {
@@ -470,7 +472,7 @@ pub async fn update_llm_config(
         }
     }
 
-    (StatusCode::OK, "LLM config updated").into_response()
+    Json(json!({"message": "LLM config updated"})).into_response()
 }
 
 // ============================================================================
@@ -500,7 +502,7 @@ pub async fn get_device_policy(
             fs_policy: policy,
         })
         .into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "Device not found").into_response(),
+        Err(_) => ApiError::new(ErrorCode::NotFound, "device not found").into_response(),
     }
 }
 
@@ -517,8 +519,11 @@ pub async fn update_device_policy(
             fs_policy: payload.fs_policy,
         })
         .into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "Device not found or revoked").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")).into_response(),
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "device not found or revoked").into_response(),
+        Err(e) => {
+            tracing::error!("update_device_policy error: {e}");
+            ApiError::new(ErrorCode::InternalError, "operation failed").into_response()
+        },
     }
 }
 
@@ -548,7 +553,7 @@ pub async fn get_device_mcp(
             device_name,
             mcp_servers: servers,
         }).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "Device not found").into_response(),
+        Err(_) => ApiError::new(ErrorCode::NotFound, "device not found").into_response(),
     }
 }
 
@@ -564,8 +569,11 @@ pub async fn update_device_mcp(
             device_name,
             mcp_servers: payload.mcp_servers,
         }).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "Device not found or revoked").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")).into_response(),
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "device not found or revoked").into_response(),
+        Err(e) => {
+            tracing::error!("update_device_mcp error: {e}");
+            ApiError::new(ErrorCode::InternalError, "operation failed").into_response()
+        },
     }
 }
 
@@ -579,7 +587,7 @@ pub async fn get_embedding_config(
     claims: axum::Extension<Claims>,
 ) -> Response {
     if !claims.is_admin {
-        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
     }
     let emb = state.config.embedding.read().await;
     match emb.as_ref() {
@@ -623,7 +631,7 @@ pub async fn update_embedding_config(
     Json(payload): Json<UpdateEmbeddingConfigRequest>,
 ) -> Response {
     if !claims.is_admin {
-        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
     }
 
     let new_config = crate::config::EmbeddingConfig {
@@ -670,7 +678,8 @@ pub async fn update_embedding_config(
         let mut truncated_count = 0u32;
         let mut failed = 0u32;
 
-        for (id, memory_text) in &chunks {
+        for chunk in &chunks {
+            let db::MemoryChunkForReembed { id, ref memory_text } = *chunk;
             // Truncate if needed (rough estimate: 1 token ~ 3 chars)
             let max_chars = emb_config.max_input_length * 3;
             let (text_to_embed, is_truncated) = if memory_text.len() > max_chars {
@@ -686,7 +695,7 @@ pub async fn update_embedding_config(
                 continue;
             }
 
-            if let Err(e) = db::update_memory_embedding(&db, *id, &embedding, is_truncated).await {
+            if let Err(e) = db::update_memory_embedding(&db, id, &embedding, is_truncated).await {
                 tracing::warn!("re-embed: failed to update chunk id={}: {}", id, e);
                 failed += 1;
             } else {
@@ -698,5 +707,300 @@ pub async fn update_embedding_config(
         tracing::info!("re-embed: done. {} success ({} truncated), {} failed", success, truncated_count, failed);
     });
 
-    (StatusCode::OK, "Embedding config updated. Re-embedding started in background.").into_response()
+    Json(json!({"message": "Embedding config updated. Re-embedding started in background."})).into_response()
+}
+
+// ============================================================================
+// Server MCP config (admin only)
+// ============================================================================
+
+/// GET /api/server-mcp
+pub async fn get_server_mcp(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    if !claims.is_admin {
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
+    }
+    match crate::db::get_system_config(&state.db, "server_mcp_config").await {
+        Ok(Some(json)) => {
+            match serde_json::from_str::<Vec<nexus_common::protocol::McpServerEntry>>(&json) {
+                Ok(entries) => Json(serde_json::json!({"mcp_servers": entries})).into_response(),
+                Err(_) => Json(serde_json::json!({"mcp_servers": []})).into_response(),
+            }
+        }
+        Ok(None) => Json(serde_json::json!({"mcp_servers": []})).into_response(),
+        Err(e) => {
+            tracing::error!("get_server_mcp error: {e}");
+            ApiError::new(ErrorCode::InternalError, "operation failed").into_response()
+        },
+    }
+}
+
+/// PUT /api/server-mcp
+pub async fn update_server_mcp(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Json(payload): Json<crate::auth::UpdateDeviceMcpRequest>,
+) -> Response {
+    if !claims.is_admin {
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
+    }
+    let json = match serde_json::to_string(&payload.mcp_servers) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("update_server_mcp json error: {e}");
+            return ApiError::new(ErrorCode::ValidationFailed, "invalid json payload").into_response();
+        }
+    };
+
+    if let Err(e) = crate::db::set_system_config(&state.db, "server_mcp_config", &json).await {
+        tracing::error!("update_server_mcp db error: {e}");
+        return ApiError::new(ErrorCode::InternalError, "operation failed").into_response();
+    }
+
+    // Reinitialize server MCP manager with new config
+    let mut manager = state.server_mcp.write().await;
+    manager.initialize(&payload.mcp_servers).await;
+
+    Json(serde_json::json!({"mcp_servers": payload.mcp_servers})).into_response()
+}
+
+// ============================================================================
+// Skills API handlers
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSkillRequest {
+    pub name: String,
+    pub content: String,
+}
+
+/// GET /api/skills — list current user's skills (metadata only)
+pub async fn list_skills(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    match db::list_skills(&state.db, &claims.sub).await {
+        Ok(skills) => Json(json!({ "skills": skills })).into_response(),
+        Err(e) => {
+            tracing::error!("list_skills error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to list skills").into_response()
+        }
+    }
+}
+
+/// POST /api/skills — create or update a skill
+pub async fn create_skill(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Json(payload): Json<CreateSkillRequest>,
+) -> Response {
+    let user_id = &claims.sub;
+
+    // Validate name: alphanumeric, hyphens, underscores only
+    if payload.name.is_empty() || !payload.name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return ApiError::new(ErrorCode::ValidationFailed, "invalid skill name: must be non-empty and contain only alphanumeric, hyphens, or underscores").into_response();
+    }
+
+    // Parse frontmatter
+    let (fm_name, description, always_on) = crate::server_tools::skills::parse_frontmatter(&payload.content);
+    let skill_name = fm_name.unwrap_or_else(|| payload.name.clone());
+
+    // Create skill directory: skills_dir / user_id / name /
+    let skill_dir = std::path::PathBuf::from(&state.config.skills_dir)
+        .join(user_id)
+        .join(&payload.name);
+
+    if let Err(e) = tokio::fs::create_dir_all(&skill_dir).await {
+        tracing::error!("create_skill: failed to create directory {:?}: {}", skill_dir, e);
+        return ApiError::new(ErrorCode::InternalError, "failed to create skill directory").into_response();
+    }
+
+    // Write SKILL.md
+    let skill_md_path = skill_dir.join("SKILL.md");
+    if let Err(e) = tokio::fs::write(&skill_md_path, &payload.content).await {
+        tracing::error!("create_skill: failed to write SKILL.md: {}", e);
+        return ApiError::new(ErrorCode::InternalError, "failed to write skill file").into_response();
+    }
+
+    let skill_path = skill_dir.to_string_lossy().to_string();
+
+    // Insert/update in DB
+    match db::create_skill(&state.db, user_id, &skill_name, &description, always_on, &skill_path).await {
+        Ok(skill_id) => Json(json!({
+            "skill_id": skill_id,
+            "name": skill_name,
+            "description": description,
+            "always_on": always_on,
+        })).into_response(),
+        Err(e) => {
+            tracing::error!("create_skill db error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to save skill metadata").into_response()
+        }
+    }
+}
+
+/// DELETE /api/skills/{name} — remove a skill
+pub async fn delete_skill(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(name): Path<String>,
+) -> Response {
+    let user_id = &claims.sub;
+
+    // Look up skill to get filesystem path before deleting from DB
+    let skill = match db::get_skill(&state.db, user_id, &name).await {
+        Ok(Some(s)) => Some(s),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::error!("delete_skill lookup error: {e}");
+            return ApiError::new(ErrorCode::InternalError, "failed to look up skill").into_response();
+        }
+    };
+
+    match db::delete_skill(&state.db, user_id, &name).await {
+        Ok(true) => {
+            // Clean up filesystem
+            if let Some(skill) = skill {
+                if let Err(e) = tokio::fs::remove_dir_all(&skill.skill_path).await {
+                    tracing::warn!("delete_skill: failed to remove directory {}: {}", skill.skill_path, e);
+                }
+            }
+            Json(json!({"message": "Skill deleted"})).into_response()
+        }
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "skill not found").into_response(),
+        Err(e) => {
+            tracing::error!("delete_skill error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to delete skill").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// Cron REST API handlers
+// ============================================================================
+
+/// GET /api/cron-jobs — list current user's cron jobs
+pub async fn list_cron_jobs_api(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    match db::list_cron_jobs(&state.db, &claims.sub).await {
+        Ok(jobs) => Json(json!({ "cron_jobs": jobs })).into_response(),
+        Err(e) => {
+            tracing::error!("list_cron_jobs_api error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to list cron jobs").into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateCronJobRequest {
+    pub message: String,
+    pub cron_expr: Option<String>,
+    pub every_seconds: Option<i32>,
+    pub at: Option<String>,
+    pub timezone: Option<String>,
+    pub channel: String,
+    pub chat_id: String,
+    #[serde(default)]
+    pub delete_after_run: bool,
+    pub name: Option<String>,
+}
+
+/// POST /api/cron-jobs — create a cron job
+pub async fn create_cron_job_api(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Json(payload): Json<CreateCronJobRequest>,
+) -> Response {
+    let name = payload.name.as_deref().unwrap_or("api-job");
+    let timezone = payload.timezone.as_deref().unwrap_or("UTC");
+
+    match db::create_cron_job(
+        &state.db,
+        &claims.sub,
+        name,
+        payload.cron_expr.as_deref(),
+        payload.every_seconds,
+        payload.at.as_deref(),
+        timezone,
+        &payload.message,
+        &payload.channel,
+        &payload.chat_id,
+        payload.delete_after_run,
+    )
+    .await
+    {
+        Ok(job_id) => (StatusCode::CREATED, Json(json!({ "job_id": job_id }))).into_response(),
+        Err(e) => {
+            tracing::error!("create_cron_job_api error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to create cron job").into_response()
+        }
+    }
+}
+
+/// DELETE /api/cron-jobs/{job_id} — delete a cron job
+pub async fn delete_cron_job_api(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(job_id): Path<String>,
+) -> Response {
+    match db::delete_cron_job(&state.db, &claims.sub, &job_id).await {
+        Ok(true) => Json(json!({"message": "Cron job deleted"})).into_response(),
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "cron job not found").into_response(),
+        Err(e) => {
+            tracing::error!("delete_cron_job_api error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to delete cron job").into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateCronJobRequest {
+    pub enabled: Option<bool>,
+    pub message: Option<String>,
+}
+
+/// PATCH /api/cron-jobs/{job_id} — update a cron job (enable/disable, change message)
+pub async fn update_cron_job_api(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(job_id): Path<String>,
+    Json(payload): Json<UpdateCronJobRequest>,
+) -> Response {
+    match db::update_cron_job(
+        &state.db,
+        &claims.sub,
+        &job_id,
+        payload.enabled,
+        payload.message.as_deref(),
+    )
+    .await
+    {
+        Ok(true) => Json(json!({"message": "Cron job updated"})).into_response(),
+        Ok(false) => Json(json!({"message": "No changes applied"})).into_response(),
+        Err(e) => {
+            tracing::error!("update_cron_job_api error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to update cron job").into_response()
+        }
+    }
+}
+
+/// GET /api/admin/skills — list all skills across all users (admin only)
+pub async fn admin_list_skills(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    if !claims.is_admin {
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
+    }
+    match db::list_all_skills(&state.db).await {
+        Ok(skills) => Json(json!({ "skills": skills })).into_response(),
+        Err(e) => {
+            tracing::error!("admin_list_skills error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to list skills").into_response()
+        }
+    }
 }

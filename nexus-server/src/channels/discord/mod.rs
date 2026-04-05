@@ -69,23 +69,25 @@ impl Channel for DiscordChannel {
         self.shutdown.cancel();
     }
 
-    async fn send_progress(&self, chat_id: &str, content: &str) -> Result<(), String> {
+    async fn send_progress(&self, chat_id: &str, content: &str) -> Result<(), nexus_common::error::NexusError> {
+        use nexus_common::error::{ErrorCode, NexusError};
         let bot_token = self
             .channel_tokens
             .get(chat_id)
             .map(|v| v.value().clone())
-            .ok_or_else(|| format!("no bot token mapped for channel_id {}", chat_id))?;
+            .ok_or_else(|| NexusError::new(ErrorCode::ChannelError, format!("no bot token mapped for channel_id {}", chat_id)))?;
 
         // Send progress message without cancelling typing indicator
         rest::send_message(&bot_token, chat_id, content).await
     }
 
-    async fn send(&self, chat_id: &str, content: &str) -> Result<(), String> {
+    async fn send(&self, chat_id: &str, content: &str) -> Result<(), nexus_common::error::NexusError> {
+        use nexus_common::error::{ErrorCode, NexusError};
         let bot_token = self
             .channel_tokens
             .get(chat_id)
             .map(|v| v.value().clone())
-            .ok_or_else(|| format!("no bot token mapped for channel_id {}", chat_id))?;
+            .ok_or_else(|| NexusError::new(ErrorCode::ChannelError, format!("no bot token mapped for channel_id {}", chat_id)))?;
 
         let result = rest::send_message(&bot_token, chat_id, content).await;
 
@@ -102,12 +104,13 @@ impl Channel for DiscordChannel {
         chat_id: &str,
         content: &str,
         media: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<(), nexus_common::error::NexusError> {
+        use nexus_common::error::{ErrorCode, NexusError};
         let bot_token = self
             .channel_tokens
             .get(chat_id)
             .map(|v| v.value().clone())
-            .ok_or_else(|| format!("no bot token mapped for channel_id {}", chat_id))?;
+            .ok_or_else(|| NexusError::new(ErrorCode::ChannelError, format!("no bot token mapped for channel_id {}", chat_id)))?;
 
         let result = if media.is_empty() {
             rest::send_message(&bot_token, chat_id, content).await
@@ -178,12 +181,14 @@ async fn run_connection_manager(
             let user_id = config.user_id.clone();
 
             let handle = tokio::spawn(async move {
-                // Rate-limit IDENTIFY calls across bots (1 per 5 seconds)
+                // Stagger IDENTIFY calls across bots on startup (1 per second).
+                // Discord allows ~1000 IDENTIFYs/24h per IP; 1/s is well within limits
+                // while preventing thundering herd on server restart.
                 {
                     let mut guard = last_id_clone.lock().await;
                     let elapsed = guard.elapsed();
-                    if elapsed < Duration::from_secs(5) {
-                        tokio::time::sleep(Duration::from_secs(5) - elapsed).await;
+                    if elapsed < Duration::from_secs(1) {
+                        tokio::time::sleep(Duration::from_secs(1) - elapsed).await;
                     }
                     *guard = tokio::time::Instant::now();
                 }

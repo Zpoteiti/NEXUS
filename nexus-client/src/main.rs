@@ -28,7 +28,6 @@ mod executor;
 mod guardrails;
 mod mcp_client;
 mod session;
-mod skills;
 pub mod tools;
 
 use nexus_common::protocol::{ClientToServer, FileUploadRequest, FileUploadResponse, FsPolicy, McpServerEntry, ServerToClient};
@@ -102,13 +101,13 @@ async fn handle_file_upload_request(
         let policy = fs_policy.read().await;
         match crate::env::sanitize_path_with_policy(&req.file_path, crate::env::FsOp::Read, &*policy) {
             Ok(p) => p,
-            Err(reason) => {
+            Err(e) => {
                 return FileUploadResponse {
                     request_id: req.request_id.clone(),
                     file_name: String::new(),
                     content_base64: String::new(),
                     mime_type: None,
-                    error: Some(format!("file access denied by device policy: {}", reason)),
+                    error: Some(format!("file access denied by device policy: {}", e)),
                 };
             }
         }

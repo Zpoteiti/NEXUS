@@ -45,7 +45,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
     let timeout_sec = state.config.heartbeat_timeout_sec;
     if timeout_sec < HEARTBEAT_INTERVAL_SEC {
         warn!(
-            "warn: heartbeat_timeout_sec({}) < HEARTBEAT_INTERVAL_SEC({})",
+            "heartbeat_timeout_sec({}) < HEARTBEAT_INTERVAL_SEC({})",
             timeout_sec, HEARTBEAT_INTERVAL_SEC
         );
     }
@@ -77,9 +77,9 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         return;
     }
 
-    // Step 3: Verify token → get (user_id, device_name) from DB
-    let (user_id, device_name) = match db::verify_device_token(&state.db, &token).await {
-        Ok(Some(pair)) => pair,
+    // Step 3: Verify token → get user_id and device_name from DB
+    let db::DeviceTokenVerification { user_id, device_name } = match db::verify_device_token(&state.db, &token).await {
+        Ok(Some(v)) => v,
         _ => {
             let failed = ServerToClient::LoginFailed {
                 reason: "Invalid or revoked token".to_string(),
@@ -113,7 +113,6 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 device_name: device_name.clone(),
                 ws_tx: ws_tx.clone(),
                 tools: Vec::new(),
-                skills: Vec::new(),
                 fs_policy: fs_policy.clone(),
                 last_seen: Instant::now(),
             },
@@ -199,30 +198,21 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 let ack_text = serde_json::to_string(&ack).unwrap_or_default();
                 let _ = ws_tx.send(Message::Text(ack_text.into())).await;
             }
-            ClientToServer::RegisterTools { schemas, skills } => {
+            ClientToServer::RegisterTools { schemas } => {
                 let mut devices = state.devices.write().await;
                 if let Some(device) = devices.get_mut(&device_key) {
                     device.tools = schemas;
-                    device.skills = skills;
                 }
             }
             ClientToServer::ToolExecutionResult(result) => {
-                let sender = {
-                    let mut pending = state.pending.write().await;
-                    pending.remove(&result.request_id)
-                };
-                if let Some(tx) = sender {
+                if let Some((_, tx)) = state.pending.remove(&result.request_id) {
                     let _ = tx.send(result);
                 } else {
                     warn!("missing pending sender for request_id from device={}", device_name);
                 }
             }
             ClientToServer::FileUploadResponse(response) => {
-                let sender = {
-                    let mut pending = state.file_upload_pending.write().await;
-                    pending.remove(&response.request_id)
-                };
-                if let Some(tx) = sender {
+                if let Some((_, tx)) = state.file_upload_pending.remove(&response.request_id) {
                     let _ = tx.send(response);
                 } else {
                     warn!("ws: no pending file upload for request_id={} from device={}", response.request_id, device_name);
@@ -253,5 +243,5 @@ async fn cleanup_device(state: &AppState, device_key: &str, user_id: &str) {
             }
         }
     }
-    cancel_pending_requests_for_device(device_key, &state.pending, &state.file_upload_pending).await;
+    cancel_pending_requests_for_device(device_key, &state.pending, &state.file_upload_pending);
 }

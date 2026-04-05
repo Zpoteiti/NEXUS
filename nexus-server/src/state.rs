@@ -19,13 +19,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::Message;
-use nexus_common::protocol::{FileUploadResponse, FsPolicy, SkillFull, ToolExecutionResult};
+use dashmap::DashMap;
+use nexus_common::protocol::{FileUploadResponse, FsPolicy, ToolExecutionResult};
 use sqlx::PgPool;
 use tokio::sync::{RwLock, Semaphore, mpsc, oneshot};
-use tokio::task::JoinHandle;
 
 use crate::bus::MessageBus;
+use crate::channels::ChannelManagerHandle;
 use crate::config::ServerConfig;
+use crate::server_tools::ServerToolRegistry;
 use crate::session::SessionManager;
 
 pub struct DeviceState {
@@ -33,7 +35,6 @@ pub struct DeviceState {
     pub device_name: String,
     pub ws_tx: mpsc::Sender<Message>,
     pub tools: Vec<serde_json::Value>,
-    pub skills: Vec<SkillFull>,
     pub fs_policy: FsPolicy,
     pub last_seen: Instant,
 }
@@ -47,15 +48,16 @@ pub struct AppState {
     /// 设备名称索引：user_id → { device_name → device_key }
     pub devices_by_user: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
     /// 工具调用挂起等待表：request_id → oneshot::Sender
-    pub pending: Arc<RwLock<HashMap<String, oneshot::Sender<ToolExecutionResult>>>>,
+    pub pending: Arc<DashMap<String, oneshot::Sender<ToolExecutionResult>>>,
     /// 文件上传挂起等待表：request_id → oneshot::Sender
-    pub file_upload_pending: Arc<RwLock<HashMap<String, oneshot::Sender<FileUploadResponse>>>>,
+    pub file_upload_pending: Arc<DashMap<String, oneshot::Sender<FileUploadResponse>>>,
     pub bus: Arc<MessageBus>,
     pub session_manager: Arc<SessionManager>,
-    /// ChannelManager 的 dispatch task handle，用于 graceful shutdown
-    /// 使用 Mutex<Option<JoinHandle>> 而非直接存储 JoinHandle，因为 JoinHandle 不是 Clone
-    pub channel_manager_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    /// ChannelManager handle for graceful shutdown — calls stop() on all channels.
+    pub channel_manager_handle: Arc<RwLock<Option<ChannelManagerHandle>>>,
     pub embedding_semaphore: Arc<Semaphore>,
+    pub server_tools: Arc<ServerToolRegistry>,
+    pub server_mcp: Arc<tokio::sync::RwLock<crate::server_mcp::ServerMcpManager>>,
 }
 
 impl AppState {
@@ -65,30 +67,37 @@ impl AppState {
             db,
             devices: Arc::new(RwLock::new(HashMap::new())),
             devices_by_user: Arc::new(RwLock::new(HashMap::new())),
-            pending: Arc::new(RwLock::new(HashMap::new())),
-            file_upload_pending: Arc::new(RwLock::new(HashMap::new())),
+            pending: Arc::new(DashMap::new()),
+            file_upload_pending: Arc::new(DashMap::new()),
             bus,
             session_manager,
             channel_manager_handle: Arc::new(RwLock::new(None)),
             embedding_semaphore: Arc::new(Semaphore::new(10)),
+            server_mcp: Arc::new(tokio::sync::RwLock::new(crate::server_mcp::ServerMcpManager::new())),
+            server_tools: Arc::new({
+                let mut reg = ServerToolRegistry::new();
+                reg.register(Box::new(crate::server_tools::memory::SaveMemoryTool));
+                reg.register(Box::new(crate::server_tools::send_file::SendFileTool));
+                reg.register(Box::new(crate::server_tools::message::MessageTool));
+                reg.register(Box::new(crate::server_tools::cron::CronCreateTool));
+                reg.register(Box::new(crate::server_tools::cron::CronListTool));
+                reg.register(Box::new(crate::server_tools::cron::CronRemoveTool));
+                reg.register(Box::new(crate::server_tools::skills::ReadSkillTool));
+                reg.register(Box::new(crate::server_tools::skills::ReadSkillFileTool));
+                reg
+            }),
         }
     }
 }
 
 /// 设备断线时由 ws.rs 调用：drop 该设备所有挂起的 oneshot::Sender，
 /// 使 agent_loop 的 .await 立即返回 Err，避免永久挂起。
-pub async fn cancel_pending_requests_for_device(
+pub fn cancel_pending_requests_for_device(
     device_key: &str,
-    pending: &RwLock<HashMap<String, oneshot::Sender<ToolExecutionResult>>>,
-    file_upload_pending: &RwLock<HashMap<String, oneshot::Sender<FileUploadResponse>>>,
+    pending: &DashMap<String, oneshot::Sender<ToolExecutionResult>>,
+    file_upload_pending: &DashMap<String, oneshot::Sender<FileUploadResponse>>,
 ) {
     let prefix = format!("{device_key}:");
-    {
-        let mut pending_map = pending.write().await;
-        pending_map.retain(|request_id, _| !request_id.starts_with(&prefix));
-    }
-    {
-        let mut pending_map = file_upload_pending.write().await;
-        pending_map.retain(|request_id, _| !request_id.starts_with(&prefix));
-    }
+    pending.retain(|request_id, _| !request_id.starts_with(&prefix));
+    file_upload_pending.retain(|request_id, _| !request_id.starts_with(&prefix));
 }

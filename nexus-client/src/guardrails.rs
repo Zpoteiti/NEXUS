@@ -14,6 +14,8 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 use tokio::net::lookup_host;
 
+use crate::tools::ToolError;
+
 /// 高危命令拒绝模式（预编译正则）
 static DENY_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     DENY_PATTERNS
@@ -42,17 +44,22 @@ static URL_REGEX: LazyLock<Regex> =
 ///
 /// 若命令安全，返回 `Ok(())`。
 /// 若命令被拦截，返回 `Err(reason)`。
-pub async fn check_shell_command(cmd: &str) -> Result<(), String> {
+pub async fn check_shell_command(cmd: &str) -> Result<(), ToolError> {
     // 1. 正则拦截高危命令
     for re in DENY_REGEXES.iter() {
         if re.is_match(cmd) {
-            return Err(format!("command blocked: matches deny pattern '{}'", re.as_str()));
+            return Err(ToolError::Blocked(format!(
+                "command blocked: matches deny pattern '{}'",
+                re.as_str()
+            )));
         }
     }
 
     // 2. SSRF URL 检测（异步 DNS 解析）
     if contains_internal_url(cmd).await {
-        return Err("command blocked: contains URL pointing to internal network".to_string());
+        return Err(ToolError::Blocked(
+            "command blocked: contains URL pointing to internal network".to_string(),
+        ));
     }
 
     Ok(())
@@ -84,15 +91,21 @@ pub async fn contains_internal_url(command: &str) -> bool {
 /// - fe80::/10
 ///
 /// 若 URL 中的 hostname 无法解析为 IP，保守地认为其可能指向内网而拒绝。
-pub async fn validate_url_target(url: &str) -> Result<(), String> {
+pub async fn validate_url_target(url: &str) -> Result<(), ToolError> {
     // 解析 URL 获取 host
-    let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {}", e))?;
-    let host = parsed.host_str().ok_or_else(|| "URL has no host".to_string())?;
+    let parsed = url::Url::parse(url)
+        .map_err(|e| ToolError::Blocked(format!("invalid URL: {}", e)))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| ToolError::Blocked("URL has no host".to_string()))?;
 
     // 检查是否是 IP 地址（直接检查）
     if let Ok(ip) = IpAddr::from_str(host) {
         if is_blocked_ip(ip) {
-            return Err(format!("URL host {} is in blocked private network", host));
+            return Err(ToolError::Blocked(format!(
+                "URL host {} is in blocked private network",
+                host
+            )));
         }
         return Ok(());
     }
@@ -102,22 +115,25 @@ pub async fn validate_url_target(url: &str) -> Result<(), String> {
     let addr_string = format!("{}:80", host);
     let addrs: Vec<_> = lookup_host(&addr_string)
         .await
-        .map_err(|_| format!("cannot resolve hostname: {}", host))?
+        .map_err(|_| ToolError::Blocked(format!("cannot resolve hostname: {}", host)))?
         .collect();
 
     if addrs.is_empty() {
         // 无法解析，保守策略：拒绝
-        return Err(format!("cannot resolve hostname: {}", host));
+        return Err(ToolError::Blocked(format!(
+            "cannot resolve hostname: {}",
+            host
+        )));
     }
 
     // 检查所有解析出的 IP 地址
     for addr in addrs {
         let ip = addr.ip();
         if is_blocked_ip(ip) {
-            return Err(format!(
+            return Err(ToolError::Blocked(format!(
                 "URL host {} resolves to private/internal address {}",
                 host, ip
-            ));
+            )));
         }
     }
 

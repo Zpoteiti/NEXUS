@@ -11,7 +11,6 @@ pub enum BrowserInbound {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrowserOutbound {
-    Connected,
     Message { content: String },
     Error { reason: String },
 }

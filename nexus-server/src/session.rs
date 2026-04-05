@@ -7,7 +7,7 @@ use crate::state::AppState;
 
 /// 每个 session 的句柄
 pub struct SessionHandle {
-    pub lock: Arc<RwLock<()>>,    // 防止并发写数据库
+    pub lock: Arc<tokio::sync::Mutex<()>>,    // 防止并发写数据库
 }
 
 pub struct SessionManager {
@@ -36,7 +36,7 @@ impl SessionManager {
         // 创建新 session
         let (inbox_tx, inbox_rx) = mpsc::channel(64);
         let handle = SessionHandle {
-            lock: Arc::new(RwLock::new(())),
+            lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         sessions.insert(session_id.to_string(), handle);
 
@@ -44,7 +44,7 @@ impl SessionManager {
     }
 
     /// 获取 session 的锁（用于 DB 写操作）
-    pub async fn get_session_lock(&self, session_id: &str) -> Option<Arc<RwLock<()>>> {
+    pub async fn get_session_lock(&self, session_id: &str) -> Option<Arc<tokio::sync::Mutex<()>>> {
         let sessions = self.sessions.read().await;
         sessions.get(session_id).map(|h| h.lock.clone())
     }

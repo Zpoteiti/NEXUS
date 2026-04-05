@@ -58,7 +58,6 @@ pub fn parse_ready(d: &Value) -> Option<ReadyData> {
 
 #[derive(Debug)]
 pub struct MessageCreateData {
-    pub message_id: String,
     pub channel_id: String,
     pub guild_id: Option<String>,
     pub thread_id: Option<String>,
@@ -71,7 +70,6 @@ pub struct MessageCreateData {
 }
 
 pub fn parse_message_create(d: &Value) -> Option<MessageCreateData> {
-    let message_id = d.get("id")?.as_str()?.to_string();
     let channel_id = d.get("channel_id")?.as_str()?.to_string();
     let guild_id = d.get("guild_id").and_then(|v| v.as_str()).map(String::from);
     let content = d.get("content")?.as_str()?.to_string();
@@ -106,7 +104,6 @@ pub fn parse_message_create(d: &Value) -> Option<MessageCreateData> {
         .unwrap_or_default();
 
     Some(MessageCreateData {
-        message_id,
         channel_id,
         guild_id,
         thread_id,

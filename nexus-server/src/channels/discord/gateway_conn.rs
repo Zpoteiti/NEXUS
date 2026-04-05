@@ -77,12 +77,14 @@ async fn run_once(
     state: &Arc<AppState>,
     channel_tokens: &ChannelTokenMap,
     typing_tokens: &TypingTokenMap,
-) -> Result<(), String> {
+) -> Result<(), nexus_common::error::NexusError> {
     info!("DiscordGatewayConn [{}]: connecting to Gateway", config.user_id);
+
+    use nexus_common::error::{ErrorCode, NexusError};
 
     let (ws_stream, _) = connect_async(GATEWAY_URL)
         .await
-        .map_err(|e| format!("connect failed: {}", e))?;
+        .map_err(|e| NexusError::new(ErrorCode::ConnectionFailed, format!("connect failed: {}", e)))?;
 
     let (mut ws_sink, mut ws_source) = ws_stream.split();
 
@@ -90,28 +92,28 @@ async fn run_once(
     let heartbeat_interval = match ws_source.next().await {
         Some(Ok(Message::Text(text))) => {
             let frame: GatewayFrame = serde_json::from_str(&text)
-                .map_err(|e| format!("parse HELLO: {}", e))?;
+                .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("parse HELLO: {}", e)))?;
             if frame.op != OP_HELLO {
-                return Err(format!("expected HELLO (op 10), got op {}", frame.op));
+                return Err(NexusError::new(ErrorCode::ChannelError, format!("expected HELLO (op 10), got op {}", frame.op)));
             }
             let interval_ms = frame.d
                 .as_ref()
                 .and_then(|d| d.get("heartbeat_interval"))
                 .and_then(|v| v.as_u64())
-                .ok_or("missing heartbeat_interval in HELLO")?;
+                .ok_or_else(|| NexusError::new(ErrorCode::ChannelError, "missing heartbeat_interval in HELLO"))?;
             info!("DiscordGatewayConn [{}]: HELLO, heartbeat_interval={}ms", config.user_id, interval_ms);
             interval_ms
         }
-        Some(Ok(_)) => return Err("expected text frame for HELLO".to_string()),
-        Some(Err(e)) => return Err(format!("ws error waiting for HELLO: {}", e)),
-        None => return Err("ws closed before HELLO".to_string()),
+        Some(Ok(_)) => return Err(NexusError::new(ErrorCode::ChannelError, "expected text frame for HELLO")),
+        Some(Err(e)) => return Err(NexusError::new(ErrorCode::ConnectionFailed, format!("ws error waiting for HELLO: {}", e))),
+        None => return Err(NexusError::new(ErrorCode::ConnectionFailed, "ws closed before HELLO")),
     };
 
     // 2. Send IDENTIFY
     ws_sink
         .send(Message::Text(identify_frame(&config.bot_token).into()))
         .await
-        .map_err(|e| format!("send IDENTIFY: {}", e))?;
+        .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("send IDENTIFY: {}", e)))?;
 
     // 3. Start heartbeat task
     let seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -151,7 +153,7 @@ async fn run_once(
             Some(hb_frame) = hb_rx.recv() => {
                 if let Err(e) = ws_sink.send(Message::Text(hb_frame.into())).await {
                     heartbeat_cancel.cancel();
-                    return Err(format!("send heartbeat: {}", e));
+                    return Err(NexusError::new(ErrorCode::ChannelError, format!("send heartbeat: {}", e)));
                 }
             }
             msg = ws_source.next() => {
@@ -226,7 +228,7 @@ async fn run_once(
                     Some(Ok(_)) => {}
                     Some(Err(e)) => {
                         heartbeat_cancel.cancel();
-                        return Err(format!("ws read error: {}", e));
+                        return Err(NexusError::new(ErrorCode::ChannelError, format!("ws read error: {}", e)));
                     }
                     None => {
                         heartbeat_cancel.cancel();

@@ -5,18 +5,28 @@ use crate::bus::{InboundEvent, OutboundEvent};
 use crate::context;
 use crate::providers::{call_with_retry, ChatCompletionRequest};
 use crate::state::AppState;
-use crate::tools_registry::{route_tool, RouteError};
+use crate::tools_registry::route_tool;
 use base64::Engine;
+use nexus_common::error::{ErrorCode, NexusError};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Result of a single turn, including the reply text and any media file paths.
 struct TurnResult {
     reply: String,
     media: Vec<String>,
+}
+
+/// Post-process LLM content before returning to user.
+/// Strips <think>...</think> blocks from reasoning models.
+fn finalize_content(content: &str) -> String {
+    static THINK_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<think>.*?</think>").unwrap());
+    let cleaned = THINK_RE.replace_all(content, "");
+    cleaned.trim().to_string()
 }
 
 /// Detect image MIME type from file path (extension first, then magic bytes).
@@ -81,19 +91,19 @@ pub async fn run_session(
             }
             db_session_created = true;
         }
-        info!("agent_session {} received: content={}", session_id, event.content);
+        debug!("agent_session {} received: content={}", session_id, event.content);
 
         // 持有 session 锁（防止不同 channel 同时写数据库）
         let lock = state.session_manager.get_session_lock(&session_id).await
             .expect("session lock must exist after get_or_create_session");
-        let _guard = lock.read().await;
+        let _guard = lock.lock().await;
 
         match run_single_turn(&state, &event).await {
             Ok(result) => {
                 let outbound = OutboundEvent {
                     channel: event.channel.clone(),
                     chat_id: event.chat_id.clone(),
-                    content: result.reply,
+                    content: finalize_content(&result.reply),
                     media: result.media,
                     metadata: HashMap::new(),
                 };
@@ -161,7 +171,7 @@ fn parse_tool_calls(choice: &crate::providers::Choice) -> Vec<ToolCallParsed> {
 async fn run_single_turn(
     state: &Arc<AppState>,
     event: &InboundEvent,
-) -> Result<TurnResult, String> {
+) -> Result<TurnResult, NexusError> {
     let user_input = &event.content;
     let user_id = &event.sender_id;
     let session_id = &event.session_id;
@@ -186,6 +196,49 @@ async fn run_single_turn(
         &state.embedding_semaphore,
     )
     .await;
+
+    // Check if this is a checkpoint resume
+    if let Some(resume_msgs) = event.metadata.get("resume_messages") {
+        if let Some(resume_arr) = resume_msgs.as_array() {
+            let resume_iteration = event.metadata.get("resume_iteration")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let resumed_messages: Vec<Value> = resume_arr.clone();
+            let tools = context::get_all_tools_schema(state, user_id).await;
+
+            info!(
+                "agent_session {} resuming from checkpoint: {} messages, iteration {}",
+                session_id, resumed_messages.len(), resume_iteration
+            );
+
+            // Re-call LLM with the saved context to continue the tool loop
+            let request = ChatCompletionRequest {
+                messages: resumed_messages.clone(),
+                tools: tools.clone(),
+                model: llm_config.model.clone(),
+                max_tokens: None,
+            };
+            let response = call_with_retry(&llm_config, request).await
+                .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("LLM provider error: {}", e)))?;
+            let choice = response.choices.first()
+                .ok_or_else(|| NexusError::new(ErrorCode::ExecutionFailed, "LLM returned empty choices array"))?;
+
+            return match choice.finish_reason.as_str() {
+                "stop" => {
+                    let reply = choice.message.content.clone().unwrap_or_default();
+                    let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None, None, None).await;
+                    let _ = crate::db::delete_checkpoint(&state.db, session_id).await;
+                    Ok(TurnResult { reply, media: Vec::new() })
+                }
+                "tool_calls" => {
+                    let tool_calls = parse_tool_calls(choice);
+                    info!("agent_session {} resume: LLM requested {} tool calls", session_id, tool_calls.len());
+                    execute_tool_calls_loop(state, user_id, session_id, &event.channel, &event.chat_id, resumed_messages, tool_calls, tools, &llm_config).await
+                }
+                _ => Err(NexusError::new(ErrorCode::ExecutionFailed, format!("unknown finish_reason: {}", choice.finish_reason))),
+            };
+        }
+    }
 
     let system_prompt = context::build_system_prompt(state, user_id, session_id, user_input, &event.metadata).await;
     let tools = context::get_all_tools_schema(state, user_id).await;
@@ -234,9 +287,9 @@ async fn run_single_turn(
         max_tokens: None,
     };
     let response = call_with_retry(&llm_config, request).await
-        .map_err(|e| format!("LLM provider error: {}", e))?;
+        .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("LLM provider error: {}", e)))?;
     let choice = response.choices.first()
-        .ok_or_else(|| "LLM returned empty choices array".to_string())?;
+        .ok_or_else(|| NexusError::new(ErrorCode::ExecutionFailed, "LLM returned empty choices array"))?;
     info!("agent_session {} LLM returned: finish_reason={}", session_id, choice.finish_reason);
 
     match choice.finish_reason.as_str() {
@@ -251,7 +304,7 @@ async fn run_single_turn(
             info!("agent_session {} calling execute_tool_calls_loop with {} tool_calls", session_id, tool_calls.len());
             execute_tool_calls_loop(state, user_id, session_id, &event.channel, &event.chat_id, messages, tool_calls, tools, &llm_config).await
         }
-        _ => Err(format!("unknown finish_reason: {}", choice.finish_reason)),
+        _ => Err(NexusError::new(ErrorCode::ExecutionFailed, format!("unknown finish_reason: {}", choice.finish_reason))),
     }
 }
 
@@ -266,14 +319,22 @@ async fn execute_tool_calls_loop(
     initial_tool_calls: Vec<ToolCallParsed>,
     tools: Vec<Value>,
     llm_config: &crate::config::LlmConfig,
-) -> Result<TurnResult, String> {
+) -> Result<TurnResult, NexusError> {
     let mut current_messages = messages.clone();
     let mut current_tool_calls = initial_tool_calls;
     let mut call_counts: HashMap<ToolCallKey, usize> = HashMap::new();
     let mut gave_rethink_chance = false;
     let mut pending_media: Vec<String> = Vec::new();
+    let mut iteration = 0u32;
 
     loop {
+        iteration += 1;
+        if iteration > nexus_common::consts::MAX_AGENT_ITERATIONS {
+            let msg = format!("Agent reached maximum iteration limit ({}). Stopping.", nexus_common::consts::MAX_AGENT_ITERATIONS);
+            warn!("{}", msg);
+            let _ = crate::db::save_message(&state.db, session_id, "assistant", &msg, None, None, None).await;
+            return Ok(TurnResult { reply: msg, media: pending_media });
+        }
         // Build a single assistant message with all tool calls
         let tool_calls_json: Vec<Value> = current_tool_calls.iter().map(|tc| {
             json!({
@@ -311,10 +372,10 @@ async fn execute_tool_calls_loop(
                     "execute_tool_calls_loop: tool '{}' called {} times with identical arguments after rethink chance — hard error",
                     tc.name, count
                 );
-                return Err(format!(
+                return Err(NexusError::new(ErrorCode::ExecutionFailed, format!(
                     "Tool '{}' has been called repeatedly with the same arguments {} times. After being asked to try a different approach, the same tool was called again. Please try a fundamentally different strategy to complete this task.",
                     tc.name, count
-                ));
+                )));
             }
 
             gave_rethink_chance = true;
@@ -346,9 +407,9 @@ async fn execute_tool_calls_loop(
                 max_tokens: None,
             };
             let response = call_with_retry(llm_config, request).await
-                .map_err(|e| format!("LLM provider error: {}", e))?;
+                .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("LLM provider error: {}", e)))?;
             let choice = response.choices.first()
-                .ok_or_else(|| "LLM returned empty choices array".to_string())?;
+                .ok_or_else(|| NexusError::new(ErrorCode::ExecutionFailed, "LLM returned empty choices array"))?;
 
             match choice.finish_reason.as_str() {
                 "stop" => {
@@ -362,32 +423,46 @@ async fn execute_tool_calls_loop(
                     continue;
                 }
                 _ => {
-                    return Err(format!("unknown finish_reason after soft error: {}", choice.finish_reason));
+                    return Err(NexusError::new(ErrorCode::ExecutionFailed, format!("unknown finish_reason after soft error: {}", choice.finish_reason)));
                 }
             }
         }
 
+        // Emit progress hints for all tool calls
         for tc in &current_tool_calls {
-            // Emit progress: tool call intent
-            {
-                let mut metadata = HashMap::new();
-                metadata.insert("_progress".to_string(), serde_json::json!(true));
-                metadata.insert("_tool_hint".to_string(), serde_json::json!(true));
-                let hint = format!("🔧 `{}`", tc.name);
-                let _ = state.bus.publish_outbound(OutboundEvent {
-                    channel: event_channel.to_string(),
-                    chat_id: event_chat_id.to_string(),
-                    content: hint,
-                    media: Vec::new(),
-                    metadata,
-                }).await;
-            }
+            let mut metadata = HashMap::new();
+            metadata.insert("_progress".to_string(), serde_json::json!(true));
+            metadata.insert("_tool_hint".to_string(), serde_json::json!(true));
+            let hint = format!("🔧 `{}`", tc.name);
+            let _ = state.bus.publish_outbound(OutboundEvent {
+                channel: event_channel.to_string(),
+                chat_id: event_chat_id.to_string(),
+                content: hint,
+                media: Vec::new(),
+                metadata,
+            }).await;
+        }
 
-            let result = execute_single_tool(state, user_id, session_id, tc).await;
+        // Execute all tool calls concurrently
+        let mut futures = Vec::new();
+        for tc in current_tool_calls.clone() {
+            let state = state.clone();
+            let user_id = user_id.to_string();
+            let session_id = session_id.to_string();
+            let channel = event_channel.to_string();
+            let chat_id = event_chat_id.to_string();
+            futures.push(tokio::spawn(async move {
+                let result = execute_single_tool(&state, &user_id, &session_id, &channel, &chat_id, &tc).await;
+                (tc, result)
+            }));
+        }
+
+        let results = futures::future::join_all(futures).await;
+        for join_result in results {
+            let (tc, result) = join_result.map_err(|e| NexusError::new(ErrorCode::InternalError, format!("task join error: {}", e)))?;
             let mut content = match result {
                 Ok(output) => output,
                 Err(e) => {
-                    // Emit error progress
                     let mut metadata = HashMap::new();
                     metadata.insert("_progress".to_string(), serde_json::json!(true));
                     metadata.insert("_error".to_string(), serde_json::json!(true));
@@ -420,6 +495,12 @@ async fn execute_tool_calls_loop(
             }));
         }
 
+        // Save checkpoint after tool batch (for crash recovery)
+        let _ = crate::db::save_checkpoint(
+            &state.db, session_id, user_id,
+            &current_messages, iteration, event_channel, event_chat_id,
+        ).await;
+
         let request = ChatCompletionRequest {
             messages: current_messages.clone(),
             tools: tools.clone(),
@@ -427,14 +508,16 @@ async fn execute_tool_calls_loop(
             max_tokens: None,
         };
         let response = call_with_retry(llm_config, request).await
-            .map_err(|e| format!("LLM provider error: {}", e))?;
+            .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("LLM provider error: {}", e)))?;
         let choice = response.choices.first()
-            .ok_or_else(|| "LLM returned empty choices array".to_string())?;
+            .ok_or_else(|| NexusError::new(ErrorCode::ExecutionFailed, "LLM returned empty choices array"))?;
 
         match choice.finish_reason.as_str() {
             "stop" => {
                 let reply = choice.message.content.clone().unwrap_or_default();
                 let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None, None, None).await;
+                // Clear checkpoint on successful completion
+                let _ = crate::db::delete_checkpoint(&state.db, session_id).await;
                 return Ok(TurnResult { reply, media: pending_media });
             }
             "tool_calls" => {
@@ -442,7 +525,7 @@ async fn execute_tool_calls_loop(
                 info!("execute_tool_calls_loop: LLM requested {} new tool calls", current_tool_calls.len());
             }
             _ => {
-                return Err(format!("unknown finish_reason in tool loop: {}", choice.finish_reason));
+                return Err(NexusError::new(ErrorCode::ExecutionFailed, format!("unknown finish_reason in tool loop: {}", choice.finish_reason)));
             }
         }
     }
@@ -452,144 +535,45 @@ async fn execute_single_tool(
     state: &Arc<AppState>,
     user_id: &str,
     session_id: &str,
+    event_channel: &str,
+    event_chat_id: &str,
     tc: &ToolCallParsed,
-) -> Result<String, String> {
-    info!("execute_single_tool: tool_name={}, arguments={}", tc.name, tc.arguments);
+) -> Result<String, NexusError> {
+    debug!("execute_single_tool: tool_name={}, arguments={}", tc.name, tc.arguments);
 
-    // ── Built-in server-side tool: send_file ──
-    if tc.name == "send_file" {
-        let device_name = tc.arguments.get("device_name")
-            .and_then(|v| v.as_str())
-            .ok_or("send_file: missing device_name")?
-            .to_string();
-        let file_path = tc.arguments.get("file_path")
-            .and_then(|v| v.as_str())
-            .ok_or("send_file: missing file_path")?
-            .to_string();
-
-        // Find the device
-        let device_key = {
-            let by_user = state.devices_by_user.read().await;
-            by_user.get(user_id)
-                .and_then(|devices| devices.get(&device_name).cloned())
-                .ok_or_else(|| format!("device '{}' not found", device_name))?
-        };
-
-        let ws_tx = {
-            let devices = state.devices.read().await;
-            devices.get(&device_key)
-                .map(|d| d.ws_tx.clone())
-                .ok_or_else(|| format!("device '{}' not connected", device_name))?
-        };
-
-        // Create oneshot channel for file upload response
-        let request_id = format!("{}:{}", device_key, uuid::Uuid::new_v4());
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        {
-            let mut pending = state.file_upload_pending.write().await;
-            pending.insert(request_id.clone(), tx);
+    // ── Check server-native tools first ──
+    if let Some(tool) = state.server_tools.get(&tc.name) {
+        let result = tool.execute(state, user_id, session_id, tc.arguments.clone(), event_channel, event_chat_id).await?;
+        // If tool produced media, return with __FILE__ markers
+        if !result.media.is_empty() {
+            return Ok(result.media.join("\n"));
         }
-
-        // Send FileUploadRequest to client
-        use nexus_common::protocol::{ServerToClient, FileUploadRequest};
-        let msg = ServerToClient::FileUploadRequest(FileUploadRequest {
-            request_id: request_id.clone(),
-            file_path: file_path.clone(),
-        });
-        let msg_text = serde_json::to_string(&msg)
-            .map_err(|e| format!("serialize error: {}", e))?;
-        ws_tx.send(axum::extract::ws::Message::Text(msg_text.into())).await
-            .map_err(|e| format!("ws send error: {}", e))?;
-
-        // Wait for response with timeout
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            rx,
-        ).await
-            .map_err(|_| "file upload timed out after 60s".to_string())?
-            .map_err(|_| "file upload channel closed (device may have disconnected)".to_string())?;
-
-        // Check for error
-        if let Some(err) = response.error {
-            return Err(format!("file upload failed: {}", err));
-        }
-
-        // Decode base64 and save to temp
-        let bytes = base64::engine::general_purpose::STANDARD.decode(&response.content_base64)
-            .map_err(|e| format!("base64 decode error: {}", e))?;
-
-        let dir = std::path::Path::new("/tmp/nexus-media");
-        tokio::fs::create_dir_all(dir).await
-            .map_err(|e| format!("mkdir error: {}", e))?;
-        let save_path = dir.join(format!("{}_{}", uuid::Uuid::new_v4(), response.file_name));
-        tokio::fs::write(&save_path, &bytes).await
-            .map_err(|e| format!("write error: {}", e))?;
-
-        // Return special marker so the tool loop can attach the file to the outbound event
-        return Ok(format!("__FILE__:{}", save_path.to_string_lossy()));
-    }
-
-    // ── Built-in server-side tool: save_memory ──
-    if tc.name == "save_memory" {
-        let content = tc.arguments.get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if content.is_empty() {
-            return Err("save_memory: content is empty".to_string());
-        }
-        // Generate embedding if configured
-        let embedding = {
-            let emb_config = state.config.embedding.read().await.clone();
-            if let Some(ref cfg) = emb_config {
-                let emb = crate::context::embed_text_throttled(cfg, &content, &state.embedding_semaphore).await;
-                if emb.is_empty() { None } else { Some(emb) }
-            } else {
-                None
-            }
-        };
-        // Dedup: skip if a very similar memory already exists
-        if let Some(ref emb) = embedding {
-            match crate::db::find_similar_memory(&state.db, user_id, emb, 0.92).await {
-                Ok(true) => {
-                    tracing::info!("save_memory: skipping duplicate (cosine > 0.92)");
-                    return Ok("Memory already exists (similar content found).".to_string());
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!("save_memory: dedup check failed: {}, proceeding with save", e);
-                }
-            }
-        }
-        match crate::db::save_memory_chunk(
-            &state.db, session_id, user_id,
-            &format!("[{}] Agent saved: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M"), &content[..content.len().min(80)]),
-            &content,
-            embedding.as_deref(),
-        ).await {
-            Ok(()) => return Ok("Memory saved successfully.".to_string()),
-            Err(e) => return Err(format!("Failed to save memory: {}", e)),
-        }
+        return Ok(result.output);
     }
 
     let device_name = tc.arguments
         .get("device_name")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "device_name not found in tool call arguments".to_string())?
+        .ok_or_else(|| NexusError::new(ErrorCode::ToolInvalidParams, "device_name not found in tool call arguments"))?
         .to_string();
     info!("execute_single_tool: resolved device_name={}", device_name);
+
+    // ── Check server MCP tools (device_name="server") ──
+    if device_name == "server" && tc.name.starts_with("mcp_") {
+        let manager = state.server_mcp.read().await;
+        return manager.call_tool(&tc.name, tc.arguments.clone()).await;
+    }
 
     let params = tc.arguments.clone();
     let request_id = tc.id.clone();
 
     info!("execute_single_tool: calling route_tool for device={}", device_name);
-    match route_tool(state, user_id, &tc.name, params, &request_id).await {
-        Ok(result) => {
-            let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(1);
-            let output = result.get("output").and_then(|v| v.as_str()).unwrap_or("");
-            if exit_code == 0 { Ok(output.to_string()) } else { Err(output.to_string()) }
-        }
-        Err(RouteError::DeviceNotFound(name)) => Err(format!("device '{}' not found", name)),
-        Err(RouteError::SendFailed(name)) => Err(format!("failed to send request to '{}'", name)),
+    let result = route_tool(state, user_id, &tc.name, params, &request_id).await?;
+    let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(1);
+    let output = result.get("output").and_then(|v| v.as_str()).unwrap_or("");
+    if exit_code == 0 {
+        Ok(output.to_string())
+    } else {
+        Err(NexusError::new(ErrorCode::ExecutionFailed, output.to_string()))
     }
 }

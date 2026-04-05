@@ -2,6 +2,7 @@
 ///
 /// Client only sends its token. Server resolves user_id, device_name from DB.
 /// LoginSuccess returns the device_name assigned by the user at token creation time.
+// TODO: migrate to NexusError when nexus-client uses nexus-common error types
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -94,7 +95,7 @@ async fn run_single_connection(
     policy_lock: Arc<RwLock<FsPolicy>>,
     mcp_config_lock: Arc<RwLock<Vec<McpServerEntry>>>,
 ) -> Result<(), String> {
-    let (device_name, initial_policy, initial_mcp) = perform_handshake(ws_stream, &config.auth_token).await?;
+    let (_device_name, initial_policy, initial_mcp) = perform_handshake(ws_stream, &config.auth_token).await?;
     *policy_lock.write().await = initial_policy;
     *mcp_config_lock.write().await = initial_mcp.clone();
 
@@ -102,10 +103,10 @@ async fn run_single_connection(
     let mcp_servers = crate::config::mcp_entries_to_configs(&initial_mcp);
 
     // Discover and register tools
-    let (schemas, skills, hash) =
-        crate::discovery::discover_all(&mcp_servers, &config.skills_dir).await;
+    let (schemas, hash) =
+        crate::discovery::discover_all(&mcp_servers).await;
 
-    let register = ClientToServer::RegisterTools { schemas, skills };
+    let register = ClientToServer::RegisterTools { schemas };
     send_client_message(ws_stream, &register).await?;
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SEC));
@@ -116,8 +117,8 @@ async fn run_single_connection(
             _ = heartbeat.tick() => {
                 let current_mcp = mcp_config_lock.read().await.clone();
                 let current_mcp_configs = crate::config::mcp_entries_to_configs(&current_mcp);
-                let (current_schemas, current_skills, current_hash) =
-                    crate::discovery::discover_all(&current_mcp_configs, &config.skills_dir).await;
+                let (current_schemas, current_hash) =
+                    crate::discovery::discover_all(&current_mcp_configs).await;
 
                 let heartbeat_event = ClientToServer::Heartbeat {
                     hash: current_hash.clone(),
@@ -128,7 +129,6 @@ async fn run_single_connection(
                 if current_hash != last_hash {
                     let register = ClientToServer::RegisterTools {
                         schemas: current_schemas,
-                        skills: current_skills,
                     };
                     send_client_message(ws_stream, &register).await?;
                     last_hash = current_hash;

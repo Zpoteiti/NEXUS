@@ -2,6 +2,7 @@
 
 use std::sync::LazyLock;
 use reqwest::Client;
+use nexus_common::error::{ErrorCode, NexusError};
 use tracing::warn;
 
 const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
@@ -19,7 +20,7 @@ pub async fn send_message(
     bot_token: &str,
     channel_id: &str,
     content: &str,
-) -> Result<(), String> {
+) -> Result<(), NexusError> {
     let chunks = split_message(content, MAX_MESSAGE_LENGTH);
 
     for chunk in &chunks {
@@ -33,7 +34,7 @@ async fn send_single_message(
     bot_token: &str,
     channel_id: &str,
     content: &str,
-) -> Result<(), String> {
+) -> Result<(), NexusError> {
     let url = format!("{}/channels/{}/messages", DISCORD_API_BASE, channel_id);
 
     for attempt in 0..MAX_RETRIES {
@@ -43,7 +44,7 @@ async fn send_single_message(
             .json(&serde_json::json!({ "content": content }))
             .send()
             .await
-            .map_err(|e| format!("Discord send error: {}", e))?;
+            .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("Discord send error: {}", e)))?;
 
         let status = response.status().as_u16();
 
@@ -71,39 +72,39 @@ async fn send_single_message(
         }
 
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Discord API error {}: {}", status, body));
+        return Err(NexusError::new(ErrorCode::ChannelError, format!("Discord API error {}: {}", status, body)));
     }
 
-    Err("Discord send: max retries exceeded on 429".to_string())
+    Err(NexusError::new(ErrorCode::ChannelError, "Discord send: max retries exceeded on 429"))
 }
 
 /// Download a Discord attachment to a temp directory.
 /// Returns the absolute path to the saved file.
-pub async fn download_attachment(url: &str, filename: &str) -> Result<String, String> {
+pub async fn download_attachment(url: &str, filename: &str) -> Result<String, NexusError> {
     let response = HTTP_CLIENT
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("download error: {}", e))?;
+        .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("download error: {}", e)))?;
 
     if !response.status().is_success() {
-        return Err(format!("download HTTP {}", response.status()));
+        return Err(NexusError::new(ErrorCode::ChannelError, format!("download HTTP {}", response.status())));
     }
 
     let bytes = response
         .bytes()
         .await
-        .map_err(|e| format!("download read error: {}", e))?;
+        .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("download read error: {}", e)))?;
 
     // Save to temp directory
     let dir = std::path::Path::new("/tmp/nexus-media");
-    tokio::fs::create_dir_all(dir).await.map_err(|e| format!("mkdir error: {}", e))?;
+    tokio::fs::create_dir_all(dir).await.map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("mkdir error: {}", e)))?;
 
     let safe_name = filename.replace(['/', '\\', '\0'], "_");
     let uuid = uuid::Uuid::new_v4();
     let path = dir.join(format!("{}_{}", uuid, safe_name));
 
-    tokio::fs::write(&path, &bytes).await.map_err(|e| format!("write error: {}", e))?;
+    tokio::fs::write(&path, &bytes).await.map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("write error: {}", e)))?;
 
     Ok(path.to_string_lossy().to_string())
 }
@@ -114,7 +115,7 @@ pub async fn send_message_with_files(
     channel_id: &str,
     content: &str,
     file_paths: &[String],
-) -> Result<(), String> {
+) -> Result<(), NexusError> {
     let url = format!("{}/channels/{}/messages", DISCORD_API_BASE, channel_id);
 
     let mut form = build_multipart_form(content, file_paths).await?;
@@ -126,7 +127,7 @@ pub async fn send_message_with_files(
             .multipart(form)
             .send()
             .await
-            .map_err(|e| format!("Discord send error: {}", e))?;
+            .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("Discord send error: {}", e)))?;
 
         let status = response.status().as_u16();
         if status == 200 || status == 201 {
@@ -153,16 +154,16 @@ pub async fn send_message_with_files(
         }
 
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Discord API error {}: {}", status, body));
+        return Err(NexusError::new(ErrorCode::ChannelError, format!("Discord API error {}: {}", status, body)));
     }
 
-    Err("Discord file send: max retries exceeded".to_string())
+    Err(NexusError::new(ErrorCode::ChannelError, "Discord file send: max retries exceeded"))
 }
 
 async fn build_multipart_form(
     content: &str,
     file_paths: &[String],
-) -> Result<reqwest::multipart::Form, String> {
+) -> Result<reqwest::multipart::Form, NexusError> {
     use reqwest::multipart;
 
     let mut form = multipart::Form::new().text(
@@ -178,7 +179,7 @@ async fn build_multipart_form(
             .unwrap_or_else(|| format!("file_{}", i));
 
         let bytes =
-            tokio::fs::read(path).await.map_err(|e| format!("Failed to read file {}: {}", path, e))?;
+            tokio::fs::read(path).await.map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("failed to read file {}: {}", path, e)))?;
 
         // Check 25MB per-file limit
         if bytes.len() > 25 * 1024 * 1024 {
@@ -189,7 +190,7 @@ async fn build_multipart_form(
         let part = multipart::Part::bytes(bytes)
             .file_name(file_name)
             .mime_str("application/octet-stream")
-            .map_err(|e| format!("mime error: {}", e))?;
+            .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("mime error: {}", e)))?;
 
         form = form.part(format!("files[{}]", i), part);
     }

@@ -5,7 +5,7 @@
 ///    - 如果 tool_name 以 "mcp_" 开头，解析出 server_name 和 tool_name，转发给 MCP 会话。
 /// 3. 将任何模块返回的 Ok(String) 或 Err(String) 统一包装为 `protocol::ToolExecutionResult` 向上层返回。
 
-use nexus_common::consts::{EXIT_CODE_SUCCESS, EXIT_CODE_TIMEOUT, EXIT_CODE_VALIDATION_FAILED};
+use nexus_common::consts::{EXIT_CODE_SUCCESS, EXIT_CODE_TIMEOUT};
 use nexus_common::protocol::{ExecuteToolRequest, FsPolicy, ToolExecutionResult};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
 use crate::discovery;
-use crate::mcp_client::parse_mcp_tool_name;
+use crate::tools::edit::EditFileTool;
 use crate::tools::fs::{ListDirTool, ReadFileTool, StatTool, WriteFileTool};
 use crate::tools::shell::ShellTool;
 use crate::tools::{LocalTool, ToolError};
@@ -23,7 +23,7 @@ use crate::tools::{LocalTool, ToolError};
 const EXECUTOR_TIMEOUT_SEC: u64 = 120;
 
 /// Filesystem tool names that require policy-aware dispatch.
-const FS_TOOLS: &[&str] = &["read_file", "write_file", "list_dir", "stat"];
+const FS_TOOLS: &[&str] = &["read_file", "write_file", "edit_file", "list_dir", "stat"];
 
 /// 本地工具注册表 — executor.rs 和 discovery.rs 共用的单一样本来源。
 pub static LOCAL_TOOL_REGISTRY: LazyLock<HashMap<&'static str, Box<dyn LocalTool>>> =
@@ -34,6 +34,7 @@ pub static LOCAL_TOOL_REGISTRY: LazyLock<HashMap<&'static str, Box<dyn LocalTool
             ("write_file", Box::new(WriteFileTool::new())),
             ("list_dir", Box::new(ListDirTool::new())),
             ("stat", Box::new(StatTool::new())),
+            ("edit_file", Box::new(EditFileTool::new())),
         ])
     });
 
@@ -68,17 +69,17 @@ async fn execute_tool_inner(
     let arguments = req.arguments;
 
     // Shell policy guard: enforce FsPolicy on shell commands before execution
-    if tool_name == "shell" || tool_name == "exec" {
+    if tool_name == "shell" {
         let cmd = arguments
             .get("command")
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let policy = fs_policy.read().await;
-        if let Err(reason) = crate::tools::shell::guard_command_policy(cmd, &*policy) {
+        if let Err(e) = crate::tools::shell::guard_command_policy(cmd, &*policy) {
             return ToolExecutionResult {
                 request_id,
-                exit_code: EXIT_CODE_VALIDATION_FAILED,
-                output: reason,
+                exit_code: e.exit_code(),
+                output: e.to_string(),
             };
         }
     }
@@ -89,11 +90,11 @@ async fn execute_tool_inner(
         execute_fs_tool(&tool_name, arguments, &policy).await
     } else if let Some(tool) = LOCAL_TOOL_REGISTRY.get(tool_name.as_str()) {
         tool.execute(arguments).await
-    } else if let Some((server_name, _tool_name)) = parse_mcp_tool_name(&tool_name) {
-        // MCP 工具
-        let mut manager = discovery::get_mcp_manager().await;
+    } else if tool_name.starts_with("mcp_") {
+        // MCP 工具 — manager finds the owning session by wrapped tool name
+        let manager = discovery::get_mcp_manager().await;
         manager
-            .call_tool(server_name, &tool_name, arguments)
+            .call_tool(&tool_name, arguments)
             .await
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
     } else {
@@ -125,25 +126,8 @@ async fn execute_fs_tool(
         "write_file" => WriteFileTool::new().execute_with_policy(arguments, policy).await,
         "list_dir" => ListDirTool::new().execute_with_policy(arguments, policy).await,
         "stat" => StatTool::new().execute_with_policy(arguments, policy).await,
+        "edit_file" => EditFileTool::new().execute_with_policy(arguments, policy).await,
         _ => Err(ToolError::NotFound(format!("unknown fs tool: {}", tool_name))),
     }
 }
 
-/// 从 schema 校验必填参数。
-#[allow(dead_code)]
-pub fn validate_required_params(
-    _tool_name: &str,
-    arguments: &Value,
-    schema: &Value,
-) -> Option<String> {
-    let params = schema.get("function")?.get("parameters")?;
-    let required = params.get("required")?.as_array()?;
-
-    for req in required {
-        let field = req.as_str()?;
-        if !arguments.get(field).is_some() {
-            return Some(field.to_string());
-        }
-    }
-    None
-}

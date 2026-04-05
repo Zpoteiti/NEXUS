@@ -31,6 +31,7 @@ pub struct ServerConfig {
     pub bcrypt_cost: u32,
     pub llm: Arc<RwLock<Option<LlmConfig>>>,
     pub embedding: Arc<RwLock<Option<EmbeddingConfig>>>,
+    pub skills_dir: String,
 }
 
 pub fn load_config() -> ServerConfig {
@@ -72,6 +73,11 @@ pub fn load_config() -> ServerConfig {
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(12);
 
+    let skills_dir = std::env::var("NEXUS_SKILLS_DIR").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/.nexus/skills", home)
+    });
+
     ServerConfig {
         database_url,
         admin_token,
@@ -83,5 +89,6 @@ pub fn load_config() -> ServerConfig {
         bcrypt_cost,
         llm: Arc::new(RwLock::new(None)),
         embedding: Arc::new(RwLock::new(None)),
+        skills_dir,
     }
 }

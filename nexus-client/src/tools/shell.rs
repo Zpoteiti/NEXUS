@@ -36,15 +36,15 @@ impl ShellTool {
     }
 
     /// 执行 shell 命令（经过 guardrails 检查）。
-    async fn run(&self, cmd: &str, timeout_sec: Option<u64>) -> Result<String, ToolError> {
+    async fn run(&self, cmd: &str, timeout_sec: Option<u64>, working_dir: Option<&std::path::Path>) -> Result<String, ToolError> {
         // 1. 安全校验（guardrails）- 异步 SSRF DNS 解析
-        guardrails::check_shell_command(cmd).await.map_err(ToolError::Blocked)?;
+        guardrails::check_shell_command(cmd).await?;
 
         // 2. 超时控制
         let timeout_sec = timeout_sec.unwrap_or(DEFAULT_TIMEOUT_SEC).min(MAX_TIMEOUT_SEC);
 
         // 3. 执行命令
-        let output = run_shell_command(cmd, timeout_sec).await?;
+        let output = run_shell_command(cmd, timeout_sec, working_dir).await?;
 
         // 4. 截断输出
         let truncated = truncate_output(&output);
@@ -111,18 +111,19 @@ impl LocalTool for ShellTool {
             .map(|s| s.to_string());
 
         // 如果指定了 working_dir，校验并使用它
-        if let Some(ref dir) = working_dir {
-            env::sanitize_path(dir, true)
-                .map_err(|e| ToolError::InvalidParams(format!("invalid working_dir: {}", e)))?;
-        }
+        let resolved_dir = if let Some(ref dir) = working_dir {
+            Some(env::sanitize_path(dir, true)?)
+        } else {
+            None
+        };
 
-        self.run(&command, timeout_sec).await
+        self.run(&command, timeout_sec, resolved_dir.as_deref()).await
     }
 }
 
 /// 实际执行 shell 命令，带超时控制。
-async fn run_shell_command(cmd: &str, timeout_sec: u64) -> Result<String, ToolError> {
-    let workspace = env::get_workspace_root();
+async fn run_shell_command(cmd: &str, timeout_sec: u64, working_dir: Option<&std::path::Path>) -> Result<String, ToolError> {
+    let workspace = working_dir.map(|p| p.to_path_buf()).unwrap_or_else(env::get_workspace_root);
     let mut child = if cfg!(windows) {
         Command::new("cmd")
             .args(["/C", cmd])
@@ -220,7 +221,7 @@ fn truncate_output(output: &str) -> String {
 
 /// Validate a shell command against the filesystem policy.
 /// Returns Err with a reason if the command violates the policy.
-pub fn guard_command_policy(cmd: &str, policy: &FsPolicy) -> Result<(), String> {
+pub fn guard_command_policy(cmd: &str, policy: &FsPolicy) -> Result<(), ToolError> {
     let allowed_paths: &[String] = match policy {
         FsPolicy::Unrestricted => return Ok(()),
         FsPolicy::Sandbox => &[],
@@ -228,7 +229,9 @@ pub fn guard_command_policy(cmd: &str, policy: &FsPolicy) -> Result<(), String> 
     };
 
     if cmd.contains("../") || cmd.contains("..\\") {
-        return Err("command blocked: path traversal '../' not allowed by device policy".to_string());
+        return Err(ToolError::Blocked(
+            "command blocked: path traversal '../' not allowed by device policy".to_string(),
+        ));
     }
 
     let workspace = env::get_workspace_root();
@@ -244,10 +247,10 @@ pub fn guard_command_policy(cmd: &str, policy: &FsPolicy) -> Result<(), String> 
         if allowed_paths.iter().any(|ap| path.starts_with(ap.as_str())) {
             continue;
         }
-        return Err(format!(
+        return Err(ToolError::Blocked(format!(
             "command blocked: absolute path '{}' is outside allowed filesystem scope",
             path
-        ));
+        )));
     }
     Ok(())
 }

@@ -53,9 +53,7 @@ async fn resolve_path_for_read(path: &str, policy: &FsPolicy) -> Result<PathBuf,
     if path.is_empty() {
         return Err(ToolError::InvalidParams("path is required".to_string()));
     }
-    env::sanitize_path_with_policy_async(path, FsOp::Read, policy)
-        .await
-        .map_err(|e| ToolError::InvalidParams(format!("path access denied: {}", e)))
+    env::sanitize_path_with_policy_async(path, FsOp::Read, policy).await
 }
 
 /// Policy-aware path resolution for write operations.
@@ -63,9 +61,7 @@ async fn resolve_path_for_write(path: &str, policy: &FsPolicy) -> Result<PathBuf
     if path.is_empty() {
         return Err(ToolError::InvalidParams("path is required".to_string()));
     }
-    env::sanitize_path_with_policy_async(path, FsOp::Write, policy)
-        .await
-        .map_err(|e| ToolError::InvalidParams(format!("path access denied: {}", e)))
+    env::sanitize_path_with_policy_async(path, FsOp::Write, policy).await
 }
 
 // ---------------------------------------------------------------------------

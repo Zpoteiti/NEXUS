@@ -3,36 +3,26 @@
 /// 2. 负责扫描并聚合所有可用的工具：
 ///    - 收集内置的原生工具 (如 shell)。
 ///    - 调用 `mcp_client.rs` 收集外部挂载的工具。
-///    - 调用 `skills.rs` 扫描并聚合自定义 Skill 工具。
 /// 3. 将聚合后的 Schema 列表组装成 `RegisterTools` 消息发给 Server。
-///
-/// 统一发现（方案 B）：
-/// - discovery.rs 统一调用链：discover_all() → 内置工具 + MCP 工具 + Skills
-/// - MCP 和 Skills 的热加载检测在同一处管理
 
-use nexus_common::protocol::SkillFull;
 use serde_json::Value;
-use std::path::PathBuf;
 use std::sync::LazyLock;
 use tokio::sync::RwLock;
 
 use crate::config::McpServerConfig;
 use crate::executor::LOCAL_TOOL_REGISTRY;
 use crate::mcp_client::McpClientManager;
-use crate::skills;
 
 /// 全局 MCP 客户端管理器（跨心跳复用）
 static MCP_MANAGER: LazyLock<RwLock<McpClientManager>> =
     LazyLock::new(|| RwLock::new(McpClientManager::new()));
 
-/// 发现并聚合所有可用工具的 Schema 和 Skill 全量信息。
+/// 发现并聚合所有可用工具的 Schema。
 ///
-/// 返回: (tools schemas, skills 全量列表, unified_hash)
-/// unified_hash = hash(工具 schemas + 所有 Skill 的 name/description/content/always)
+/// 返回: (tools schemas, hash)
 pub async fn discover_all(
     mcp_servers: &[McpServerConfig],
-    skills_dir: &PathBuf,
-) -> (Vec<Value>, Vec<SkillFull>, String) {
+) -> (Vec<Value>, String) {
     let mut all_schemas = Vec::new();
 
     // 1. 内置工具
@@ -42,45 +32,43 @@ pub async fn discover_all(
     let mcp_tools = discover_mcp_tools_internal(mcp_servers).await;
     all_schemas.extend(mcp_tools);
 
-    // 3. Skills（全量：always=true 带正文，always=false 不带正文）
-    let skills_full = skills::scan_skills(skills_dir);
+    let hash = compute_hash(&all_schemas);
 
-    // 单一 unified hash：工具 schemas + 所有 skill 的 name/description/content/always
-    let hash = compute_hash(&(&all_schemas, &skills_full));
-
-    (all_schemas, skills_full, hash)
+    (all_schemas, hash)
 }
 
-/// 发现并聚合所有可用工具的 Schema（不含 Skills）。
-#[allow(dead_code)]
-pub async fn discover_tools(
-    mcp_servers: &[McpServerConfig],
-    skills_dir: &PathBuf,
-) -> Vec<Value> {
-    let (schemas, _, _) = discover_all(mcp_servers, skills_dir).await;
-    schemas
-}
+/// Hash of the last MCP config used for initialization.
+static MCP_CONFIG_HASH: LazyLock<RwLock<Option<String>>> = LazyLock::new(|| RwLock::new(None));
 
-/// Whether MCP has been initialized at least once.
-static MCP_INITIALIZED: LazyLock<RwLock<bool>> = LazyLock::new(|| RwLock::new(false));
-
-/// 初始化 MCP 客户端管理器。
+/// 初始化（或重新初始化）MCP 客户端管理器。
 pub async fn init_mcp(mcp_servers: &[McpServerConfig]) {
     let mut manager = MCP_MANAGER.write().await;
+    // Replace with a fresh manager to cleanly drop old sessions
+    *manager = McpClientManager::new();
     if let Err(e) = manager.initialize(mcp_servers).await {
         tracing::warn!("failed to initialize MCP servers: {}", e);
     }
-    let mut initialized = MCP_INITIALIZED.write().await;
-    *initialized = true;
+    // Store config hash to detect changes on next heartbeat
+    let hash = compute_hash(&mcp_servers.iter().map(|s| (&s.name, &s.command, &s.args, &s.env)).collect::<Vec<_>>());
+    *MCP_CONFIG_HASH.write().await = Some(hash);
 }
 
-/// 内部调用：确保 MCP 已初始化，然后收集所有 MCP 工具 schemas。
+/// 内部调用：确保 MCP 已初始化（如果配置变了则重新初始化），然后收集所有 MCP 工具 schemas。
 async fn discover_mcp_tools_internal(mcp_servers: &[McpServerConfig]) -> Vec<Value> {
-    // Initialize MCP on first call if servers are configured
     if !mcp_servers.is_empty() {
-        let initialized = *MCP_INITIALIZED.read().await;
-        if !initialized {
+        let current_hash = compute_hash(&mcp_servers.iter().map(|s| (&s.name, &s.command, &s.args, &s.env)).collect::<Vec<_>>());
+        let stored_hash = MCP_CONFIG_HASH.read().await.clone();
+        if stored_hash.as_deref() != Some(&current_hash) {
+            tracing::info!("MCP config changed, reinitializing MCP servers");
             init_mcp(mcp_servers).await;
+        }
+    } else {
+        // No MCP servers configured — clear manager if it had sessions before
+        let stored = MCP_CONFIG_HASH.read().await.clone();
+        if stored.is_some() {
+            let mut manager = MCP_MANAGER.write().await;
+            *manager = McpClientManager::new();
+            *MCP_CONFIG_HASH.write().await = None;
         }
     }
 
@@ -102,12 +90,6 @@ async fn discover_mcp_tools_internal(mcp_servers: &[McpServerConfig]) -> Vec<Val
         }
     }
     all_schemas
-}
-
-/// 发现 MCP 工具（供外部调用，初始化并返回 schema）。
-#[allow(dead_code)]
-pub async fn discover_mcp_tools(mcp_servers: &[McpServerConfig]) -> Vec<Value> {
-    discover_mcp_tools_internal(mcp_servers).await
 }
 
 /// 内置工具 Schema 发现（缓存结果）。
@@ -132,6 +114,6 @@ fn compute_hash<T: serde::Serialize>(value: &T) -> String {
 }
 
 /// 获取 MCP manager（供 executor 调用工具时使用）
-pub async fn get_mcp_manager() -> tokio::sync::RwLockWriteGuard<'static, McpClientManager> {
-    MCP_MANAGER.write().await
+pub async fn get_mcp_manager() -> tokio::sync::RwLockReadGuard<'static, McpClientManager> {
+    MCP_MANAGER.read().await
 }

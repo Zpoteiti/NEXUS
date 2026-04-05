@@ -9,6 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{RwLock, mpsc};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::bus::InboundEvent;
@@ -54,6 +55,8 @@ pub struct GatewayChannel {
     state: Arc<AppState>,
     /// Sender half used by `send()` to push text frames to the WS write task.
     ws_out: Arc<RwLock<Option<mpsc::Sender<String>>>>,
+    /// Cancellation token to break the reconnect loop on shutdown.
+    shutdown: CancellationToken,
 }
 
 impl GatewayChannel {
@@ -63,6 +66,7 @@ impl GatewayChannel {
             token: state.config.gateway_token.clone(),
             state,
             ws_out: Arc::new(RwLock::new(None)),
+            shutdown: CancellationToken::new(),
         }
     }
 
@@ -89,12 +93,14 @@ impl GatewayChannel {
 
     /// Single WS connection attempt. Returns Ok(()) if the connection closes
     /// gracefully (server closed), or Err if auth failed / IO error.
-    async fn run_once(&self) -> Result<(), String> {
+    async fn run_once(&self) -> Result<(), nexus_common::error::NexusError> {
         info!("GatewayChannel: connecting to {}", self.ws_url);
+
+        use nexus_common::error::{ErrorCode, NexusError};
 
         let (ws_stream, _) = connect_async(&self.ws_url)
             .await
-            .map_err(|e| format!("connect failed: {}", e))?;
+            .map_err(|e| NexusError::new(ErrorCode::ConnectionFailed, format!("connect failed: {}", e)))?;
 
         info!("GatewayChannel: connected, sending auth");
 
@@ -104,18 +110,18 @@ impl GatewayChannel {
         let auth_msg = serde_json::to_string(&NexusToGateway::Auth {
             token: self.token.clone(),
         })
-        .map_err(|e| format!("serialize auth: {}", e))?;
+        .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("serialize auth: {}", e)))?;
         ws_sink
             .send(Message::Text(auth_msg.into()))
             .await
-            .map_err(|e| format!("send auth: {}", e))?;
+            .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("send auth: {}", e)))?;
 
         // Wait for auth_ok / auth_fail
         let auth_resp = ws_source
             .next()
             .await
-            .ok_or_else(|| "WS closed before auth response".to_string())?
-            .map_err(|e| format!("ws read error during auth: {}", e))?;
+            .ok_or_else(|| NexusError::new(ErrorCode::ConnectionFailed, "WS closed before auth response"))?
+            .map_err(|e| NexusError::new(ErrorCode::ConnectionFailed, format!("ws read error during auth: {}", e)))?;
 
         match auth_resp {
             Message::Text(text) => {
@@ -124,17 +130,17 @@ impl GatewayChannel {
                         info!("GatewayChannel: auth_ok");
                     }
                     Ok(GatewayToNexus::AuthFail { reason }) => {
-                        return Err(format!("auth_fail: {}", reason));
+                        return Err(NexusError::new(ErrorCode::AuthFailed, format!("auth_fail: {}", reason)));
                     }
                     Ok(_) => {
-                        return Err("unexpected message before auth_ok".to_string());
+                        return Err(NexusError::new(ErrorCode::ChannelError, "unexpected message before auth_ok"));
                     }
                     Err(e) => {
-                        return Err(format!("parse auth response: {}", e));
+                        return Err(NexusError::new(ErrorCode::ChannelError, format!("parse auth response: {}", e)));
                     }
                 }
             }
-            _ => return Err("expected text frame for auth response".to_string()),
+            _ => return Err(NexusError::new(ErrorCode::ChannelError, "expected text frame for auth response")),
         }
 
         // Set up mpsc channel for outbound send() calls → ws write task
@@ -177,7 +183,7 @@ impl GatewayChannel {
                 }
                 Ok(_) => {} // ignore ping/pong/binary
                 Err(e) => {
-                    return Err(format!("ws read error: {}", e));
+                    return Err(NexusError::new(ErrorCode::ChannelError, format!("ws read error: {}", e)));
                 }
             }
         }
@@ -199,6 +205,11 @@ impl Channel for GatewayChannel {
         const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
         loop {
+            if self.shutdown.is_cancelled() {
+                info!("GatewayChannel: shutdown requested, exiting reconnect loop");
+                break;
+            }
+
             match self.run_once().await {
                 Ok(()) => {
                     backoff = Duration::from_secs(1);
@@ -209,16 +220,25 @@ impl Channel for GatewayChannel {
                 }
             }
 
-            tokio::time::sleep(backoff).await;
+            tokio::select! {
+                _ = self.shutdown.cancelled() => {
+                    info!("GatewayChannel: shutdown during backoff, exiting");
+                    break;
+                }
+                _ = tokio::time::sleep(backoff) => {}
+            }
             backoff = (backoff * 2).min(MAX_BACKOFF);
         }
     }
 
     async fn stop(&self) {
+        info!("GatewayChannel: stopping");
+        self.shutdown.cancel();
         *self.ws_out.write().await = None;
     }
 
-    async fn send(&self, chat_id: &str, content: &str) -> Result<(), String> {
+    async fn send(&self, chat_id: &str, content: &str) -> Result<(), nexus_common::error::NexusError> {
+        use nexus_common::error::{ErrorCode, NexusError};
         let guard = self.ws_out.read().await;
         match guard.as_ref() {
             Some(tx) => {
@@ -226,12 +246,12 @@ impl Channel for GatewayChannel {
                     chat_id: chat_id.to_string(),
                     content: content.to_string(),
                 })
-                .map_err(|e| format!("serialize send: {}", e))?;
+                .map_err(|e| NexusError::new(ErrorCode::InternalError, format!("serialize send: {}", e)))?;
                 tx.send(msg)
                     .await
-                    .map_err(|e| format!("channel send error: {}", e))
+                    .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("channel send error: {}", e)))
             }
-            None => Err("GatewayChannel not connected".to_string()),
+            None => Err(NexusError::new(ErrorCode::ConnectionFailed, "GatewayChannel not connected")),
         }
     }
 }

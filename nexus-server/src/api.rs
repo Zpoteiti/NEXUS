@@ -8,11 +8,12 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
     response::{IntoResponse, Response},
     Extension, Json,
 };
 use serde::Deserialize;
+
+use nexus_common::error::{ApiError, ErrorCode};
 
 use crate::auth::Claims;
 use crate::db;
@@ -40,7 +41,27 @@ pub async fn get_session_messages(
         Ok(messages) => Json(messages).into_response(),
         Err(e) => {
             tracing::error!("get_session_messages error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get messages").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to get messages").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// GET /api/user/profile
+// ============================================================================
+
+pub async fn get_user_profile(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
+    match db::get_user_profile(&state.db, &claims.sub).await {
+        Ok(Some(profile)) => Json(profile).into_response(),
+        Ok(None) => {
+            ApiError::new(ErrorCode::NotFound, "user not found").into_response()
+        }
+        Err(e) => {
+            tracing::error!("get_user_profile error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to get user profile").into_response()
         }
     }
 }
@@ -89,7 +110,7 @@ pub async fn list_memories(
         Ok(chunks) => Json(chunks).into_response(),
         Err(e) => {
             tracing::error!("list_memories error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list memories").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to list memories").into_response()
         }
     }
 }
@@ -106,7 +127,7 @@ pub async fn get_soul(
         Ok(soul) => Json(serde_json::json!({ "soul": soul })).into_response(),
         Err(e) => {
             tracing::error!("get_soul error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get soul").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to get soul").into_response()
         }
     }
 }
@@ -126,10 +147,10 @@ pub async fn update_soul(
     Json(payload): Json<UpdateSoulRequest>,
 ) -> Response {
     match db::update_user_soul(&state.db, &claims.sub, &payload.soul).await {
-        Ok(()) => (StatusCode::OK, "Soul updated").into_response(),
+        Ok(()) => Json(serde_json::json!({"message": "Soul updated"})).into_response(),
         Err(e) => {
             tracing::error!("update_soul error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update soul").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to update soul").into_response()
         }
     }
 }
@@ -146,7 +167,7 @@ pub async fn get_preferences(
         Ok(prefs) => Json(serde_json::json!({ "preferences": prefs })).into_response(),
         Err(e) => {
             tracing::error!("get_preferences error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get preferences").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to get preferences").into_response()
         }
     }
 }
@@ -166,10 +187,10 @@ pub async fn update_preferences(
     Json(payload): Json<UpdatePreferencesRequest>,
 ) -> Response {
     match db::update_user_preferences(&state.db, &claims.sub, &payload.preferences).await {
-        Ok(()) => (StatusCode::OK, "Preferences updated").into_response(),
+        Ok(()) => Json(serde_json::json!({"message": "Preferences updated"})).into_response(),
         Err(e) => {
             tracing::error!("update_preferences error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update preferences").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to update preferences").into_response()
         }
     }
 }
@@ -183,13 +204,13 @@ pub async fn get_default_soul(
     Extension(claims): Extension<Claims>,
 ) -> Response {
     if !claims.is_admin {
-        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
     }
     match db::get_system_config(&state.db, "default_soul").await {
         Ok(soul) => Json(serde_json::json!({ "default_soul": soul })).into_response(),
         Err(e) => {
             tracing::error!("get_default_soul error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get default soul").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to get default soul").into_response()
         }
     }
 }
@@ -209,13 +230,13 @@ pub async fn set_default_soul(
     Json(payload): Json<SetDefaultSoulRequest>,
 ) -> Response {
     if !claims.is_admin {
-        return (StatusCode::FORBIDDEN, "Admin only").into_response();
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
     }
     match db::set_system_config(&state.db, "default_soul", &payload.soul).await {
-        Ok(()) => (StatusCode::OK, "Default soul updated").into_response(),
+        Ok(()) => Json(serde_json::json!({"message": "Default soul updated"})).into_response(),
         Err(e) => {
             tracing::error!("set_default_soul error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to set default soul").into_response()
+            ApiError::new(ErrorCode::InternalError, "failed to set default soul").into_response()
         }
     }
 }

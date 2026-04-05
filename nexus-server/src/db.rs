@@ -21,6 +21,14 @@ pub struct User {
     pub is_admin: bool,
 }
 
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct UserProfile {
+    pub user_id: String,
+    pub email: String,
+    pub is_admin: bool,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct DiscordConfig {
     pub user_id: String,
@@ -150,6 +158,65 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS cron_jobs (
+            job_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(user_id),
+            name TEXT NOT NULL,
+            enabled BOOLEAN DEFAULT TRUE,
+            cron_expr TEXT,
+            every_seconds INTEGER,
+            run_at TIMESTAMPTZ,
+            timezone TEXT DEFAULT 'UTC',
+            message TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            delete_after_run BOOLEAN DEFAULT FALSE,
+            next_run_at TIMESTAMPTZ,
+            last_run_at TIMESTAMPTZ,
+            run_count INTEGER DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_checkpoints (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+            user_id TEXT NOT NULL,
+            messages JSONB NOT NULL,
+            iteration INTEGER DEFAULT 0,
+            channel TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS skills (
+            skill_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(user_id),
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            always_on BOOLEAN DEFAULT FALSE,
+            skill_path TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(user_id, name)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 
@@ -198,14 +265,20 @@ pub async fn create_device_token(
     Ok(())
 }
 
-/// Returns (user_id, device_name) if token is valid and not revoked.
+#[derive(Debug, sqlx::FromRow)]
+pub struct DeviceTokenVerification {
+    pub user_id: String,
+    pub device_name: String,
+}
+
+/// Returns user_id and device_name if token is valid and not revoked.
 pub async fn verify_device_token(
     pool: &PgPool,
     token: &str,
-) -> Result<Option<(String, String)>, sqlx::Error> {
-    let row = sqlx::query_as::<_, (String, String)>(
+) -> Result<Option<DeviceTokenVerification>, sqlx::Error> {
+    sqlx::query_as::<_, DeviceTokenVerification>(
         r#"
-        SELECT user_id, COALESCE(device_name, 'unnamed')
+        SELECT user_id, COALESCE(device_name, 'unnamed') AS device_name
         FROM device_tokens
         WHERE token = $1
           AND revoked = FALSE
@@ -213,8 +286,7 @@ pub async fn verify_device_token(
     )
     .bind(token)
     .fetch_optional(pool)
-    .await?;
-    Ok(row)
+    .await
 }
 
 pub async fn create_user(
@@ -251,6 +323,22 @@ pub async fn get_user_by_email(
         "#,
     )
     .bind(email)
+    .fetch_optional(db)
+    .await
+}
+
+pub async fn get_user_profile(
+    db: &PgPool,
+    user_id: &str,
+) -> Result<Option<UserProfile>, sqlx::Error> {
+    sqlx::query_as::<_, UserProfile>(
+        r#"
+        SELECT user_id, email, is_admin, created_at
+        FROM users
+        WHERE user_id = $1
+        "#,
+    )
+    .bind(user_id)
     .fetch_optional(db)
     .await
 }
@@ -295,6 +383,11 @@ pub async fn save_message(
     Ok(message_id)
 }
 
+/// Reconstruct session history as OpenAI-compatible message JSON.
+///
+/// Uses manual `row.get()` instead of a `FromRow` struct because the logic
+/// merges consecutive assistant tool-call rows into a single message with a
+/// `tool_calls` array — a transform that doesn't map 1:1 to DB rows.
 pub async fn get_session_history(
     db: &PgPool,
     session_id: &str,
@@ -487,6 +580,11 @@ pub async fn delete_discord_config(
     Ok(result.rows_affected() > 0)
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct SessionOwner {
+    user_id: String,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct SessionInfo {
     pub session_id: String,
@@ -512,17 +610,16 @@ pub async fn get_session_messages(
     offset: i64,
 ) -> Result<Vec<MessageInfo>, sqlx::Error> {
     // Verify ownership first
-    let session = sqlx::query_as::<_, (String,)>(
+    let owner: Option<SessionOwner> = sqlx::query_as(
         "SELECT user_id FROM sessions WHERE session_id = $1",
     )
     .bind(session_id)
     .fetch_optional(db)
     .await?;
 
-    match session {
-        Some((owner,)) if owner == user_id => {}
-        Some(_) => return Ok(vec![]), // Not owner, return empty
-        None => return Ok(vec![]),
+    match owner {
+        Some(ref o) if o.user_id == user_id => {}
+        _ => return Ok(vec![]), // Not owner or not found
     }
 
     sqlx::query_as::<_, MessageInfo>(
@@ -575,8 +672,6 @@ pub struct StoredMessage {
     pub message_id: String,
     pub role: String,
     pub content: String,
-    pub tool_call_id: Option<String>,
-    pub tool_name: Option<String>,
     pub tool_arguments: Option<String>,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -726,7 +821,7 @@ pub async fn get_unconsolidated_messages(
     session_id: &str,
 ) -> Result<Vec<StoredMessage>, sqlx::Error> {
     sqlx::query_as::<_, StoredMessage>(
-        "SELECT message_id, role, content, tool_call_id, tool_name, tool_arguments, created_at FROM messages WHERE session_id = $1 AND is_consolidated = FALSE ORDER BY created_at ASC",
+        "SELECT message_id, role, content, tool_arguments, created_at FROM messages WHERE session_id = $1 AND is_consolidated = FALSE ORDER BY created_at ASC",
     )
     .bind(session_id)
     .fetch_all(db)
@@ -780,10 +875,16 @@ pub async fn list_memory_chunks(
 // Re-embed & Dedup
 // ============================================================================
 
+#[derive(Debug, sqlx::FromRow)]
+pub struct MemoryChunkForReembed {
+    pub id: i32,
+    pub memory_text: String,
+}
+
 pub async fn get_all_memory_chunks_for_reembed(
     db: &PgPool,
-) -> Result<Vec<(i32, String)>, sqlx::Error> {
-    sqlx::query_as::<_, (i32, String)>(
+) -> Result<Vec<MemoryChunkForReembed>, sqlx::Error> {
+    sqlx::query_as::<_, MemoryChunkForReembed>(
         "SELECT id, memory_text FROM memory_chunks ORDER BY id"
     )
     .fetch_all(db)
@@ -912,5 +1013,304 @@ pub async fn update_device_mcp_config(
     .execute(db)
     .await?;
 
+    Ok(result.rows_affected() > 0)
+}
+
+// ============================================================================
+// Cron jobs
+// ============================================================================
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct CronJob {
+    pub job_id: String,
+    pub user_id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub cron_expr: Option<String>,
+    pub every_seconds: Option<i32>,
+    pub timezone: String,
+    pub message: String,
+    pub channel: String,
+    pub chat_id: String,
+    pub delete_after_run: bool,
+    pub next_run_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_run_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub run_count: i32,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CronJobSchedule {
+    cron_expr: Option<String>,
+    every_seconds: Option<i32>,
+}
+
+pub async fn create_cron_job(
+    db: &PgPool,
+    user_id: &str,
+    name: &str,
+    cron_expr: Option<&str>,
+    every_seconds: Option<i32>,
+    at: Option<&str>,
+    timezone: &str,
+    message: &str,
+    channel: &str,
+    chat_id: &str,
+    delete_after_run: bool,
+) -> Result<String, sqlx::Error> {
+    let job_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+
+    let next_run_at: Option<chrono::DateTime<chrono::Utc>> = if let Some(at_str) = at {
+        chrono::DateTime::parse_from_rfc3339(at_str)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+    } else if let Some(secs) = every_seconds {
+        Some(chrono::Utc::now() + chrono::Duration::seconds(secs as i64))
+    } else if let Some(ref expr) = cron_expr {
+        compute_next_cron_run(expr)
+    } else {
+        None
+    };
+
+    sqlx::query(
+        "INSERT INTO cron_jobs (job_id, user_id, name, cron_expr, every_seconds, timezone, message, channel, chat_id, delete_after_run, next_run_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+    )
+    .bind(&job_id).bind(user_id).bind(name)
+    .bind(cron_expr).bind(every_seconds).bind(timezone)
+    .bind(message).bind(channel).bind(chat_id)
+    .bind(delete_after_run).bind(next_run_at)
+    .execute(db)
+    .await?;
+
+    Ok(job_id)
+}
+
+pub async fn list_cron_jobs(db: &PgPool, user_id: &str) -> Result<Vec<CronJob>, sqlx::Error> {
+    sqlx::query_as::<_, CronJob>(
+        "SELECT job_id, user_id, name, enabled, cron_expr, every_seconds, timezone, message, channel, chat_id, delete_after_run, next_run_at, last_run_at, run_count
+         FROM cron_jobs WHERE user_id = $1 ORDER BY created_at"
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn delete_cron_job(db: &PgPool, user_id: &str, job_id: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM cron_jobs WHERE job_id = $1 AND user_id = $2")
+        .bind(job_id).bind(user_id)
+        .execute(db).await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn get_due_cron_jobs(db: &PgPool) -> Result<Vec<CronJob>, sqlx::Error> {
+    sqlx::query_as::<_, CronJob>(
+        "SELECT job_id, user_id, name, enabled, cron_expr, every_seconds, timezone, message, channel, chat_id, delete_after_run, next_run_at, last_run_at, run_count
+         FROM cron_jobs WHERE enabled = TRUE AND next_run_at IS NOT NULL AND next_run_at <= NOW()"
+    )
+    .fetch_all(db)
+    .await
+}
+
+pub async fn update_cron_job_after_run(db: &PgPool, job_id: &str, delete_after_run: bool) -> Result<(), sqlx::Error> {
+    if delete_after_run {
+        sqlx::query("DELETE FROM cron_jobs WHERE job_id = $1")
+            .bind(job_id).execute(db).await?;
+    } else {
+        // Fetch job to compute next_run_at properly
+        let row = sqlx::query_as::<_, CronJobSchedule>(
+            "SELECT cron_expr, every_seconds FROM cron_jobs WHERE job_id = $1"
+        ).bind(job_id).fetch_optional(db).await?;
+
+        let next_run_at = if let Some(CronJobSchedule { cron_expr, every_seconds }) = row {
+            if let Some(secs) = every_seconds {
+                Some(chrono::Utc::now() + chrono::Duration::seconds(secs as i64))
+            } else if let Some(ref expr) = cron_expr {
+                compute_next_cron_run(expr)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        sqlx::query(
+            "UPDATE cron_jobs SET last_run_at = NOW(), run_count = run_count + 1, next_run_at = $2 WHERE job_id = $1"
+        )
+        .bind(job_id).bind(next_run_at)
+        .execute(db).await?;
+    }
+    Ok(())
+}
+
+pub async fn update_cron_job(
+    db: &PgPool,
+    user_id: &str,
+    job_id: &str,
+    enabled: Option<bool>,
+    message: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    // Build dynamic update
+    let mut set_clauses = Vec::new();
+    let mut param_idx = 3u32; // $1 = job_id, $2 = user_id
+
+    if enabled.is_some() {
+        set_clauses.push(format!("enabled = ${param_idx}"));
+        param_idx += 1;
+    }
+    if message.is_some() {
+        set_clauses.push(format!("message = ${param_idx}"));
+        // param_idx += 1;
+    }
+
+    if set_clauses.is_empty() {
+        return Ok(false);
+    }
+
+    let sql = format!(
+        "UPDATE cron_jobs SET {} WHERE job_id = $1 AND user_id = $2",
+        set_clauses.join(", ")
+    );
+
+    let mut query = sqlx::query(&sql).bind(job_id).bind(user_id);
+    if let Some(e) = enabled {
+        query = query.bind(e);
+    }
+    if let Some(m) = message {
+        query = query.bind(m);
+    }
+
+    let result = query.execute(db).await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Compute the next run time from a cron expression.
+fn compute_next_cron_run(expr: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use std::str::FromStr;
+    let schedule = cron::Schedule::from_str(expr).ok()?;
+    schedule.upcoming(chrono::Utc).next()
+}
+
+// ============================================================================
+// Agent checkpoints
+// ============================================================================
+
+pub async fn save_checkpoint(
+    db: &PgPool,
+    session_id: &str,
+    user_id: &str,
+    messages: &[serde_json::Value],
+    iteration: u32,
+    channel: &str,
+    chat_id: &str,
+) -> Result<(), sqlx::Error> {
+    let messages_json = serde_json::Value::Array(messages.to_vec());
+    sqlx::query(
+        "INSERT INTO agent_checkpoints (session_id, user_id, messages, iteration, channel, chat_id, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         ON CONFLICT (session_id) DO UPDATE SET messages = $3, iteration = $4, updated_at = NOW()"
+    )
+    .bind(session_id).bind(user_id)
+    .bind(&messages_json).bind(iteration as i32)
+    .bind(channel).bind(chat_id)
+    .execute(db).await?;
+    Ok(())
+}
+
+pub async fn delete_checkpoint(db: &PgPool, session_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM agent_checkpoints WHERE session_id = $1")
+        .bind(session_id).execute(db).await?;
+    Ok(())
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct Checkpoint {
+    pub session_id: String,
+    pub user_id: String,
+    pub channel: String,
+    pub chat_id: String,
+    pub messages: serde_json::Value,
+    pub iteration: i32,
+}
+
+pub async fn list_all_checkpoints(db: &PgPool) -> Result<Vec<Checkpoint>, sqlx::Error> {
+    sqlx::query_as::<_, Checkpoint>(
+        "SELECT session_id, user_id, channel, chat_id, messages, iteration FROM agent_checkpoints"
+    )
+    .fetch_all(db)
+    .await
+}
+
+// ============================================================================
+// Skills CRUD
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct Skill {
+    pub skill_id: String,
+    pub user_id: String,
+    pub name: String,
+    pub description: String,
+    pub always_on: bool,
+    pub skill_path: String,
+}
+
+pub async fn create_skill(
+    db: &PgPool,
+    user_id: &str,
+    name: &str,
+    description: &str,
+    always_on: bool,
+    skill_path: &str,
+) -> Result<String, sqlx::Error> {
+    let skill_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO skills (skill_id, user_id, name, description, always_on, skill_path)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (user_id, name) DO UPDATE SET description = $4, always_on = $5, skill_path = $6"
+    )
+    .bind(&skill_id)
+    .bind(user_id)
+    .bind(name)
+    .bind(description)
+    .bind(always_on)
+    .bind(skill_path)
+    .execute(db)
+    .await?;
+    Ok(skill_id)
+}
+
+pub async fn list_skills(db: &PgPool, user_id: &str) -> Result<Vec<Skill>, sqlx::Error> {
+    sqlx::query_as::<_, Skill>(
+        "SELECT skill_id, user_id, name, description, always_on, skill_path FROM skills WHERE user_id = $1 ORDER BY name"
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn list_all_skills(db: &PgPool) -> Result<Vec<Skill>, sqlx::Error> {
+    sqlx::query_as::<_, Skill>(
+        "SELECT skill_id, user_id, name, description, always_on, skill_path FROM skills ORDER BY user_id, name"
+    )
+    .fetch_all(db)
+    .await
+}
+
+pub async fn get_skill(db: &PgPool, user_id: &str, name: &str) -> Result<Option<Skill>, sqlx::Error> {
+    sqlx::query_as::<_, Skill>(
+        "SELECT skill_id, user_id, name, description, always_on, skill_path FROM skills WHERE user_id = $1 AND name = $2"
+    )
+    .bind(user_id)
+    .bind(name)
+    .fetch_optional(db)
+    .await
+}
+
+pub async fn delete_skill(db: &PgPool, user_id: &str, name: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM skills WHERE user_id = $1 AND name = $2")
+        .bind(user_id)
+        .bind(name)
+        .execute(db)
+        .await?;
     Ok(result.rows_affected() > 0)
 }

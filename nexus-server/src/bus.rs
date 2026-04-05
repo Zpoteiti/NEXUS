@@ -13,6 +13,7 @@ pub struct InboundEvent {
     pub chat_id: String,                                      // 会话 ID
     pub content: String,                                       // 消息内容
     pub session_id: String,                                    // Nexus 内部 session 标识
+    #[allow(dead_code)]
     pub timestamp: Option<DateTime<Utc>>,                    // 消息时间戳
     pub media: Vec<String>,                                    // 媒体 URL 列表
     pub metadata: HashMap<String, serde_json::Value>,         // 运行时控制字段
@@ -99,8 +100,9 @@ impl MessageBus {
         }
     }
 
-    /// 触发 shutdown，所有 consume_outbound 调用返回 None
+    /// Signal shutdown — unblocks consume_outbound so the dispatch loop exits.
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(());
     }
+
 }

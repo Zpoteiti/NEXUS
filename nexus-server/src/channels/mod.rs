@@ -6,10 +6,12 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+use nexus_common::error::NexusError;
+
 use crate::bus::MessageBus;
 
-pub mod gateway;
 pub mod discord;
+pub mod gateway;
 
 // ============================================================================
 // Channel Trait - 各平台渠道（gateway/telegram/discord）需实现此 trait
@@ -26,10 +28,10 @@ pub trait Channel: Send + Sync {
     /// Stop the connection and clean up resources.
     async fn stop(&self);
     /// Send an outbound message to the gateway (called by ChannelManager dispatch loop).
-    async fn send(&self, chat_id: &str, content: &str) -> Result<(), String>;
+    async fn send(&self, chat_id: &str, content: &str) -> Result<(), NexusError>;
     /// Send a progress message (e.g. tool call hints) without cancelling typing indicators.
     /// Default implementation falls back to `send`.
-    async fn send_progress(&self, chat_id: &str, content: &str) -> Result<(), String> {
+    async fn send_progress(&self, chat_id: &str, content: &str) -> Result<(), NexusError> {
         self.send(chat_id, content).await
     }
     /// Send an outbound message with media attachments.
@@ -39,7 +41,7 @@ pub trait Channel: Send + Sync {
         chat_id: &str,
         content: &str,
         media: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<(), NexusError> {
         self.send(chat_id, content).await
     }
 }
@@ -47,6 +49,25 @@ pub trait Channel: Send + Sync {
 // ============================================================================
 // ChannelManager - 负责消费 OutboundEvent 并路由到正确的 Channel
 // ============================================================================
+
+/// Handle returned by `ChannelManager::start()`, providing access to channels for shutdown.
+pub struct ChannelManagerHandle {
+    dispatch_handle: JoinHandle<()>,
+    channels: Arc<HashMap<String, Arc<dyn Channel>>>,
+}
+
+impl ChannelManagerHandle {
+    /// Stop all channels gracefully, then abort the dispatch loop.
+    pub async fn stop_all(self) {
+        for (name, channel) in self.channels.iter() {
+            info!("ChannelManagerHandle: stopping channel \"{}\"", name);
+            channel.stop().await;
+        }
+        self.dispatch_handle.abort();
+        let _ = self.dispatch_handle.await;
+        info!("ChannelManagerHandle: all channels stopped");
+    }
+}
 
 /// ChannelManager — spawns each channel's start() task and runs the outbound dispatch loop.
 pub struct ChannelManager {
@@ -70,8 +91,8 @@ impl ChannelManager {
     }
 
     /// Spawn all channel start() tasks + outbound dispatch loop.
-    /// Returns a JoinHandle for the dispatch loop (ends when bus shuts down).
-    pub fn start(self) -> JoinHandle<()> {
+    /// Returns a ChannelManagerHandle that can be used to stop all channels gracefully.
+    pub fn start(self) -> ChannelManagerHandle {
         let channels: Arc<HashMap<String, Arc<dyn Channel>>> = Arc::new(self.channels);
         let bus = self.bus;
 
@@ -82,7 +103,8 @@ impl ChannelManager {
             tokio::spawn(async move { ch.start().await });
         }
 
-        tokio::spawn(async move {
+        let dispatch_channels = channels.clone();
+        let dispatch_handle = tokio::spawn(async move {
             loop {
                 let event = match bus.consume_outbound().await {
                     Some(e) => e,
@@ -97,7 +119,7 @@ impl ChannelManager {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                if let Some(channel) = channels.get(ch_name) {
+                if let Some(channel) = dispatch_channels.get(ch_name) {
                     let result = if is_progress {
                         channel.send_progress(&event.chat_id, &event.content).await
                     } else if event.media.is_empty() {
@@ -117,7 +139,12 @@ impl ChannelManager {
                     );
                 }
             }
-        })
+        });
+
+        ChannelManagerHandle {
+            dispatch_handle,
+            channels,
+        }
     }
 }
 
@@ -145,7 +172,7 @@ mod tests {
             tokio::time::sleep(tokio::time::Duration::from_secs(9999)).await;
         }
         async fn stop(&self) {}
-        async fn send(&self, chat_id: &str, content: &str) -> Result<(), String> {
+        async fn send(&self, chat_id: &str, content: &str) -> Result<(), NexusError> {
             *self.last_sent.write().await = Some((chat_id.to_string(), content.to_string()));
             Ok(())
         }

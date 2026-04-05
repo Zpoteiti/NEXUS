@@ -9,6 +9,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use crate::tools::ToolError;
+
 static WORKSPACE_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// Operation type for policy enforcement.
@@ -52,7 +54,7 @@ pub fn get_workspace_root() -> PathBuf {
 /// 若路径越界，返回 `Err("Path outside workspace")`。
 ///
 /// 支持相对路径（相对于 workspace）和绝对路径。
-pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, String> {
+pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, ToolError> {
     let p = Path::new(path);
 
     // 展开 ~ 和解析相对路径
@@ -70,11 +72,11 @@ pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, String> {
         let workspace = get_workspace_root();
         let workspace = workspace.canonicalize().unwrap_or(workspace);
         if !is_subpath(&resolved, &workspace) {
-            return Err(format!(
+            return Err(ToolError::Blocked(format!(
                 "Path {} is outside workspace {}",
                 resolved.display(),
                 workspace.display()
-            ));
+            )));
         }
     }
 
@@ -91,7 +93,7 @@ pub fn sanitize_path_with_policy(
     path: &str,
     op: FsOp,
     policy: &FsPolicy,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, ToolError> {
     let p = Path::new(path);
 
     let resolved = if p.is_relative() {
@@ -130,11 +132,11 @@ pub fn sanitize_path_with_policy(
             let workspace = get_workspace_root();
             let workspace = workspace.canonicalize().unwrap_or(workspace);
             if !is_subpath(&resolved, &workspace) {
-                return Err(format!(
+                return Err(ToolError::Blocked(format!(
                     "Path {} is outside workspace {}",
                     resolved.display(),
                     workspace.display()
-                ));
+                )));
             }
             Ok(resolved)
         }
@@ -149,10 +151,10 @@ pub fn sanitize_path_with_policy(
 
             // Whitelisted paths: read-only
             if op == FsOp::Write {
-                return Err(format!(
+                return Err(ToolError::Blocked(format!(
                     "Path {} is outside workspace — writes only allowed in workspace",
                     resolved.display()
-                ));
+                )));
             }
 
             for allowed in allowed_paths {
@@ -163,10 +165,10 @@ pub fn sanitize_path_with_policy(
                 }
             }
 
-            Err(format!(
+            Err(ToolError::Blocked(format!(
                 "Path {} is outside workspace and not in whitelist",
                 resolved.display()
-            ))
+            )))
         }
     }
 }
@@ -177,12 +179,12 @@ pub async fn sanitize_path_with_policy_async(
     raw: &str,
     op: FsOp,
     policy: &FsPolicy,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, ToolError> {
     let raw = raw.to_string();
     let policy = policy.clone();
     tokio::task::spawn_blocking(move || sanitize_path_with_policy(&raw, op, &policy))
         .await
-        .unwrap_or_else(|_| Err("path resolution task panicked".to_string()))
+        .unwrap_or_else(|_| Err(ToolError::Blocked("path resolution task panicked".to_string())))
 }
 
 /// 检查 `path` 是否是 `base` 的子目录（或相等）。

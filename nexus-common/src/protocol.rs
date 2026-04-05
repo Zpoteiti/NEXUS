@@ -53,19 +53,6 @@ pub struct McpServerEntry {
 
 fn default_true() -> bool { true }
 
-/// Skill 全量信息，用于 Client → Server 注册。
-///
-/// - always=false: content = None（服务端只有摘要，正文由 Agent 自行 read_file）
-/// - always=true:  content = Some(正文)（服务端存储，用于注入 system prompt）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillFull {
-    pub name: String,
-    pub description: String,
-    pub always: bool,
-    /// always=true 时为 Some(正文)，always=false 时为 None
-    pub content: Option<String>,
-}
-
 /// 服务端下发给客户端的指令
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -107,7 +94,6 @@ pub struct FileUploadRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientToServer {
-    ToolStdoutStream(ToolStdoutStream),
     ToolExecutionResult(ToolExecutionResult),
     FileUploadResponse(FileUploadResponse),
     SubmitToken {
@@ -117,19 +103,12 @@ pub enum ClientToServer {
 
     RegisterTools {
         schemas: Vec<Value>,
-        skills: Vec<SkillFull>,
     },
 
     Heartbeat {
         hash: String,
         status: String,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolStdoutStream {
-    pub request_id: String,
-    pub chunk_data: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
