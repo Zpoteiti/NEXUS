@@ -10,20 +10,8 @@ use std::path::PathBuf;
 use tokio::fs;
 use tokio::time::{timeout, Duration};
 
+use super::fs_helpers::{FS_TOOL_TIMEOUT_SEC, resolve_path_for_write};
 use super::{LocalTool, ToolError};
-use crate::env;
-use crate::env::FsOp;
-
-/// Per-tool timeout in seconds for edit operations.
-const EDIT_TOOL_TIMEOUT_SEC: u64 = 30;
-
-/// Policy-aware path resolution for write operations.
-async fn resolve_path_for_write(path: &str, policy: &FsPolicy) -> Result<PathBuf, ToolError> {
-    if path.is_empty() {
-        return Err(ToolError::InvalidParams("path is required".to_string()));
-    }
-    env::sanitize_path_with_policy_async(path, FsOp::Write, policy).await
-}
 
 pub struct EditFileTool;
 
@@ -78,7 +66,7 @@ impl EditFileTool {
         args: Value,
         policy: &FsPolicy,
     ) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(EDIT_TOOL_TIMEOUT_SEC), async {
+        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
             let file_path = args
                 .get("file_path")
                 .and_then(|v| v.as_str())
@@ -102,7 +90,7 @@ impl EditFileTool {
             Self::edit_file_core(fp, old_string, new_string).await
         })
         .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(EDIT_TOOL_TIMEOUT_SEC)))
+        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
     }
 
     async fn edit_file_core(

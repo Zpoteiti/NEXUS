@@ -59,4 +59,9 @@ impl ToolError {
 
 pub mod edit;
 pub mod fs;
+pub mod fs_helpers;
+mod read_file;
+mod write_file;
+mod list_dir;
+mod stat;
 pub mod shell;

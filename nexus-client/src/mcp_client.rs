@@ -2,7 +2,6 @@
 /// 1. 负责在本地启动并连接第三方 MCP Server（通过 rmcp SDK）。
 /// 2. 初始化时发送 `tools/list` 获取外部工具，并在命名前加上 `mcp_` 前缀（命名隔离）。
 /// 3. 收到执行请求时，将请求透传给对应的 MCP Server 并返回结果。
-// TODO: migrate to NexusError when nexus-client uses nexus-common error types
 
 use nexus_common::mcp_utils::normalize_schema_for_openai;
 use serde_json::{json, Value};
@@ -22,7 +21,7 @@ pub struct McpSession {
 
 impl McpSession {
     /// 连接 MCP Server 并完成初始化握手。
-    pub async fn connect(config: &McpServerConfig) -> Result<Self, String> {
+    pub async fn connect(config: &McpServerConfig) -> Result<Self, ToolError> {
         let tool_timeout = config.tool_timeout.unwrap_or(nexus_common::consts::DEFAULT_MCP_TOOL_TIMEOUT_SEC);
 
         let mut cmd = tokio::process::Command::new(&config.command);
@@ -32,15 +31,15 @@ impl McpSession {
         }
 
         let transport = rmcp::transport::TokioChildProcess::new(cmd)
-            .map_err(|e| format!("failed to spawn MCP server '{}': {}", config.name, e))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("failed to spawn MCP server '{}': {}", config.name, e)))?;
 
         let client = timeout(
             Duration::from_secs(30),
             rmcp::serve_client((), transport),
         )
         .await
-        .map_err(|_| format!("MCP server '{}': initialization timeout", config.name))?
-        .map_err(|e| format!("MCP server '{}': initialization failed: {}", config.name, e))?;
+        .map_err(|_| ToolError::ExecutionFailed(format!("MCP server '{}': initialization timeout", config.name)))?
+        .map_err(|e| ToolError::ExecutionFailed(format!("MCP server '{}': initialization failed: {}", config.name, e)))?;
 
         Ok(Self {
             server_name: config.name.clone(),
@@ -51,10 +50,10 @@ impl McpSession {
     }
 
     /// 列出所有可用工具。
-    pub async fn list_tools(&mut self) -> Result<Vec<Value>, String> {
+    pub async fn list_tools(&mut self) -> Result<Vec<Value>, ToolError> {
         let tools = self.client.list_all_tools()
             .await
-            .map_err(|e| format!("MCP server '{}': list_tools failed: {}", self.server_name, e))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("MCP server '{}': list_tools failed: {}", self.server_name, e)))?;
 
         let mut schemas = Vec::new();
         for tool in tools {
@@ -161,7 +160,7 @@ impl McpClientManager {
     }
 
     /// 初始化所有 MCP 服务器。
-    pub async fn initialize(&mut self, servers: &[McpServerConfig]) -> Result<(), String> {
+    pub async fn initialize(&mut self, servers: &[McpServerConfig]) -> Result<(), ToolError> {
         for server in servers.iter().filter(|s| s.enabled) {
             if server.transport_type != TransportType::Stdio {
                 tracing::warn!(

@@ -2,7 +2,6 @@
 ///
 /// Client only sends its token. Server resolves user_id, device_name from DB.
 /// LoginSuccess returns the device_name assigned by the user at token creation time.
-// TODO: migrate to NexusError when nexus-client uses nexus-common error types
 
 use std::sync::Arc;
 use std::time::Duration;
