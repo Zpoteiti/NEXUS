@@ -3,7 +3,7 @@ import WebSocket from 'ws';
 const TOKEN = process.env.TOKEN || process.argv[2];
 if (!TOKEN) { console.error("Usage: node e2e_quick.mjs <jwt_token>"); process.exit(1); }
 
-const ws = new WebSocket('ws://localhost:9090/ws/browser', {
+const ws = new WebSocket('ws://localhost:9090/ws/chat', {
   headers: { 'Authorization': `Bearer ${TOKEN}` }
 });
 

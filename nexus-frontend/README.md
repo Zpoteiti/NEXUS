@@ -1,73 +1,44 @@
-# React + TypeScript + Vite
+# nexus-frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Web UI for NEXUS, built with React 19, TypeScript, Vite, and Tailwind CSS 4.
 
-Currently, two official plugins are available:
+## Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev      # start dev server (Vite HMR)
+npm run build    # production build (outputs to dist/)
+npm run preview  # preview production build
+npm run lint     # run ESLint
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Pages
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- **Login** -- JWT authentication
+- **Chat** -- Main interface with sessions sidebar, message input with file upload, markdown rendering, device status indicators, and progress hints during agent processing
+- **Settings** -- User configuration across 6 tabs
+- **Admin** -- System administration across 4 tabs (device management, tokens, skills, etc.)
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Stack
+
+- **React 19** + **TypeScript 5.9**
+- **Vite 8** (build tool)
+- **Tailwind CSS 4** (styling)
+- **Zustand** (state management)
+- **react-router-dom** (SPA routing)
+- **react-markdown** (message rendering)
+
+## Architecture
+
 ```
+src/
+  pages/         -- LoginPage, ChatPage, SettingsPage, AdminPage
+  lib/
+    api.ts       -- REST API client
+    store.ts     -- Zustand store
+    useWebSocket.ts -- WebSocket hook for chat
+  App.tsx        -- Router setup
+  main.tsx       -- Entry point
+```
+
+The frontend connects to nexus-gateway which serves it in production. During development, Vite proxies API and WebSocket requests.

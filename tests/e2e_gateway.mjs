@@ -59,7 +59,7 @@ async function runTests() {
 
   // --- Test 3: browser message forwarded to nexus ---
   console.log('\nTest 3: browser → nexus-gateway → nexus-server');
-  const browserWs = await wsConnect(`${GATEWAY_URL}/ws/browser`);
+  const browserWs = await wsConnect(`${GATEWAY_URL}/ws/chat`);
   browserWs.send(JSON.stringify({ type: 'message', content: 'hello from browser' }));
 
   const inbound = await waitMessage(nexusWs);
@@ -84,7 +84,7 @@ async function runTests() {
   await new Promise(r => setTimeout(r, 200));
 
   // Verify nexus WS is still alive by sending a known message
-  const browserWs2 = await wsConnect(`${GATEWAY_URL}/ws/browser`);
+  const browserWs2 = await wsConnect(`${GATEWAY_URL}/ws/chat`);
   browserWs2.send(JSON.stringify({ type: 'message', content: 'still alive?' }));
   const probe = await waitMessage(nexusWs);
   assert(probe.type === 'message', `server still alive after unknown chat_id (got: ${probe.type})`);

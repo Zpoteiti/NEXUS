@@ -1,56 +1,83 @@
 # nexus-gateway
 
-## 1. 一句话定位
-nexus-gateway 是 NEXUS 的浏览器接入层，负责管理浏览器 WebSocket 连接，并将用户消息桥接到 nexus-server。
+Browser-facing entry point for NEXUS. Serves the web frontend, proxies REST API requests to the server, and manages WebSocket chat sessions.
 
-## 2. 职责边界
-### 负责什么
-- 接受浏览器 WebSocket 连接（`/ws/browser`），分配 `chat_id`，转发用户消息。
-- 接受 nexus-server 的 WebSocket 连接（`/ws/nexus`），验证 gateway token，双向路由消息。
-- 将来自浏览器的消息格式转换后转发给 nexus-server，将 nexus-server 的回复路由回对应浏览器。
+---
 
-### 不负责什么
-- 不执行工具、不运行 Agent Loop。
-- 不持久化会话或消息。
-- 不直接连接 nexus-client 设备。
+## Responsibilities
 
-## 3. 架构决策（What + Why）
-### 决策 A：nexus-server 主动连接 gateway（WS client 模式）
-- What：nexus-server 的 `GatewayChannel` 作为 WS client，主动连接 gateway 的 `/ws/nexus`。
-- Why：保持 nexus-server 对所有外部渠道的主动连接一致性，简化 gateway 部署（只需对外暴露端口，无需知道 server 地址）。
+- **WebSocket chat** (`/ws/chat`): Accepts browser connections with JWT authentication (via query parameter). Manages session creation, switching, and progress forwarding.
+- **REST API proxy** (`/api/*`): Forwards all API requests to nexus-server, passing through auth headers.
+- **Static frontend serving**: Serves the built frontend from `NEXUS_FRONTEND_DIR` with SPA fallback (all unmatched routes serve `index.html`).
+- **Server connection** (`/ws/nexus`): Accepts nexus-server WebSocket connections with gateway token authentication.
+- **CORS**: Permissive CORS policy (allow all origins, methods, headers).
 
-### 决策 B：独立 Rust binary，不嵌入 nexus-server
-- What：nexus-gateway 是独立的 `cargo run --package nexus-gateway` 进程。
-- Why：可以独立部署在网络边界，nexus-server 可以在内网运行。
+## Does NOT do
 
-### 决策 C：gateway token 认证
-- What：nexus-server 连接 `/ws/nexus` 时必须发送匹配的 `NEXUS_GATEWAY_TOKEN`。
-- Why：防止未授权的 nexus-server 实例接入 gateway。
+- Execute tools or run the agent loop.
+- Persist sessions or messages (stateless proxy).
+- Connect directly to nexus-client devices.
 
-## 4. 与其他模块的关系
-### 依赖谁
-- 不依赖 nexus-common（协议结构独立定义）。
+---
 
-### 被谁依赖
-- 被浏览器（用户）通过 `/ws/browser` 连接。
-- 被 nexus-server（GatewayChannel）通过 `/ws/nexus` 连接。
+## Routes
 
-### 通信方式
-- Browser ↔ Gateway：WebSocket (`/ws/browser`)
-- Gateway ↔ Server：WebSocket (`/ws/nexus`，server 主动连接）
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/ws/chat` | GET (WebSocket) | Browser chat sessions (JWT from query param) |
+| `/ws/nexus` | GET (WebSocket) | Server connection (gateway token auth) |
+| `/api/*` | Any | REST proxy to nexus-server |
+| `/*` | GET | Static frontend files with SPA fallback |
 
-## 5. 环境要求与运行方式
-### 环境要求
-- Rust 1.85+（edition 2024）
+---
 
-### 环境变量
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `GATEWAY_PORT` | `9090` | 监听端口 |
-| `NEXUS_GATEWAY_TOKEN` | —（必填）| nexus-server 认证 token |
+## WebSocket protocol
 
-### 运行方式
+### Browser -> Gateway (`/ws/chat`)
+
+| Type | Fields | Purpose |
+|------|--------|---------|
+| `message` | `content`, `media?` | Send a chat message |
+| `new_session` | -- | Create a new session |
+| `switch_session` | `session_id` | Switch to an existing session |
+
+### Gateway -> Browser
+
+| Type | Fields | Purpose |
+|------|--------|---------|
+| `message` | `content`, `session_id`, `media?` | Agent response |
+| `progress` | `content`, `session_id` | Progress hint during processing |
+| `error` | `reason` | Error notification |
+| `session_created` | `session_id` | New session confirmation |
+| `session_switched` | `session_id` | Session switch confirmation |
+
+---
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_PORT` | `9090` | Listening port |
+| `NEXUS_GATEWAY_TOKEN` | (required) | Shared secret for nexus-server authentication |
+| `JWT_SECRET` | (required) | Secret for JWT validation |
+| `NEXUS_SERVER_API_URL` | `http://localhost:8080` | Server API URL for REST proxying |
+| `NEXUS_FRONTEND_DIR` | `../nexus-frontend/dist` | Path to built frontend assets |
+
+---
+
+## Running
+
 ```bash
 cd NEXUS
-NEXUS_GATEWAY_TOKEN=your-token cargo run --package nexus-gateway
+NEXUS_GATEWAY_TOKEN=your-token JWT_SECRET=your-secret cargo run --package nexus-gateway
 ```
+
+---
+
+## Architecture decisions
+
+**Independent binary**: Deployed separately from nexus-server. Can sit at the network edge while the server runs in an internal network.
+
+**JWT double validation**: Gateway validates JWT locally for fast rejection, then the server re-validates on API requests for authoritative access control.
+
+**Stateless proxying**: Gateway holds no persistent state. Browser session state is managed server-side; gateway only routes messages by `chat_id`.
