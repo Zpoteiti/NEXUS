@@ -80,7 +80,14 @@ async fn send_single_message(
 
 /// Download a Discord attachment to a temp directory.
 /// Returns the absolute path to the saved file.
-pub async fn download_attachment(url: &str, filename: &str) -> Result<String, NexusError> {
+///
+/// Files are saved to `/tmp/nexus-uploads/{user_id}/{attachment_id}_{filename}`.
+pub async fn download_attachment(
+    url: &str,
+    filename: &str,
+    user_id: &str,
+    attachment_id: &str,
+) -> Result<String, NexusError> {
     let response = HTTP_CLIENT
         .get(url)
         .send()
@@ -96,13 +103,14 @@ pub async fn download_attachment(url: &str, filename: &str) -> Result<String, Ne
         .await
         .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("download read error: {}", e)))?;
 
-    // Save to temp directory
-    let dir = std::path::Path::new("/tmp/nexus-media");
-    tokio::fs::create_dir_all(dir).await.map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("mkdir error: {}", e)))?;
+    // Save to per-user upload directory
+    let safe_user = user_id.replace(['/', '\\', '\0'], "_");
+    let dir = std::path::Path::new("/tmp/nexus-uploads").join(&safe_user);
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("mkdir error: {}", e)))?;
 
     let safe_name = filename.replace(['/', '\\', '\0'], "_");
-    let uuid = uuid::Uuid::new_v4();
-    let path = dir.join(format!("{}_{}", uuid, safe_name));
+    let safe_att_id = attachment_id.replace(['/', '\\', '\0'], "_");
+    let path = dir.join(format!("{}_{}", safe_att_id, safe_name));
 
     tokio::fs::write(&path, &bytes).await.map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("write error: {}", e)))?;
 

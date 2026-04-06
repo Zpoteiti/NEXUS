@@ -302,16 +302,18 @@ async fn handle_message(
 
     for att in &msg.attachments {
         let filename = att.get("filename").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let attachment_id = att.get("id").and_then(|v| v.as_str()).unwrap_or("0");
         let url = att.get("url").and_then(|v| v.as_str());
         let size = att.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
 
-        if size > 20 * 1024 * 1024 {
+        if size > 25 * 1024 * 1024 {
+            warn!("Discord attachment {} is too large ({} bytes), skipping", filename, size);
             content.push_str(&format!("\n[attachment: {} - too large]", filename));
             continue;
         }
 
         if let Some(url) = url {
-            match rest::download_attachment(url, filename).await {
+            match rest::download_attachment(url, filename, &config.user_id, attachment_id).await {
                 Ok(path) => media_paths.push(path),
                 Err(e) => {
                     warn!("Failed to download Discord attachment {}: {}", filename, e);

@@ -282,7 +282,7 @@ async fn run_single_turn(
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    parts.push(json!({"type": "text", "text": format!("[file: {}]", name)}));
+                    parts.push(json!({"type": "text", "text": format!("[User attached file: {}]", name)}));
                 }
             }
         }
