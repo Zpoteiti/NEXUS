@@ -218,6 +218,13 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                     warn!("ws: no pending file upload for request_id={} from device={}", response.request_id, device_name);
                 }
             }
+            ClientToServer::FileDownloadResponse(response) => {
+                if let Some((_, tx)) = state.file_download_pending.remove(&response.request_id) {
+                    let _ = tx.send(response);
+                } else {
+                    warn!("ws: no pending file download for request_id={} from device={}", response.request_id, device_name);
+                }
+            }
             _ => {
                 warn!("unsupported message from device={}", device_name);
             }
@@ -243,5 +250,5 @@ async fn cleanup_device(state: &AppState, device_key: &str, user_id: &str) {
             }
         }
     }
-    cancel_pending_requests_for_device(device_key, &state.pending, &state.file_upload_pending);
+    cancel_pending_requests_for_device(device_key, &state.pending, &state.file_upload_pending, &state.file_download_pending);
 }

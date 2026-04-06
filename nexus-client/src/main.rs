@@ -30,7 +30,7 @@ mod mcp_client;
 mod session;
 pub mod tools;
 
-use nexus_common::protocol::{ClientToServer, FileUploadRequest, FileUploadResponse, FsPolicy, McpServerEntry, ServerToClient};
+use nexus_common::protocol::{ClientToServer, FileDownloadResponse, FileUploadRequest, FileUploadResponse, FsPolicy, McpServerEntry, ServerToClient};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -69,6 +69,16 @@ async fn main() {
                 let msg = ClientToServer::FileUploadResponse(response);
                 if let Err(e) = session.send(msg).await {
                     warn!("failed to send FileUploadResponse: {}", e);
+                }
+            }
+            ServerToClient::FileDownloadRequest { request_id, file_name, content_base64, destination_path } => {
+                info!("received FileDownloadRequest: file={}, dest={}", file_name, destination_path);
+                let response = handle_file_download_request(
+                    &request_id, &file_name, &content_base64, &destination_path, &fs_policy,
+                ).await;
+                let msg = ClientToServer::FileDownloadResponse(response);
+                if let Err(e) = session.send(msg).await {
+                    warn!("failed to send FileDownloadResponse: {}", e);
                 }
             }
             ServerToClient::RequireLogin {
@@ -161,6 +171,73 @@ async fn handle_file_upload_request(
         file_name,
         content_base64,
         mime_type,
+        error: None,
+    }
+}
+
+async fn handle_file_download_request(
+    request_id: &str,
+    file_name: &str,
+    content_base64: &str,
+    destination_path: &str,
+    fs_policy: &Arc<RwLock<FsPolicy>>,
+) -> FileDownloadResponse {
+    use base64::Engine;
+
+    // Determine the target path
+    let target = if destination_path.is_empty() {
+        let workspace = crate::env::get_workspace_root();
+        workspace.join(file_name).to_string_lossy().to_string()
+    } else {
+        destination_path.to_string()
+    };
+
+    // Validate path against FsPolicy (write operation)
+    let resolved_path = {
+        let policy = fs_policy.read().await;
+        match crate::env::sanitize_path_with_policy(&target, crate::env::FsOp::Write, &*policy) {
+            Ok(p) => p,
+            Err(e) => {
+                return FileDownloadResponse {
+                    request_id: request_id.to_string(),
+                    error: Some(format!("file write denied by device policy: {}", e)),
+                };
+            }
+        }
+    };
+
+    // Base64-decode content
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(content_base64) {
+        Ok(b) => b,
+        Err(e) => {
+            return FileDownloadResponse {
+                request_id: request_id.to_string(),
+                error: Some(format!("base64 decode error: {}", e)),
+            };
+        }
+    };
+
+    // Ensure parent directory exists
+    if let Some(parent) = resolved_path.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            return FileDownloadResponse {
+                request_id: request_id.to_string(),
+                error: Some(format!("failed to create directory: {}", e)),
+            };
+        }
+    }
+
+    // Write file to disk
+    if let Err(e) = tokio::fs::write(&resolved_path, &bytes).await {
+        return FileDownloadResponse {
+            request_id: request_id.to_string(),
+            error: Some(format!("failed to write file: {}", e)),
+        };
+    }
+
+    info!("file downloaded to: {}", resolved_path.display());
+    FileDownloadResponse {
+        request_id: request_id.to_string(),
         error: None,
     }
 }

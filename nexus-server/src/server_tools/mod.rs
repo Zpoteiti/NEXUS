@@ -1,5 +1,6 @@
 pub mod memory;
 pub mod send_file;
+pub mod download_to_device;
 pub mod message;
 pub mod cron;
 pub mod skills;

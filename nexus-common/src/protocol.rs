@@ -75,6 +75,12 @@ pub enum ServerToClient {
         fs_policy: FsPolicy,
         mcp_servers: Vec<McpServerEntry>,
     },
+    FileDownloadRequest {
+        request_id: String,
+        file_name: String,
+        content_base64: String,
+        destination_path: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +115,7 @@ pub enum ClientToServer {
         hash: String,
         status: String,
     },
+    FileDownloadResponse(FileDownloadResponse),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +124,12 @@ pub struct FileUploadResponse {
     pub file_name: String,
     pub content_base64: String,
     pub mime_type: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDownloadResponse {
+    pub request_id: String,
     pub error: Option<String>,
 }
 

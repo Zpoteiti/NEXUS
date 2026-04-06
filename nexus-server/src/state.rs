@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use axum::extract::ws::Message;
 use dashmap::DashMap;
-use nexus_common::protocol::{FileUploadResponse, FsPolicy, ToolExecutionResult};
+use nexus_common::protocol::{FileDownloadResponse, FileUploadResponse, FsPolicy, ToolExecutionResult};
 use sqlx::PgPool;
 use tokio::sync::{RwLock, Semaphore, mpsc, oneshot};
 
@@ -51,6 +51,8 @@ pub struct AppState {
     pub pending: Arc<DashMap<String, oneshot::Sender<ToolExecutionResult>>>,
     /// 文件上传挂起等待表：request_id → oneshot::Sender
     pub file_upload_pending: Arc<DashMap<String, oneshot::Sender<FileUploadResponse>>>,
+    /// 文件下载挂起等待表：request_id → oneshot::Sender
+    pub file_download_pending: Arc<DashMap<String, oneshot::Sender<FileDownloadResponse>>>,
     pub bus: Arc<MessageBus>,
     pub session_manager: Arc<SessionManager>,
     /// ChannelManager handle for graceful shutdown — calls stop() on all channels.
@@ -70,6 +72,7 @@ impl AppState {
             devices_by_user: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(DashMap::new()),
             file_upload_pending: Arc::new(DashMap::new()),
+            file_download_pending: Arc::new(DashMap::new()),
             bus,
             session_manager,
             channel_manager_handle: Arc::new(RwLock::new(None)),
@@ -80,6 +83,7 @@ impl AppState {
                 let mut reg = ServerToolRegistry::new();
                 reg.register(Box::new(crate::server_tools::memory::SaveMemoryTool));
                 reg.register(Box::new(crate::server_tools::send_file::SendFileTool));
+                reg.register(Box::new(crate::server_tools::download_to_device::DownloadToDeviceTool));
                 reg.register(Box::new(crate::server_tools::message::MessageTool));
                 reg.register(Box::new(crate::server_tools::cron::CronCreateTool));
                 reg.register(Box::new(crate::server_tools::cron::CronListTool));
@@ -114,8 +118,10 @@ pub fn cancel_pending_requests_for_device(
     device_key: &str,
     pending: &DashMap<String, oneshot::Sender<ToolExecutionResult>>,
     file_upload_pending: &DashMap<String, oneshot::Sender<FileUploadResponse>>,
+    file_download_pending: &DashMap<String, oneshot::Sender<FileDownloadResponse>>,
 ) {
     let prefix = format!("{device_key}:");
     pending.retain(|request_id, _| !request_id.starts_with(&prefix));
     file_upload_pending.retain(|request_id, _| !request_id.starts_with(&prefix));
+    file_download_pending.retain(|request_id, _| !request_id.starts_with(&prefix));
 }

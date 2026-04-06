@@ -282,7 +282,13 @@ async fn run_single_turn(
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    parts.push(json!({"type": "text", "text": format!("[User attached file: {}]", name)}));
+                    let size_kb = tokio::fs::metadata(path).await
+                        .map(|m| m.len() / 1024)
+                        .unwrap_or(0);
+                    parts.push(json!({"type": "text", "text": format!(
+                        "[User uploaded: {} ({}KB) — use download_to_device to transfer to a device for processing]",
+                        name, size_kb
+                    )}));
                 }
             }
         }
