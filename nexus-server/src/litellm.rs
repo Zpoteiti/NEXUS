@@ -185,7 +185,8 @@ impl LiteLlmManager {
         Ok(())
     }
 
-    /// Delete a model from LiteLLM
+    /// Delete a model from LiteLLM (for future use: config change hot-reload)
+    #[allow(dead_code)]
     pub async fn delete_model(&self, model_id: &str) -> Result<(), String> {
         let url = format!("http://127.0.0.1:{}/model/delete", self.port);
         let client = reqwest::Client::new();
@@ -226,7 +227,8 @@ impl LiteLlmManager {
         }
     }
 
-    /// Check if process is still running, restart if crashed
+    /// Check if process is still running, restart if crashed (for future use: health monitoring)
+    #[allow(dead_code)]
     pub async fn ensure_running(&self) -> bool {
         let mut guard = self.child.write().await;
         if let Some(ref mut child) = *guard {

@@ -489,7 +489,7 @@ async fn execute_tool_calls_loop(
                         media: Vec::new(),
                         metadata,
                     }).await;
-                    format!("{{\"error\": \"{}\"}}", e)
+                    serde_json::json!({"error": e.to_string()}).to_string()
                 }
             };
             // Check for file transfer marker and extract media path

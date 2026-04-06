@@ -308,6 +308,13 @@ pub async fn download_file(
     Extension(claims): Extension<Claims>,
     Path(file_id): Path<String>,
 ) -> Response {
+    // Validate file_id: reject path traversal and non-alphanumeric+hyphen characters
+    if file_id.contains("..") || file_id.contains('/') || file_id.contains('\\')
+        || !file_id.chars().all(|c| c.is_alphanumeric() || c == '-')
+    {
+        return ApiError::new(ErrorCode::ValidationFailed, "invalid file id").into_response();
+    }
+
     // Search the requesting user's upload directory first
     let user_dir = format!("/tmp/nexus-uploads/{}", claims.sub);
     if let Some(resp) = try_serve_file_from_dir(&user_dir, &file_id).await {

@@ -61,7 +61,8 @@ function ConfigForm({ endpoint, fields }: { endpoint: string; fields: { key: str
       fields.forEach(f => { v[f.key] = data[f.key]?.toString() || '' })
       setValues(v)
     }).catch(() => {})
-  }, [endpoint, fields])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endpoint])
 
   async function save() {
     setError('')

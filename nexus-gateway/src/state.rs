@@ -21,6 +21,8 @@ pub struct AppState {
     pub jwt_secret: String,
     /// Base URL of nexus-server REST API (e.g. http://localhost:8080)
     pub server_api_url: String,
+    /// Shared HTTP client for proxying requests (connection pooling)
+    pub http_client: reqwest::Client,
 }
 
 impl AppState {
@@ -31,6 +33,7 @@ impl AppState {
             gateway_token,
             jwt_secret,
             server_api_url,
+            http_client: reqwest::Client::new(),
         })
     }
 }

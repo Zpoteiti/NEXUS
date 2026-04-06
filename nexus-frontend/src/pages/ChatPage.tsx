@@ -27,6 +27,7 @@ export default function ChatPage() {
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const isAdmin = useAuthStore((s) => s.isAdmin)
   const logout = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
 
@@ -175,9 +176,11 @@ export default function ChatPage() {
             <Link to="/settings" className="block px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md">
               Settings
             </Link>
-            <Link to="/admin" className="block px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md">
-              Admin
-            </Link>
+            {isAdmin && (
+              <Link to="/admin" className="block px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md">
+                Admin
+              </Link>
+            )}
             <button onClick={handleLogout} className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-md">
               Logout
             </button>

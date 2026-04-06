@@ -25,6 +25,11 @@ pub async fn api_proxy(
     let path = req.uri().path().to_string();
     let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
 
+    // --- Path traversal check ---
+    if path.contains("..") {
+        return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
+    }
+
     // --- JWT check (skip for public endpoints) ---
     if !is_public_endpoint(&path) {
         let auth_header = req
@@ -66,7 +71,7 @@ pub async fn api_proxy(
     };
 
     // --- Forward to nexus-server ---
-    let client = reqwest::Client::new();
+    let client = &state.http_client;
 
     // Convert axum headers to reqwest headers
     let mut reqwest_headers = reqwest::header::HeaderMap::new();
@@ -119,6 +124,10 @@ pub async fn api_proxy(
             return (StatusCode::BAD_GATEWAY, "Failed to read upstream response").into_response();
         }
     };
+
+    if body.len() > MAX_BODY_SIZE {
+        return (StatusCode::BAD_GATEWAY, "Response too large").into_response();
+    }
 
     let mut resp = Response::new(Body::from(body));
     *resp.status_mut() = status;

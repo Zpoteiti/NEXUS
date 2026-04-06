@@ -104,8 +104,9 @@ async fn browser_connection(socket: WebSocket, state: SharedState, user_id: Stri
                         reason: "Nexus server not connected".to_string(),
                     })
                     .unwrap();
-                    if let Some(conn) = state.browser_conns.get(&chat_id) {
-                        let _ = conn.tx.send(err_json).await;
+                    let tx = state.browser_conns.get(&chat_id).map(|c| c.tx.clone());
+                    if let Some(tx) = tx {
+                        let _ = tx.send(err_json).await;
                     }
                 }
             }
@@ -117,8 +118,9 @@ async fn browser_connection(socket: WebSocket, state: SharedState, user_id: Stri
                 let msg = serde_json::to_string(&BrowserOutbound::SessionCreated {
                     session_id: new_session_id,
                 }).unwrap();
-                if let Some(conn) = state.browser_conns.get(&chat_id) {
-                    let _ = conn.tx.send(msg).await;
+                let tx = state.browser_conns.get(&chat_id).map(|c| c.tx.clone());
+                if let Some(tx) = tx {
+                    let _ = tx.send(msg).await;
                 }
             }
             BrowserInbound::SwitchSession { session_id } => {
@@ -128,8 +130,9 @@ async fn browser_connection(socket: WebSocket, state: SharedState, user_id: Stri
                 let msg = serde_json::to_string(&BrowserOutbound::SessionSwitched {
                     session_id,
                 }).unwrap();
-                if let Some(conn) = state.browser_conns.get(&chat_id) {
-                    let _ = conn.tx.send(msg).await;
+                let tx = state.browser_conns.get(&chat_id).map(|c| c.tx.clone());
+                if let Some(tx) = tx {
+                    let _ = tx.send(msg).await;
                 }
             }
         }
