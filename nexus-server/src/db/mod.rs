@@ -45,6 +45,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             is_admin BOOLEAN NOT NULL DEFAULT FALSE,
             soul TEXT,
             preferences JSONB,
+            memory_text TEXT NOT NULL DEFAULT '',
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
         "#,
@@ -207,6 +208,15 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+
+    // Safe migrations for existing databases
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS memory_text TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+
+    sqlx::query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS compressed BOOLEAN DEFAULT FALSE")
+        .execute(pool)
+        .await?;
 
     Ok(())
 }

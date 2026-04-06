@@ -1,48 +1,20 @@
-//! Context compression and memory consolidation.
-//! Reference: nanobot/agent/memory.py
+//! Context compression — compress history when context window runs low.
+//!
+//! New algorithm: when remaining context space drops below 16K tokens,
+//! compress all messages between the system prompt and the latest user turn
+//! into a single assistant summary message.
 
-use std::sync::LazyLock;
-
-use dashmap::DashMap;
 use serde_json::{json, Value};
 use sqlx::PgPool;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
-use crate::config::{EmbeddingConfig, LlmConfig};
+use crate::config::LlmConfig;
 use crate::providers::{call_with_retry, ChatCompletionRequest};
 
-/// Per-session consecutive failure counter for consolidation
-static FAILURE_COUNTS: LazyLock<DashMap<String, usize>> = LazyLock::new(DashMap::new);
-const MAX_FAILURES: usize = 3;
-const MAX_CONSOLIDATION_ROUNDS: usize = 5;
-const SAFETY_BUFFER: usize = 1024;
+/// Minimum remaining tokens before compression triggers.
+const COMPRESSION_THRESHOLD: usize = 16384;
 
-/// save_memory tool definition (built-in, not registered to client)
-fn save_memory_tool() -> Value {
-    json!({
-        "type": "function",
-        "function": {
-            "name": "save_memory",
-            "description": "Save the memory consolidation result.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "history_entry": {
-                        "type": "string",
-                        "description": "Timestamped summary: [YYYY-MM-DD HH:MM] key events and decisions."
-                    },
-                    "memory_update": {
-                        "type": "string",
-                        "description": "Full updated long-term memory as markdown. Merge new info with existing."
-                    }
-                },
-                "required": ["history_entry", "memory_update"]
-            }
-        }
-    })
-}
-
-/// Estimate token count for messages (chars / 3, matching nanobot)
+/// Estimate token count for messages (chars / 3, matching nanobot heuristic).
 pub fn estimate_tokens(messages: &[Value]) -> usize {
     messages
         .iter()
@@ -62,348 +34,166 @@ pub fn estimate_tokens(messages: &[Value]) -> usize {
         / 3
 }
 
-/// Entry point: called by agent_loop before each LLM call.
-/// Checks if consolidation is needed and runs it in a loop until within budget.
+/// Entry point: called by agent_loop after building messages but before calling LLM.
+///
+/// Returns `Some(compressed_messages)` if compression was performed,
+/// `None` if no compression was needed.
 pub async fn maybe_consolidate(
     session_id: &str,
-    user_id: &str,
+    _user_id: &str,
     db: &PgPool,
     llm_config: &LlmConfig,
-    embedding_config: &tokio::sync::RwLock<Option<EmbeddingConfig>>,
-    embedding_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
-) {
-    let budget = llm_config
-        .context_window
-        .saturating_sub(llm_config.max_output_tokens)
-        .saturating_sub(SAFETY_BUFFER);
-    let target = budget / 2;
+    current_messages: &[Value],
+    context_window: usize,
+) -> Option<Vec<Value>> {
+    let total_tokens = estimate_tokens(current_messages);
+    let remaining = context_window.saturating_sub(total_tokens);
 
-    for round in 0..MAX_CONSOLIDATION_ROUNDS {
-        // Get unconsolidated messages to estimate size
-        let messages = match crate::db::get_unconsolidated_messages(db, session_id).await {
-            Ok(msgs) => msgs,
-            Err(e) => {
-                warn!("maybe_consolidate: failed to get messages: {}", e);
-                return;
-            }
-        };
-
-        if messages.is_empty() {
-            return;
-        }
-
-        // Convert to Value for token estimation
-        let message_values: Vec<Value> = messages
-            .iter()
-            .map(|m| {
-                json!({
-                    "role": m.role,
-                    "content": m.content,
-                    "tool_calls": m.tool_arguments.as_deref().unwrap_or("")
-                })
-            })
-            .collect();
-
-        let estimated = estimate_tokens(&message_values);
-        if estimated < budget {
-            return; // Within budget, no consolidation needed
-        }
-
-        info!(
-            "consolidation round {}: estimated {} tokens, budget {}, target {}",
-            round + 1,
-            estimated,
-            budget,
-            target
-        );
-
-        let tokens_to_remove = estimated.saturating_sub(target);
-        let boundary = pick_consolidation_boundary(&messages, &message_values, tokens_to_remove);
-
-        if boundary == 0 {
-            warn!("consolidation: no valid boundary found");
-            return;
-        }
-
-        let chunk = &messages[..boundary];
-        if chunk.is_empty() {
-            return;
-        }
-
-        let emb_config = embedding_config.read().await.clone();
-        let consolidation_max_tokens = emb_config
-            .as_ref()
-            .map(|e| ((e.max_input_length as f64) * 0.8) as usize)
-            .unwrap_or(1024);
-        let success =
-            consolidate_chunk(session_id, user_id, db, llm_config, emb_config.as_ref(), embedding_semaphore, chunk, consolidation_max_tokens)
-                .await;
-
-        if !success {
-            let mut count = FAILURE_COUNTS.entry(session_id.to_string()).or_insert(0);
-            *count += 1;
-            if *count >= MAX_FAILURES {
-                warn!(
-                    "consolidation: {} consecutive failures, falling back to raw archive",
-                    *count
-                );
-                raw_archive(session_id, user_id, db, chunk).await;
-                *count = 0;
-            }
-            return; // Don't continue loop on failure
-        }
-
-        // Reset failure count on success
-        FAILURE_COUNTS.insert(session_id.to_string(), 0);
+    if remaining >= COMPRESSION_THRESHOLD {
+        return None; // Plenty of room, no compression needed
     }
+
+    info!(
+        "consolidation: remaining {} tokens < {} threshold, compressing (session={})",
+        remaining, COMPRESSION_THRESHOLD, session_id
+    );
+
+    // Find the latest user turn boundary (last message with role=user)
+    let latest_user_idx = find_latest_user_turn(current_messages);
+    if latest_user_idx <= 1 {
+        warn!("consolidation: nothing to compress (only system + latest turn)");
+        return None;
+    }
+
+    // Messages to compress: everything between system prompt and latest user turn
+    let to_compress = &current_messages[1..latest_user_idx];
+    if to_compress.is_empty() {
+        return None;
+    }
+
+    info!(
+        "consolidation: compressing {} messages (indices 1..{})",
+        to_compress.len(),
+        latest_user_idx
+    );
+
+    // Call LLM to compress
+    let compressed = compress_messages(llm_config, to_compress).await?;
+
+    // Mark old messages as compressed in DB
+    if !to_compress.is_empty() {
+        let _ = mark_compressed_in_db(db, session_id).await;
+    }
+
+    // Build new message list: system + compressed summary + latest turn onwards
+    let mut new_messages = vec![current_messages[0].clone()];
+    new_messages.push(json!({
+        "role": "assistant",
+        "content": compressed
+    }));
+    new_messages.extend_from_slice(&current_messages[latest_user_idx..]);
+
+    let new_tokens = estimate_tokens(&new_messages);
+    info!(
+        "consolidation: compressed {} -> {} tokens ({} messages -> {})",
+        total_tokens,
+        new_tokens,
+        current_messages.len(),
+        new_messages.len()
+    );
+
+    Some(new_messages)
 }
 
-/// Pick consolidation boundary: find furthest user-turn boundary
-/// where preceding messages have enough tokens to remove.
-fn pick_consolidation_boundary(
-    messages: &[crate::db::StoredMessage],
-    message_values: &[Value],
-    tokens_to_remove: usize,
-) -> usize {
-    let mut accumulated = 0;
-    let mut last_user_boundary = 0;
-
-    for (i, msg) in messages.iter().enumerate() {
-        let token_count = estimate_tokens(&message_values[i..=i]);
-        accumulated += token_count;
-
-        // Mark boundaries at user messages (safe cut points)
-        if msg.role == "user" && accumulated >= tokens_to_remove {
-            last_user_boundary = i;
-            break;
-        }
-        if msg.role == "user" {
-            last_user_boundary = i;
+/// Find the index of the latest user message in the array.
+/// Returns 0 if no user message found.
+fn find_latest_user_turn(messages: &[Value]) -> usize {
+    for i in (0..messages.len()).rev() {
+        let role = messages[i]
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if role == "user" {
+            return i;
         }
     }
-
-    // If we couldn't find a boundary with enough tokens, use the last user boundary we found
-    if last_user_boundary == 0 && !messages.is_empty() {
-        // Find any user message
-        for (i, msg) in messages.iter().enumerate() {
-            if msg.role == "user" {
-                return i + 1; // Include this user message
-            }
-        }
-    }
-
-    if last_user_boundary > 0 {
-        last_user_boundary
-    } else {
-        0
-    }
+    0
 }
 
-/// Consolidate a chunk of messages via LLM
-async fn consolidate_chunk(
-    session_id: &str,
-    user_id: &str,
-    db: &PgPool,
+/// Compress a slice of messages into a summary using the LLM.
+async fn compress_messages(
     llm_config: &LlmConfig,
-    embedding_config: Option<&EmbeddingConfig>,
-    embedding_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
-    chunk: &[crate::db::StoredMessage],
-    consolidation_max_tokens: usize,
-) -> bool {
-    // Format messages as text
-    let formatted = chunk
+    messages: &[Value],
+) -> Option<String> {
+    let system_prompt = "You are a conversation compressor. Faithfully summarize the following conversation history. \
+        Preserve all important facts, decisions, tool results, file paths, error messages, and user preferences. \
+        Be concise but complete. Do not lose any actionable information. \
+        Output the summary as a clear, structured text.";
+
+    let content = messages
         .iter()
         .map(|m| {
-            let ts = m
-                .created_at
-                .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+            let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("?");
+            let text = m
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let tool_calls = m
+                .get("tool_calls")
+                .map(|tc| format!(" [tool_calls: {}]", tc))
                 .unwrap_or_default();
-            format!("[{}] {}: {}", ts, m.role.to_uppercase(), m.content)
+            format!("{}: {}{}", role, text, tool_calls)
         })
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Get current memory text
-    let current_memory = crate::db::get_latest_memory_text(db, session_id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "(empty)".to_string());
-
-    // Build consolidation prompt
-    let prompt = format!(
-        "Process this conversation and call the save_memory tool with your consolidation.\n\n\
-        ## Current Long-term Memory\n{}\n\n\
-        ## Conversation to Process\n{}",
-        current_memory, formatted
-    );
-
-    let messages = vec![
-        json!({"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation."}),
-        json!({"role": "user", "content": prompt}),
+    let compress_messages = vec![
+        json!({"role": "system", "content": system_prompt}),
+        json!({"role": "user", "content": content}),
     ];
 
     let request = ChatCompletionRequest {
-        messages,
-        tools: vec![save_memory_tool()],
+        messages: compress_messages,
+        tools: vec![],
         model: llm_config.model.clone(),
-        max_tokens: Some(consolidation_max_tokens),
+        max_tokens: Some(12288),
     };
 
-    let response = match call_with_retry(llm_config, request).await {
-        Ok(resp) => resp,
+    match call_with_retry(llm_config, request).await {
+        Ok(response) => {
+            let summary = response
+                .choices
+                .first()?
+                .message
+                .content
+                .clone()?;
+            if summary.trim().is_empty() {
+                warn!("consolidation: LLM returned empty summary");
+                None
+            } else {
+                Some(format!("[Compressed conversation summary]\n{}", summary))
+            }
+        }
         Err(e) => {
-            error!("consolidation LLM call failed: {}", e);
-            return false;
-        }
-    };
-
-    // Parse save_memory tool call from response
-    let choice = match response.choices.first() {
-        Some(c) => c,
-        None => {
-            warn!("consolidation: no choices in response");
-            return false;
-        }
-    };
-
-    let tool_calls = match &choice.message.tool_calls {
-        Some(tcs) if !tcs.is_empty() => tcs,
-        _ => {
-            warn!("consolidation: LLM did not call save_memory");
-            return false;
-        }
-    };
-
-    let tc = &tool_calls[0];
-    if tc.function.name != "save_memory" {
-        warn!("consolidation: unexpected tool call: {}", tc.function.name);
-        return false;
-    }
-
-    let args: Value = match serde_json::from_str(&tc.function.arguments) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("consolidation: failed to parse tool args: {}", e);
-            return false;
-        }
-    };
-
-    let history_entry = match args.get("history_entry").and_then(|v| v.as_str()) {
-        Some(s) if !s.trim().is_empty() => s.to_string(),
-        _ => {
-            warn!("consolidation: missing or empty history_entry");
-            return false;
-        }
-    };
-
-    let memory_update = match args.get("memory_update").and_then(|v| v.as_str()) {
-        Some(s) => s.to_string(),
-        _ => {
-            warn!("consolidation: missing memory_update");
-            return false;
-        }
-    };
-
-    // Generate embedding if config available
-    let embedding = if let Some(emb_config) = embedding_config {
-        let emb = crate::context::embed_text_throttled(emb_config, &memory_update, embedding_semaphore).await;
-        if emb.is_empty() {
+            warn!("consolidation: LLM compression call failed: {}", e);
             None
-        } else {
-            Some(emb)
-        }
-    } else {
-        None
-    };
-
-    // Dedup: skip if a very similar memory already exists
-    if let Some(ref emb) = embedding {
-        match crate::db::find_similar_memory(db, user_id, emb, 0.92).await {
-            Ok(true) => {
-                info!("consolidation: skipping duplicate memory (cosine > 0.92)");
-                // Still mark messages as consolidated so they don't re-trigger
-                let message_ids: Vec<String> = chunk.iter().map(|m| m.message_id.clone()).collect();
-                let _ = crate::db::mark_messages_consolidated(db, &message_ids).await;
-                if let Some(last) = message_ids.last() {
-                    let _ = crate::db::update_session_last_consolidated(db, session_id, last).await;
-                }
-                return true;
-            }
-            Ok(false) => {}
-            Err(e) => {
-                warn!("consolidation: dedup check failed: {}, proceeding with save", e);
-            }
         }
     }
-
-    // Save to DB
-    if let Err(e) = crate::db::save_memory_chunk(
-        db,
-        session_id,
-        user_id,
-        &history_entry,
-        &memory_update,
-        embedding.as_deref(),
-    )
-    .await
-    {
-        error!("consolidation: failed to save memory chunk: {}", e);
-        return false;
-    }
-
-    // Mark messages as consolidated
-    let message_ids: Vec<String> = chunk.iter().map(|m| m.message_id.clone()).collect();
-    if let Err(e) = crate::db::mark_messages_consolidated(db, &message_ids).await {
-        error!("consolidation: failed to mark messages: {}", e);
-        // Don't return false -- chunk is saved, this is a minor issue
-    }
-
-    // Update session cursor
-    if let Some(last) = message_ids.last() {
-        let _ = crate::db::update_session_last_consolidated(db, session_id, last).await;
-    }
-
-    info!(
-        "consolidation: saved {} messages, history_entry={}",
-        chunk.len(),
-        &history_entry[..history_entry.len().min(80)]
-    );
-    true
 }
 
-/// Raw archive fallback: dump messages without LLM summarization
-async fn raw_archive(
-    session_id: &str,
-    user_id: &str,
-    db: &PgPool,
-    chunk: &[crate::db::StoredMessage],
-) {
-    let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
-    let history_entry = format!(
-        "[{}] [RAW] {} messages archived without summarization",
-        ts,
-        chunk.len()
-    );
-    let memory_text = chunk
-        .iter()
-        .map(|m| format!("{}: {}", m.role, m.content))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let _ =
-        crate::db::save_memory_chunk(db, session_id, user_id, &history_entry, &memory_text, None)
-            .await;
-
-    let message_ids: Vec<String> = chunk.iter().map(|m| m.message_id.clone()).collect();
-    let _ = crate::db::mark_messages_consolidated(db, &message_ids).await;
-    if let Some(last) = message_ids.last() {
-        let _ = crate::db::update_session_last_consolidated(db, session_id, last).await;
+/// Mark messages in the DB as compressed.
+/// This is best-effort — we mark everything that's currently unconsolidated
+/// and not already compressed for this session.
+async fn mark_compressed_in_db(db: &PgPool, session_id: &str) -> Option<()> {
+    let now = chrono::Utc::now();
+    match crate::db::mark_messages_compressed(db, session_id, now).await {
+        Ok(count) => {
+            info!("consolidation: marked {} messages as compressed", count);
+            Some(())
+        }
+        Err(e) => {
+            warn!("consolidation: failed to mark messages compressed: {}", e);
+            None
+        }
     }
-
-    info!(
-        "consolidation: raw archived {} messages for session {}",
-        chunk.len(),
-        session_id
-    );
 }

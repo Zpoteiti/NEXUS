@@ -120,3 +120,30 @@ pub async fn update_user_preferences(
         .await?;
     Ok(())
 }
+
+// ============================================================================
+// User Memory (simple text string, 4K cap)
+// ============================================================================
+
+pub async fn get_user_memory(db: &PgPool, user_id: &str) -> Result<String, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT memory_text FROM users WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|r| r.0).unwrap_or_default())
+}
+
+pub async fn update_user_memory(
+    db: &PgPool,
+    user_id: &str,
+    memory: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET memory_text = $1 WHERE user_id = $2")
+        .bind(memory)
+        .bind(user_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}

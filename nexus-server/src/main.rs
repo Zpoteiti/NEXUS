@@ -176,6 +176,8 @@ async fn main() {
         // User soul & preferences
         .route("/api/user/soul", axum::routing::get(api::get_soul).patch(api::update_soul))
         .route("/api/user/preferences", axum::routing::get(api::get_preferences).patch(api::update_preferences))
+        // User memory
+        .route("/api/user/memory", axum::routing::get(api::get_memory).patch(api::update_memory))
         // Admin: default soul
         .route("/api/admin/default-soul", axum::routing::get(api::get_default_soul).put(api::set_default_soul))
         // Skills

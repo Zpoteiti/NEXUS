@@ -1,10 +1,11 @@
 /// 职责边界：
-/// 1. 负责在每次调用 LLM 前，拼接出完整的 Prompt（System Prompt + History + RAG Memory）。
+/// 1. 负责在每次调用 LLM 前，拼接出完整的 Prompt（System Prompt + History + Memory）。
 ///
 /// 参考 nanobot：
 /// - 【核心参考】nanobot/agent/context.py  ContextBuilder.build_system_prompt() L56-98
 /// - nanobot 从本地 SOUL.md / USER.md 文件读取 soul 与 user_preferences，
-///   Nexus 改为从 db.rs 的 users/preferences 表动态读取，其余结构一致。
+///   Nexus 改为从 db.rs 的 users 表动态读取，soul 包含原 preferences 内容。
+/// - Memory 使用简单的 text string（4K cap），不再使用 RAG/embedding 检索。
 
 use crate::state::AppState;
 use crate::tools_registry::merge_device_tool_schemas;
@@ -86,28 +87,25 @@ use nexus_common::consts::MAX_HISTORY_MESSAGES;
 ///
 /// 各段按以下顺序拼接，段间以 SECTION_SEPARATOR 分隔：
 ///
-/// 段 1 — 身份与运行时信息（必须段）
-/// 段 2 — soul 与 user_preferences（按需段，DB 中有数据才注入）
+/// 段 1 — 当前时间（必须段）
+/// 段 2 — soul（按需段，DB 中有数据才注入；含原 preferences）
 /// 段 3 — 在线设备与可用工具（必须段）
-/// 段 4 — 长期记忆 RAG 注入（按需段，有检索结果才注入）
+/// 段 4 — 持久记忆（按需段，simple text string, 4K cap）
 /// 段 5 — 常驻 Skill 摘要（按需段）
 pub async fn build_system_prompt(
     state: &AppState,
     user_id: &str,
     _session_id: &str,
-    user_input: &str,
+    _user_input: &str,
     metadata: &std::collections::HashMap<String, serde_json::Value>,
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
 
-    // 段 1 — 身份与运行时信息
+    // 段 1 — 当前时间
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-    sections.push(format!(
-        "You are Nexus, a distributed AI agent assistant running on {}.",
-        now
-    ));
+    sections.push(format!("Current time: {}", now));
 
-    // 段 2 — soul 与 user_preferences
+    // 段 2 — soul（merged with preferences; no separate preferences injection）
     let user_soul = crate::db::get_user_soul(&state.db, user_id).await.ok().flatten();
     let soul = match user_soul {
         Some(s) => Some(s),
@@ -117,15 +115,7 @@ pub async fn build_system_prompt(
             .flatten(),
     };
     if let Some(soul_text) = soul {
-        sections.push(format!("## Personality\n{}", soul_text));
-    }
-
-    let user_prefs = crate::db::get_user_preferences(&state.db, user_id)
-        .await
-        .ok()
-        .flatten();
-    if let Some(prefs) = user_prefs {
-        sections.push(format!("## User Preferences\n{}", prefs));
+        sections.push(soul_text);
     }
 
     // 段 2.5 — 消息发送者身份与安全边界（Discord 等外部渠道）
@@ -137,23 +127,10 @@ pub async fn build_system_prompt(
     let device_section = build_device_section(state, user_id).await;
     sections.push(device_section);
 
-    // 段 4 — RAG 注入
-    let embedding_config = state.config.embedding.read().await.clone();
-    if let Some(ref emb_config) = embedding_config {
-        let query_emb = embed_text_throttled(emb_config, user_input, &state.embedding_semaphore).await;
-        if !query_emb.is_empty() {
-            let chunks = crate::db::vector_search_memory(&state.db, user_id, &query_emb, 5)
-                .await
-                .unwrap_or_default();
-            if !chunks.is_empty() {
-                let memory_text = chunks
-                    .iter()
-                    .map(|c| c.memory_text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                sections.push(format!("## Relevant Memory\n{}", memory_text));
-            }
-        }
+    // 段 4 — 持久记忆（simple string, always injected if non-empty, 4K cap）
+    let memory = crate::db::get_user_memory(&state.db, user_id).await.unwrap_or_default();
+    if !memory.is_empty() {
+        sections.push(format!("## Memory\n{}", memory));
     }
 
     // 段 5 — Skills（progressive disclosure: DB-based）

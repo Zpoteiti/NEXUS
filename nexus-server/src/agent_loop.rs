@@ -200,17 +200,6 @@ async fn run_single_turn(
     // Route through LiteLLM proxy
     let llm_config = state.litellm_llm_config(&base_llm_config);
 
-    // Context compression check
-    crate::memory::maybe_consolidate(
-        session_id,
-        &event.sender_id,
-        &state.db,
-        &llm_config,
-        &state.config.embedding,
-        &state.embedding_semaphore,
-    )
-    .await;
-
     // Check if this is a checkpoint resume
     if let Some(resume_msgs) = event.metadata.get("resume_messages") {
         if let Some(resume_arr) = resume_msgs.as_array() {
@@ -298,6 +287,18 @@ async fn run_single_turn(
     messages.push(user_message);
 
     let _ = crate::db::save_message(&state.db, session_id, "user", user_input, None, None, None).await;
+
+    // Context compression: compress history if context window is running low
+    if let Some(consolidated) = crate::memory::maybe_consolidate(
+        session_id,
+        user_id,
+        &state.db,
+        &llm_config,
+        &messages,
+        llm_config.context_window,
+    ).await {
+        messages = consolidated;
+    }
 
     emit_progress(state, &event.channel, &event.chat_id, "⏳ Thinking...").await;
 

@@ -63,6 +63,7 @@ pub async fn get_session_history(
         FROM messages
         WHERE session_id = $1
           AND is_consolidated = FALSE
+          AND (compressed IS NULL OR compressed = FALSE)
         ORDER BY created_at ASC
         "#,
     )
@@ -146,4 +147,19 @@ pub async fn mark_messages_consolidated(
         .execute(db)
         .await?;
     Ok(())
+}
+
+pub async fn mark_messages_compressed(
+    db: &PgPool,
+    session_id: &str,
+    before_created_at: chrono::DateTime<chrono::Utc>,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE messages SET compressed = TRUE WHERE session_id = $1 AND created_at < $2 AND is_consolidated = FALSE AND (compressed IS NULL OR compressed = FALSE)"
+    )
+    .bind(session_id)
+    .bind(before_created_at)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected())
 }

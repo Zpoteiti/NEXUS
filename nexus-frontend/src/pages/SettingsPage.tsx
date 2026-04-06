@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { apiRequest } from '../lib/api'
 
-type Tab = 'profile' | 'devices' | 'skills' | 'soul' | 'preferences' | 'cron'
+type Tab = 'profile' | 'devices' | 'skills' | 'soul' | 'memory' | 'preferences' | 'cron'
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>('profile')
@@ -12,6 +12,7 @@ export default function SettingsPage() {
     { id: 'devices', label: 'Devices' },
     { id: 'skills', label: 'Skills' },
     { id: 'soul', label: 'Soul' },
+    { id: 'memory', label: 'Memory' },
     { id: 'preferences', label: 'Preferences' },
     { id: 'cron', label: 'Cron Jobs' },
   ]
@@ -44,6 +45,7 @@ export default function SettingsPage() {
             {tab === 'devices' && <DevicesTab />}
             {tab === 'skills' && <SkillsTab />}
             {tab === 'soul' && <SoulTab />}
+            {tab === 'memory' && <MemoryTab />}
             {tab === 'preferences' && <PreferencesTab />}
             {tab === 'cron' && <CronTab />}
           </div>
@@ -199,6 +201,37 @@ function SoulTab() {
       <textarea value={soul} onChange={e => setSoul(e.target.value)} rows={10} className="w-full px-3 py-2 border rounded text-sm" />
       <div className="flex items-center gap-3">
         <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
+        {saved && <span className="text-green-600 text-sm">Saved!</span>}
+      </div>
+    </div>
+  )
+}
+
+function MemoryTab() {
+  const [memory, setMemory] = useState('')
+  const [saved, setSaved] = useState(false)
+  const MAX_CHARS = 4096
+
+  useEffect(() => {
+    apiRequest('/api/user/memory').then(r => r.json()).then(d => setMemory(d.memory || '')).catch(() => {})
+  }, [])
+
+  async function save() {
+    if (memory.length > MAX_CHARS) {
+      alert(`Memory exceeds ${MAX_CHARS} character limit`)
+      return
+    }
+    await apiRequest('/api/user/memory', { method: 'PATCH', body: JSON.stringify({ memory }) })
+    setSaved(true); setTimeout(() => setSaved(false), 2000)
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-500">Persistent memory shared across all sessions. The agent can also edit this via save_memory / edit_memory tools.</p>
+      <textarea value={memory} onChange={e => setMemory(e.target.value)} rows={12} className="w-full px-3 py-2 border rounded text-sm font-mono" />
+      <div className="flex items-center gap-3">
+        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
+        <span className={`text-sm ${memory.length > MAX_CHARS ? 'text-red-600 font-medium' : 'text-gray-400'}`}>{memory.length} / {MAX_CHARS}</span>
         {saved && <span className="text-green-600 text-sm">Saved!</span>}
       </div>
     </div>

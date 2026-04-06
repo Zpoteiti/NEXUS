@@ -245,6 +245,55 @@ pub async fn set_default_soul(
 }
 
 // ============================================================================
+// GET /api/user/memory
+// ============================================================================
+
+pub async fn get_memory(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
+    match db::get_user_memory(&state.db, &claims.sub).await {
+        Ok(memory) => Json(serde_json::json!({ "memory": memory })).into_response(),
+        Err(e) => {
+            tracing::error!("get_memory error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to get memory").into_response()
+        }
+    }
+}
+
+// ============================================================================
+// PATCH /api/user/memory
+// ============================================================================
+
+#[derive(Deserialize)]
+pub struct UpdateMemoryRequest {
+    pub memory: String,
+}
+
+/// Maximum memory size in characters (4K).
+const MEMORY_MAX_CHARS: usize = 4096;
+
+pub async fn update_memory(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(payload): Json<UpdateMemoryRequest>,
+) -> Response {
+    if payload.memory.len() > MEMORY_MAX_CHARS {
+        return ApiError::new(
+            ErrorCode::ValidationFailed,
+            format!("Memory exceeds {} character limit ({} chars)", MEMORY_MAX_CHARS, payload.memory.len()),
+        ).into_response();
+    }
+    match db::update_user_memory(&state.db, &claims.sub, &payload.memory).await {
+        Ok(()) => Json(serde_json::json!({"message": "Memory updated"})).into_response(),
+        Err(e) => {
+            tracing::error!("update_memory error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to update memory").into_response()
+        }
+    }
+}
+
+// ============================================================================
 // POST /api/files  (multipart upload)
 // ============================================================================
 

@@ -82,6 +82,7 @@ impl AppState {
             server_tools: Arc::new({
                 let mut reg = ServerToolRegistry::new();
                 reg.register(Box::new(crate::server_tools::memory::SaveMemoryTool));
+                reg.register(Box::new(crate::server_tools::memory::EditMemoryTool));
                 reg.register(Box::new(crate::server_tools::send_file::SendFileTool));
                 reg.register(Box::new(crate::server_tools::download_to_device::DownloadToDeviceTool));
                 reg.register(Box::new(crate::server_tools::message::MessageTool));
