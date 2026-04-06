@@ -29,11 +29,13 @@ export async function login(email: string, password: string) {
   return res.json()
 }
 
-export async function register(email: string, password: string) {
+export async function register(email: string, password: string, adminToken?: string) {
+  const body: Record<string, string> = { email, password }
+  if (adminToken) body.admin_token = adminToken
   const res = await fetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
     const data = await res.json().catch(() => ({ message: 'Registration failed' }))

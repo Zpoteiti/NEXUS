@@ -2,12 +2,14 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { login, register } from '../lib/api'
 import { useAuthStore, parseJwt } from '../lib/store'
-import { Cpu, Eye, EyeOff, Loader2 } from 'lucide-react'
+import { Cpu, Eye, EyeOff, Loader2, KeyRound } from 'lucide-react'
 
 export default function LoginPage() {
   const [isRegister, setIsRegister] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [adminToken, setAdminToken] = useState('')
+  const [showAdminToken, setShowAdminToken] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -21,7 +23,7 @@ export default function LoginPage() {
 
     try {
       const data = isRegister
-        ? await register(email, password)
+        ? await register(email, password, adminToken || undefined)
         : await login(email, password)
 
       const token = data.token
@@ -91,6 +93,30 @@ export default function LoginPage() {
                 </button>
               </div>
             </div>
+
+            {isRegister && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowAdminToken(!showAdminToken)}
+                  className="flex items-center gap-1.5 text-xs cursor-pointer mb-1.5"
+                  style={{ color: '#64748b' }}
+                >
+                  <KeyRound className="w-3 h-3" />
+                  {showAdminToken ? 'Hide admin token' : 'Have an admin token?'}
+                </button>
+                {showAdminToken && (
+                  <input
+                    type="password"
+                    value={adminToken}
+                    onChange={(e) => setAdminToken(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                    style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.08)' }}
+                    placeholder="Enter admin token (optional)"
+                  />
+                )}
+              </div>
+            )}
 
             {error && (
               <div className="text-sm p-3 rounded-xl" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: '#fca5a5' }}>
