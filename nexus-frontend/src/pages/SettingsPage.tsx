@@ -1,40 +1,73 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { apiRequest } from '../lib/api'
+import { ArrowLeft, User, Monitor, Zap, Heart, Brain, SlidersHorizontal, Clock, Trash2, Power, PowerOff } from 'lucide-react'
 
 type Tab = 'profile' | 'devices' | 'skills' | 'soul' | 'memory' | 'preferences' | 'cron'
+
+const inputStyle: React.CSSProperties = {
+  background: 'rgba(255,255,255,0.05)',
+  border: '1px solid rgba(255,255,255,0.08)',
+}
+
+const cardStyle: React.CSSProperties = {
+  background: '#0f172a',
+  border: '1px solid rgba(255,255,255,0.08)',
+}
+
+function SaveButton({ onClick, saved, label = 'Save' }: { onClick: () => void; saved: boolean; label?: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={onClick}
+        className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
+        style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', boxShadow: '0 0 20px rgba(99, 102, 241, 0.2)' }}
+      >
+        {label}
+      </button>
+      {saved && <span className="text-sm" style={{ color: '#22c55e' }}>Saved!</span>}
+    </div>
+  )
+}
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>('profile')
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'profile', label: 'Profile' },
-    { id: 'devices', label: 'Devices' },
-    { id: 'skills', label: 'Skills' },
-    { id: 'soul', label: 'Soul' },
-    { id: 'memory', label: 'Memory' },
-    { id: 'preferences', label: 'Preferences' },
-    { id: 'cron', label: 'Cron Jobs' },
+  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: 'profile', label: 'Profile', icon: <User className="w-4 h-4" /> },
+    { id: 'devices', label: 'Devices', icon: <Monitor className="w-4 h-4" /> },
+    { id: 'skills', label: 'Skills', icon: <Zap className="w-4 h-4" /> },
+    { id: 'soul', label: 'Soul', icon: <Heart className="w-4 h-4" /> },
+    { id: 'memory', label: 'Memory', icon: <Brain className="w-4 h-4" /> },
+    { id: 'preferences', label: 'Preferences', icon: <SlidersHorizontal className="w-4 h-4" /> },
+    { id: 'cron', label: 'Cron Jobs', icon: <Clock className="w-4 h-4" /> },
   ]
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen" style={{ background: '#020617' }}>
       <div className="max-w-4xl mx-auto py-8 px-4">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold">Settings</h1>
-          <Link to="/chat" className="text-blue-600 hover:underline text-sm">Back to Chat</Link>
+          <h1 className="text-2xl font-bold text-white">Settings</h1>
+          <Link to="/chat" className="flex items-center gap-1.5 text-sm transition-colors" style={{ color: '#64748b' }}
+            onMouseEnter={e => { e.currentTarget.style.color = '#94a3b8' }}
+            onMouseLeave={e => { e.currentTarget.style.color = '#64748b' }}
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back to Chat
+          </Link>
         </div>
 
-        <div className="bg-white rounded-lg shadow">
-          <div className="border-b border-gray-200 flex overflow-x-auto">
+        <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+          <div className="flex overflow-x-auto" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
             {tabs.map(t => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`px-4 py-3 text-sm font-medium whitespace-nowrap ${
-                  tab === t.id ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500 hover:text-gray-700'
+                className={`px-4 py-3 text-sm font-medium whitespace-nowrap flex items-center gap-2 cursor-pointer transition-colors ${
+                  tab === t.id ? 'border-b-2 border-indigo-500 text-indigo-400' : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
+                {t.icon}
                 {t.label}
               </button>
             ))}
@@ -62,25 +95,25 @@ function ProfileTab() {
     apiRequest('/api/user/profile').then(r => r.json()).then(setProfile).catch(() => {})
   }, [])
 
-  if (!profile) return <p className="text-gray-500">Loading...</p>
+  if (!profile) return <p style={{ color: '#64748b' }}>Loading...</p>
 
   return (
     <div className="space-y-4">
       <div>
-        <label className="block text-sm font-medium text-gray-500">Email</label>
-        <p className="text-lg">{profile.email}</p>
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>Email</label>
+        <p className="text-lg text-white">{profile.email}</p>
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-500">User ID</label>
-        <p className="text-sm font-mono text-gray-600">{profile.user_id}</p>
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>User ID</label>
+        <p className="text-sm font-mono" style={{ color: '#94a3b8' }}>{profile.user_id}</p>
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-500">Role</label>
-        <p>{profile.is_admin ? 'Admin' : 'User'}</p>
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>Role</label>
+        <p className="text-white">{profile.is_admin ? 'Admin' : 'User'}</p>
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-500">Created</label>
-        <p>{new Date(profile.created_at).toLocaleDateString()}</p>
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>Created</label>
+        <p className="text-white">{new Date(profile.created_at).toLocaleDateString()}</p>
       </div>
     </div>
   )
@@ -106,15 +139,23 @@ function DevicesTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="font-medium mb-2">Online Devices</h3>
-        {devices.length === 0 ? <p className="text-gray-500 text-sm">No devices connected</p> : (
+        <h3 className="font-medium text-white mb-3">Online Devices</h3>
+        {devices.length === 0 ? <p className="text-sm" style={{ color: '#64748b' }}>No devices connected</p> : (
           <table className="w-full text-sm">
-            <thead><tr className="text-left text-gray-500"><th className="pb-2">Name</th><th>Tools</th><th>Last Seen</th></tr></thead>
+            <thead>
+              <tr style={{ color: '#64748b' }} className="text-left">
+                <th className="pb-2 font-medium">Name</th>
+                <th className="pb-2 font-medium">Tools</th>
+                <th className="pb-2 font-medium">Last Seen</th>
+              </tr>
+            </thead>
             <tbody>{devices.map(d => (
-              <tr key={d.device_name} className="border-t">
-                <td className="py-2">{d.device_name}</td>
-                <td>{d.tools_count}</td>
-                <td>{d.last_seen_secs_ago < 60 ? 'Online' : `${Math.round(d.last_seen_secs_ago / 60)}m ago`}</td>
+              <tr key={d.device_name} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                <td className="py-2 text-white">{d.device_name}</td>
+                <td className="py-2" style={{ color: '#94a3b8' }}>{d.tools_count}</td>
+                <td className="py-2" style={{ color: d.last_seen_secs_ago < 60 ? '#22c55e' : '#ef4444' }}>
+                  {d.last_seen_secs_ago < 60 ? 'Online' : `${Math.round(d.last_seen_secs_ago / 60)}m ago`}
+                </td>
               </tr>
             ))}</tbody>
           </table>
@@ -122,15 +163,37 @@ function DevicesTab() {
       </div>
 
       <div>
-        <h3 className="font-medium mb-2">Device Tokens</h3>
+        <h3 className="font-medium text-white mb-3">Device Tokens</h3>
         <div className="flex gap-2 mb-3">
-          <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Device name" className="flex-1 px-3 py-1 border rounded text-sm" />
-          <button onClick={createToken} className="px-3 py-1 bg-blue-600 text-white rounded text-sm">Create</button>
+          <input
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            placeholder="Device name"
+            className="flex-1 px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+            style={inputStyle}
+          />
+          <button
+            onClick={createToken}
+            className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
+            style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+          >
+            Create
+          </button>
         </div>
         {tokens.map(t => (
-          <div key={t.token} className="flex justify-between items-center py-1 text-sm border-t">
-            <span>{t.device_name} <code className="text-xs text-gray-400">{t.token.slice(0, 20)}...</code></span>
-            <button onClick={() => apiRequest(`/api/device-tokens/${t.token}`, { method: 'DELETE' }).then(() => apiRequest('/api/device-tokens').then(r => r.json()).then(setTokens))} className="text-red-500 text-xs">Revoke</button>
+          <div key={t.token} className="flex justify-between items-center py-2 text-sm" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <span className="text-white">
+              {t.device_name}{' '}
+              <code className="text-xs font-mono" style={{ color: '#64748b' }}>{t.token.slice(0, 20)}...</code>
+            </span>
+            <button
+              onClick={() => apiRequest(`/api/device-tokens/${t.token}`, { method: 'DELETE' }).then(() => apiRequest('/api/device-tokens').then(r => r.json()).then(setTokens))}
+              className="text-xs cursor-pointer flex items-center gap-1 transition-colors"
+              style={{ color: '#ef4444' }}
+            >
+              <Trash2 className="w-3 h-3" />
+              Revoke
+            </button>
           </div>
         ))}
       </div>
@@ -164,18 +227,44 @@ function SkillsTab() {
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="Skill name" className="w-full px-3 py-1 border rounded text-sm" />
-        <textarea value={content} onChange={e => setContent(e.target.value)} placeholder="SKILL.md content (with frontmatter)" rows={6} className="w-full px-3 py-1 border rounded text-sm font-mono" />
-        <button onClick={createSkill} className="px-3 py-1 bg-blue-600 text-white rounded text-sm">Create Skill</button>
+        <input
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder="Skill name"
+          className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+        />
+        <textarea
+          value={content}
+          onChange={e => setContent(e.target.value)}
+          placeholder="SKILL.md content (with frontmatter)"
+          rows={6}
+          className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+        />
+        <button
+          onClick={createSkill}
+          className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
+          style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+        >
+          Create Skill
+        </button>
       </div>
       {skills.map(s => (
-        <div key={s.name} className="flex justify-between items-center py-2 border-t text-sm">
+        <div key={s.name} className="flex justify-between items-center py-2 text-sm" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
           <div>
-            <span className="font-medium">{s.name}</span>
-            <span className="text-gray-500 ml-2">{s.description}</span>
-            {s.always_on && <span className="ml-2 text-xs bg-green-100 text-green-700 px-1 rounded">always-on</span>}
+            <span className="font-medium text-white">{s.name}</span>
+            <span className="ml-2" style={{ color: '#64748b' }}>{s.description}</span>
+            {s.always_on && (
+              <span className="ml-2 text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(34, 197, 94, 0.15)', color: '#22c55e' }}>
+                always-on
+              </span>
+            )}
           </div>
-          <button onClick={() => deleteSkill(s.name)} className="text-red-500 text-xs">Delete</button>
+          <button onClick={() => deleteSkill(s.name)} className="text-xs cursor-pointer flex items-center gap-1" style={{ color: '#ef4444' }}>
+            <Trash2 className="w-3 h-3" />
+            Delete
+          </button>
         </div>
       ))}
     </div>
@@ -197,12 +286,15 @@ function SoulTab() {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-500">Define your agent's personality and instructions.</p>
-      <textarea value={soul} onChange={e => setSoul(e.target.value)} rows={10} className="w-full px-3 py-2 border rounded text-sm" />
-      <div className="flex items-center gap-3">
-        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
-        {saved && <span className="text-green-600 text-sm">Saved!</span>}
-      </div>
+      <p className="text-sm" style={{ color: '#64748b' }}>Define your agent's personality and instructions.</p>
+      <textarea
+        value={soul}
+        onChange={e => setSoul(e.target.value)}
+        rows={10}
+        className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+        style={inputStyle}
+      />
+      <SaveButton onClick={save} saved={saved} />
     </div>
   )
 }
@@ -227,12 +319,26 @@ function MemoryTab() {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-500">Persistent memory shared across all sessions. The agent can also edit this via save_memory / edit_memory tools.</p>
-      <textarea value={memory} onChange={e => setMemory(e.target.value)} rows={12} className="w-full px-3 py-2 border rounded text-sm font-mono" />
+      <p className="text-sm" style={{ color: '#64748b' }}>Persistent memory shared across all sessions. The agent can also edit this via save_memory / edit_memory tools.</p>
+      <textarea
+        value={memory}
+        onChange={e => setMemory(e.target.value)}
+        rows={12}
+        className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+        style={inputStyle}
+      />
       <div className="flex items-center gap-3">
-        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
-        <span className={`text-sm ${memory.length > MAX_CHARS ? 'text-red-600 font-medium' : 'text-gray-400'}`}>{memory.length} / {MAX_CHARS}</span>
-        {saved && <span className="text-green-600 text-sm">Saved!</span>}
+        <button
+          onClick={save}
+          className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
+          style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', boxShadow: '0 0 20px rgba(99, 102, 241, 0.2)' }}
+        >
+          Save
+        </button>
+        <span className={`text-sm ${memory.length > MAX_CHARS ? 'font-medium' : ''}`} style={{ color: memory.length > MAX_CHARS ? '#ef4444' : '#64748b' }}>
+          {memory.length} / {MAX_CHARS}
+        </span>
+        {saved && <span className="text-sm" style={{ color: '#22c55e' }}>Saved!</span>}
       </div>
     </div>
   )
@@ -256,12 +362,15 @@ function PreferencesTab() {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-500">User preferences (JSON format).</p>
-      <textarea value={prefs} onChange={e => setPrefs(e.target.value)} rows={10} className="w-full px-3 py-2 border rounded text-sm font-mono" />
-      <div className="flex items-center gap-3">
-        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
-        {saved && <span className="text-green-600 text-sm">Saved!</span>}
-      </div>
+      <p className="text-sm" style={{ color: '#64748b' }}>User preferences (JSON format).</p>
+      <textarea
+        value={prefs}
+        onChange={e => setPrefs(e.target.value)}
+        rows={10}
+        className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+        style={inputStyle}
+      />
+      <SaveButton onClick={save} saved={saved} />
     </div>
   )
 }
@@ -305,19 +414,51 @@ function CronTab() {
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <input value={message} onChange={e => setMessage(e.target.value)} placeholder="Task message (what the agent should do)" className="w-full px-3 py-1 border rounded text-sm" />
-        <input value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="Cron expression (e.g., 0 9 * * *)" className="w-full px-3 py-1 border rounded text-sm" />
-        <button onClick={createJob} className="px-3 py-1 bg-blue-600 text-white rounded text-sm">Create Job</button>
+        <input
+          value={message}
+          onChange={e => setMessage(e.target.value)}
+          placeholder="Task message (what the agent should do)"
+          className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+        />
+        <input
+          value={cronExpr}
+          onChange={e => setCronExpr(e.target.value)}
+          placeholder="Cron expression (e.g., 0 9 * * *)"
+          className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+        />
+        <button
+          onClick={createJob}
+          className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
+          style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+        >
+          Create Job
+        </button>
       </div>
       {jobs.map(j => (
-        <div key={j.job_id} className="flex justify-between items-center py-2 border-t text-sm">
+        <div key={j.job_id} className="flex justify-between items-center py-2 text-sm" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
           <div>
-            <span className={j.enabled ? '' : 'text-gray-400 line-through'}>{j.name}</span>
-            <span className="text-gray-400 ml-2 text-xs">{j.cron_expr || `every ${j.every_seconds}s`}</span>
+            <span className={j.enabled ? 'text-white' : 'line-through'} style={j.enabled ? {} : { color: '#64748b' }}>{j.name}</span>
+            <span className="ml-2 text-xs" style={{ color: '#64748b' }}>{j.cron_expr || `every ${j.every_seconds}s`}</span>
           </div>
-          <div className="flex gap-2">
-            <button onClick={() => toggleJob(j.job_id, j.enabled)} className="text-xs text-blue-500">{j.enabled ? 'Disable' : 'Enable'}</button>
-            <button onClick={() => deleteJob(j.job_id)} className="text-xs text-red-500">Delete</button>
+          <div className="flex gap-3">
+            <button
+              onClick={() => toggleJob(j.job_id, j.enabled)}
+              className="text-xs cursor-pointer flex items-center gap-1 transition-colors"
+              style={{ color: j.enabled ? '#f59e0b' : '#22c55e' }}
+            >
+              {j.enabled ? <PowerOff className="w-3 h-3" /> : <Power className="w-3 h-3" />}
+              {j.enabled ? 'Disable' : 'Enable'}
+            </button>
+            <button
+              onClick={() => deleteJob(j.job_id)}
+              className="text-xs cursor-pointer flex items-center gap-1"
+              style={{ color: '#ef4444' }}
+            >
+              <Trash2 className="w-3 h-3" />
+              Delete
+            </button>
           </div>
         </div>
       ))}

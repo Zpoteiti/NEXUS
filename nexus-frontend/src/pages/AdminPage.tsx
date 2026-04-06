@@ -3,8 +3,34 @@ import { Link } from 'react-router-dom'
 import { apiRequest } from '../lib/api'
 import { useAuthStore } from '../lib/store'
 import { useNavigate } from 'react-router-dom'
+import { ArrowLeft, Cpu, Server, Heart } from 'lucide-react'
 
 type Tab = 'llm' | 'server-mcp' | 'default-soul'
+
+const inputStyle: React.CSSProperties = {
+  background: 'rgba(255,255,255,0.05)',
+  border: '1px solid rgba(255,255,255,0.08)',
+}
+
+const cardStyle: React.CSSProperties = {
+  background: '#0f172a',
+  border: '1px solid rgba(255,255,255,0.08)',
+}
+
+function SaveButton({ onClick, saved, label = 'Save' }: { onClick: () => void; saved: boolean; label?: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={onClick}
+        className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
+        style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', boxShadow: '0 0 20px rgba(99, 102, 241, 0.2)' }}
+      >
+        {label}
+      </button>
+      {saved && <span className="text-sm" style={{ color: '#22c55e' }}>Saved!</span>}
+    </div>
+  )
+}
 
 export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('llm')
@@ -15,26 +41,39 @@ export default function AdminPage() {
     if (!isAdmin) navigate('/chat')
   }, [isAdmin, navigate])
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'llm', label: 'LLM Config' },
-    { id: 'server-mcp', label: 'Server MCP' },
-    { id: 'default-soul', label: 'Default Soul' },
+  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: 'llm', label: 'LLM Config', icon: <Cpu className="w-4 h-4" /> },
+    { id: 'server-mcp', label: 'Server MCP', icon: <Server className="w-4 h-4" /> },
+    { id: 'default-soul', label: 'Default Soul', icon: <Heart className="w-4 h-4" /> },
   ]
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen" style={{ background: '#020617' }}>
       <div className="max-w-4xl mx-auto py-8 px-4">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold">Admin Panel</h1>
-          <Link to="/chat" className="text-blue-600 hover:underline text-sm">Back to Chat</Link>
+          <h1 className="text-2xl font-bold text-white">Admin Panel</h1>
+          <Link to="/chat" className="flex items-center gap-1.5 text-sm transition-colors" style={{ color: '#64748b' }}
+            onMouseEnter={e => { e.currentTarget.style.color = '#94a3b8' }}
+            onMouseLeave={e => { e.currentTarget.style.color = '#64748b' }}
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back to Chat
+          </Link>
         </div>
 
-        <div className="bg-white rounded-lg shadow">
-          <div className="border-b border-gray-200 flex">
+        <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+          <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
             {tabs.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                className={`px-4 py-3 text-sm font-medium ${tab === t.id ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
-              >{t.label}</button>
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`px-4 py-3 text-sm font-medium flex items-center gap-2 cursor-pointer transition-colors ${
+                  tab === t.id ? 'border-b-2 border-indigo-500 text-indigo-400' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {t.icon}
+                {t.label}
+              </button>
             ))}
           </div>
           <div className="p-6">
@@ -89,45 +128,75 @@ function LlmConfigTab() {
   const showApiBase = ['ollama', 'openai_compatible', 'azure'].includes(values.provider)
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>Provider</label>
         <select
           value={values.provider || ''}
           onChange={e => setValues({ ...values, provider: e.target.value })}
-          className="w-full px-3 py-2 border rounded text-sm"
+          className="w-full px-3 py-2.5 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 cursor-pointer appearance-none"
+          style={inputStyle}
         >
-          <option value="">Select a provider...</option>
-          {LLM_PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
+          <option value="" style={{ background: '#1e293b' }}>Select a provider...</option>
+          {LLM_PROVIDERS.map(p => <option key={p} value={p} style={{ background: '#1e293b' }}>{p}</option>)}
         </select>
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
-        <input value={values.model || ''} onChange={e => setValues({ ...values, model: e.target.value })} className="w-full px-3 py-2 border rounded text-sm" />
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>Model</label>
+        <input
+          value={values.model || ''}
+          onChange={e => setValues({ ...values, model: e.target.value })}
+          className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+        />
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">API Key</label>
-        <input value={values.api_key || ''} onChange={e => setValues({ ...values, api_key: e.target.value })} className="w-full px-3 py-2 border rounded text-sm" />
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>API Key</label>
+        <input
+          value={values.api_key || ''}
+          onChange={e => setValues({ ...values, api_key: e.target.value })}
+          className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+        />
       </div>
       {showApiBase && (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">API Base URL (optional)</label>
-          <input value={values.api_base || ''} onChange={e => setValues({ ...values, api_base: e.target.value })} className="w-full px-3 py-2 border rounded text-sm" placeholder="e.g. http://localhost:11434" />
+          <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>API Base URL (optional)</label>
+          <input
+            value={values.api_base || ''}
+            onChange={e => setValues({ ...values, api_base: e.target.value })}
+            className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+            style={inputStyle}
+            placeholder="e.g. http://localhost:11434"
+          />
         </div>
       )}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Context Window</label>
-        <input value={values.context_window || ''} onChange={e => setValues({ ...values, context_window: e.target.value })} type="number" className="w-full px-3 py-2 border rounded text-sm" />
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>Context Window</label>
+        <input
+          value={values.context_window || ''}
+          onChange={e => setValues({ ...values, context_window: e.target.value })}
+          type="number"
+          className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+        />
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Max Output Tokens</label>
-        <input value={values.max_output_tokens || ''} onChange={e => setValues({ ...values, max_output_tokens: e.target.value })} type="number" className="w-full px-3 py-2 border rounded text-sm" />
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>Max Output Tokens</label>
+        <input
+          value={values.max_output_tokens || ''}
+          onChange={e => setValues({ ...values, max_output_tokens: e.target.value })}
+          type="number"
+          className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+        />
       </div>
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="flex items-center gap-3">
-        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
-        {saved && <span className="text-green-600 text-sm">Saved!</span>}
-      </div>
+      {error && (
+        <div className="text-sm p-3 rounded-xl" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: '#fca5a5' }}>
+          {error}
+        </div>
+      )}
+      <SaveButton onClick={save} saved={saved} />
     </div>
   )
 }
@@ -150,12 +219,15 @@ function ServerMcpTab() {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-500">Server-side MCP servers (shared across all users).</p>
-      <textarea value={config} onChange={e => setConfig(e.target.value)} rows={12} className="w-full px-3 py-2 border rounded text-sm font-mono" />
-      <div className="flex items-center gap-3">
-        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
-        {saved && <span className="text-green-600 text-sm">Saved!</span>}
-      </div>
+      <p className="text-sm" style={{ color: '#64748b' }}>Server-side MCP servers (shared across all users).</p>
+      <textarea
+        value={config}
+        onChange={e => setConfig(e.target.value)}
+        rows={12}
+        className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+        style={inputStyle}
+      />
+      <SaveButton onClick={save} saved={saved} />
     </div>
   )
 }
@@ -175,12 +247,15 @@ function DefaultSoulTab() {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-500">Default soul/personality for new users.</p>
-      <textarea value={soul} onChange={e => setSoul(e.target.value)} rows={10} className="w-full px-3 py-2 border rounded text-sm" />
-      <div className="flex items-center gap-3">
-        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
-        {saved && <span className="text-green-600 text-sm">Saved!</span>}
-      </div>
+      <p className="text-sm" style={{ color: '#64748b' }}>Default soul/personality for new users.</p>
+      <textarea
+        value={soul}
+        onChange={e => setSoul(e.target.value)}
+        rows={10}
+        className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+        style={inputStyle}
+      />
+      <SaveButton onClick={save} saved={saved} />
     </div>
   )
 }

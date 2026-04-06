@@ -5,6 +5,7 @@ import { apiRequest, uploadFile } from '../lib/api'
 import { useAuthStore } from '../lib/store'
 import { useNavigate, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
+import { MessageSquare, Plus, Settings, Shield, LogOut, Send, Paperclip, Monitor, WifiOff, Hash, Clock, PanelLeftClose, PanelLeft, Download } from 'lucide-react'
 
 interface Session {
   session_id: string
@@ -128,60 +129,88 @@ export default function ChatPage() {
     return ''
   })()
 
-  function getSessionLabel(s: Session): { icon: string; label: string; readonly: boolean } {
+  function getSessionLabel(s: Session): { icon: React.ReactNode; label: string; readonly: boolean } {
     const id = s.session_id
-    if (id.startsWith('discord:')) return { icon: '🎮', label: `Discord ${id.split(':')[1]?.slice(0, 8)}`, readonly: true }
-    if (id.startsWith('cron:')) return { icon: '⏰', label: `Cron ${id.split(':')[1]?.slice(0, 8)}`, readonly: true }
-    if (id.startsWith('gateway:')) return { icon: '💬', label: `Chat ${id.split(':').pop()?.slice(0, 8)}`, readonly: false }
-    return { icon: '💬', label: id.slice(0, 16), readonly: false }
+    if (id.startsWith('discord:')) return { icon: <Hash className="w-3.5 h-3.5" />, label: `Discord ${id.split(':')[1]?.slice(0, 8)}`, readonly: true }
+    if (id.startsWith('cron:')) return { icon: <Clock className="w-3.5 h-3.5" />, label: `Cron ${id.split(':')[1]?.slice(0, 8)}`, readonly: true }
+    if (id.startsWith('gateway:')) return { icon: <MessageSquare className="w-3.5 h-3.5" />, label: `Chat ${id.split(':').pop()?.slice(0, 8)}`, readonly: false }
+    return { icon: <MessageSquare className="w-3.5 h-3.5" />, label: id.slice(0, 16), readonly: false }
   }
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen" style={{ background: '#020617' }}>
       {/* Sidebar */}
       {sidebarOpen && (
-        <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
-          <div className="p-4 border-b border-gray-200">
-            <h2 className="text-lg font-semibold">NEXUS</h2>
+        <div className="w-64 flex flex-col" style={{ background: '#0f172a', borderRight: '1px solid rgba(255,255,255,0.08)' }}>
+          <div className="p-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <h2 className="text-lg font-semibold text-white tracking-tight">NEXUS</h2>
           </div>
 
           <button
             onClick={newSession}
-            className="mx-3 mt-3 px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+            className="mx-3 mt-3 px-3 py-2.5 text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 cursor-pointer"
+            style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', boxShadow: '0 0 20px rgba(99, 102, 241, 0.2)' }}
           >
-            + New Chat
+            <Plus className="w-4 h-4" />
+            New Chat
           </button>
 
           <div className="flex-1 overflow-y-auto p-3 space-y-1">
             {sessions.map((s) => {
               const { icon, label, readonly } = getSessionLabel(s)
+              const isActive = s.session_id === sessionId
               return (
                 <button
                   key={s.session_id}
                   onClick={() => switchSession(s.session_id)}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm truncate ${
-                    s.session_id === sessionId
-                      ? 'bg-blue-50 text-blue-700'
-                      : 'hover:bg-gray-100 text-gray-700'
+                  className={`w-full text-left px-3 py-2 rounded-xl text-sm truncate flex items-center gap-2 cursor-pointer transition-colors ${
+                    isActive ? 'text-white' : 'hover:text-slate-200'
                   }`}
+                  style={{
+                    background: isActive ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                    color: isActive ? '#c7d2fe' : '#94a3b8',
+                    border: isActive ? '1px solid rgba(99, 102, 241, 0.25)' : '1px solid transparent',
+                  }}
                 >
-                  {icon} {label}
-                  {readonly && <span className="text-xs text-gray-400 ml-1">(view)</span>}
+                  {icon}
+                  <span className="truncate">{label}</span>
+                  {readonly && <span className="text-xs ml-auto opacity-50">(view)</span>}
                 </button>
               )
             })}
           </div>
 
-          <div className="p-3 border-t border-gray-200 space-y-1">
-            <Link to="/settings" className="block px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md">
+          <div className="p-3 space-y-1" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <Link
+              to="/settings"
+              className="flex items-center gap-2 px-3 py-2 text-sm rounded-xl transition-colors"
+              style={{ color: '#94a3b8' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = '#f1f5f9' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#94a3b8' }}
+            >
+              <Settings className="w-4 h-4" />
               Settings
             </Link>
             {isAdmin && (
-              <Link to="/admin" className="block px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md">
+              <Link
+                to="/admin"
+                className="flex items-center gap-2 px-3 py-2 text-sm rounded-xl transition-colors"
+                style={{ color: '#94a3b8' }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = '#f1f5f9' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#94a3b8' }}
+              >
+                <Shield className="w-4 h-4" />
                 Admin
               </Link>
             )}
-            <button onClick={handleLogout} className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-md">
+            <button
+              onClick={handleLogout}
+              className="w-full text-left flex items-center gap-2 px-3 py-2 text-sm rounded-xl cursor-pointer transition-colors"
+              style={{ color: '#ef4444' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <LogOut className="w-4 h-4" />
               Logout
             </button>
           </div>
@@ -191,28 +220,62 @@ export default function ChatPage() {
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col">
         {/* Header */}
-        <div className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4">
+        <div className="h-14 flex items-center justify-between px-4" style={{ background: 'transparent', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           <div className="flex items-center gap-3">
-            <button onClick={() => setSidebarOpen(!sidebarOpen)} className="text-gray-500 hover:text-gray-700">
-              {sidebarOpen ? '◀' : '▶'}
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="cursor-pointer transition-colors"
+              style={{ color: '#64748b' }}
+              onMouseEnter={e => { e.currentTarget.style.color = '#f1f5f9' }}
+              onMouseLeave={e => { e.currentTarget.style.color = '#64748b' }}
+            >
+              {sidebarOpen ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeft className="w-5 h-5" />}
             </button>
-            <span className="text-sm text-gray-500">
-              {connected ? '🟢 Connected' : '🔴 Disconnected'}
+            <span className="flex items-center gap-2 text-sm" style={{ color: '#94a3b8' }}>
+              {connected ? (
+                <>
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: '#22c55e' }} />
+                    <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: '#22c55e', boxShadow: '0 0 8px rgba(34, 197, 94, 0.5)' }} />
+                  </span>
+                  Connected
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-3.5 h-3.5" style={{ color: '#ef4444' }} />
+                  <span style={{ color: '#ef4444' }}>Disconnected</span>
+                </>
+              )}
             </span>
           </div>
 
           {/* Device Status */}
           <div className="flex items-center gap-2">
-            {devices.map((d) => (
-              <span
-                key={d.device_name}
-                className="inline-flex items-center gap-1 text-xs bg-gray-100 px-2 py-1 rounded-full"
-                title={`${d.tools_count} tools, last seen ${d.last_seen_secs_ago}s ago`}
-              >
-                <span className={d.last_seen_secs_ago < 60 ? 'text-green-500' : 'text-red-500'}>●</span>
-                {d.device_name}
-              </span>
-            ))}
+            {devices.map((d) => {
+              const online = d.last_seen_secs_ago < 60
+              return (
+                <span
+                  key={d.device_name}
+                  className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full"
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    color: '#94a3b8',
+                  }}
+                  title={`${d.tools_count} tools, last seen ${d.last_seen_secs_ago}s ago`}
+                >
+                  <span
+                    className="inline-block w-1.5 h-1.5 rounded-full"
+                    style={{
+                      background: online ? '#22c55e' : '#ef4444',
+                      boxShadow: online ? '0 0 6px rgba(34, 197, 94, 0.5)' : '0 0 6px rgba(239, 68, 68, 0.5)',
+                    }}
+                  />
+                  <Monitor className="w-3 h-3" />
+                  {d.device_name}
+                </span>
+              )
+            })}
           </div>
         </div>
 
@@ -224,14 +287,19 @@ export default function ChatPage() {
               className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[70%] rounded-lg px-4 py-2 ${
-                  msg.sender === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white border border-gray-200 text-gray-800'
-                }`}
+                className="max-w-[70%] rounded-2xl px-4 py-2.5"
+                style={msg.sender === 'user' ? {
+                  background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                  color: '#ffffff',
+                  boxShadow: '0 0 20px rgba(99, 102, 241, 0.15)',
+                } : {
+                  background: '#0f172a',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  color: '#f1f5f9',
+                }}
               >
                 {msg.sender === 'agent' ? (
-                  <div className="prose prose-sm max-w-none">
+                  <div className="prose prose-sm prose-invert max-w-none">
                     <ReactMarkdown>{msg.content}</ReactMarkdown>
                   </div>
                 ) : (
@@ -242,16 +310,18 @@ export default function ChatPage() {
                     {msg.media.map((url, j) => {
                       const isImage = /\.(png|jpg|jpeg|gif|webp)(\?|$)/i.test(url)
                       return isImage ? (
-                        <img key={j} src={url} alt="attachment" className="max-w-full max-h-64 rounded" />
+                        <img key={j} src={url} alt="attachment" className="max-w-full max-h-64 rounded-xl" />
                       ) : (
                         <a
                           key={j}
                           href={url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-sm text-blue-600 hover:underline"
+                          className="inline-flex items-center gap-1.5 text-sm hover:underline"
+                          style={{ color: '#a5b4fc' }}
                         >
-                          📎 Download file
+                          <Download className="w-3.5 h-3.5" />
+                          Download file
                         </a>
                       )
                     })}
@@ -264,7 +334,15 @@ export default function ChatPage() {
           {/* Progress hint */}
           {progress && (
             <div className="flex justify-start">
-              <div className="bg-gray-100 text-gray-500 text-sm rounded-lg px-4 py-2 animate-pulse">
+              <div
+                className="text-sm rounded-2xl px-4 py-2.5 animate-pulse"
+                style={{
+                  background: 'rgba(99, 102, 241, 0.1)',
+                  border: '1px solid rgba(99, 102, 241, 0.2)',
+                  color: '#a5b4fc',
+                  boxShadow: '0 0 15px rgba(99, 102, 241, 0.1)',
+                }}
+              >
                 {progress}
               </div>
             </div>
@@ -274,9 +352,9 @@ export default function ChatPage() {
         </div>
 
         {/* Input */}
-        <div className="bg-white border-t border-gray-200 p-4">
+        <div className="p-4" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
           {isReadOnly ? (
-            <div className="text-center text-sm text-gray-500 py-2">
+            <div className="text-center text-sm py-2" style={{ color: '#64748b' }}>
               This session is read-only (from {readOnlySource})
             </div>
           ) : (
@@ -286,12 +364,19 @@ export default function ChatPage() {
                   {pendingFiles.map((f, i) => (
                     <span
                       key={i}
-                      className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs px-2 py-1 rounded"
+                      className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg"
+                      style={{
+                        background: 'rgba(99, 102, 241, 0.15)',
+                        border: '1px solid rgba(99, 102, 241, 0.25)',
+                        color: '#a5b4fc',
+                      }}
                     >
-                      📎 {f.file_name}
+                      <Paperclip className="w-3 h-3" />
+                      {f.file_name}
                       <button
                         onClick={() => removePendingFile(i)}
-                        className="ml-1 text-blue-400 hover:text-blue-600"
+                        className="ml-1 cursor-pointer hover:text-white transition-colors"
+                        style={{ color: '#818cf8' }}
                       >
                         x
                       </button>
@@ -309,10 +394,17 @@ export default function ChatPage() {
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading || !connected}
-                  className="px-3 py-2 border border-gray-300 rounded-md hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-gray-600"
+                  className="px-3 py-2.5 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    color: '#94a3b8',
+                  }}
                   title="Attach file"
+                  onMouseEnter={e => { if (!uploading && connected) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)'; e.currentTarget.style.color = '#f1f5f9' } }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#94a3b8' }}
                 >
-                  {uploading ? '...' : '📎'}
+                  {uploading ? <span className="animate-spin">...</span> : <Paperclip className="w-4 h-4" />}
                 </button>
                 <textarea
                   value={input}
@@ -320,14 +412,22 @@ export default function ChatPage() {
                   onKeyDown={handleKeyDown}
                   placeholder="Type a message..."
                   rows={1}
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="flex-1 px-3.5 py-2.5 rounded-xl resize-none text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                  }}
                 />
                 <button
                   onClick={handleSend}
                   disabled={!input.trim() || !connected}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-4 py-2.5 text-white rounded-xl disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center gap-2 text-sm font-medium"
+                  style={{
+                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                    boxShadow: '0 0 20px rgba(99, 102, 241, 0.2)',
+                  }}
                 >
-                  Send
+                  <Send className="w-4 h-4" />
                 </button>
               </div>
             </div>
