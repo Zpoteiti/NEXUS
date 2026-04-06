@@ -83,13 +83,6 @@ async fn main() {
             info!("Loaded LLM config from database");
         }
     }
-    if let Ok(Some(emb_json)) = db::get_system_config(&pool, "embedding_config").await {
-        if let Ok(emb) = serde_json::from_str::<config::EmbeddingConfig>(&emb_json) {
-            *config.embedding.write().await = Some(emb);
-            info!("Loaded embedding config from database");
-        }
-    }
-
     // 创建 MessageBus
     let bus = Arc::new(MessageBus::new());
 
@@ -161,16 +154,12 @@ async fn main() {
         .route("/api/sessions/{session_id}", axum::routing::delete(auth::delete_session))
         // LLM config (admin only)
         .route("/api/llm-config", axum::routing::get(auth::get_llm_config).put(auth::update_llm_config))
-        // Embedding config (admin only)
-        .route("/api/embedding-config", axum::routing::get(auth::get_embedding_config).put(auth::update_embedding_config))
         // Session messages
         .route("/api/sessions/{session_id}/messages", axum::routing::get(api::get_session_messages))
         // Devices
         .route("/api/devices", axum::routing::get(api::list_devices))
         .route("/api/devices/{device_name}/policy", axum::routing::get(auth::get_device_policy).patch(auth::update_device_policy))
         .route("/api/devices/{device_name}/mcp", axum::routing::get(auth::get_device_mcp).put(auth::update_device_mcp))
-        // Memories
-        .route("/api/memories", axum::routing::get(api::list_memories))
         // User profile
         .route("/api/user/profile", axum::routing::get(api::get_user_profile))
         // User soul & preferences

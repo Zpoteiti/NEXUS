@@ -22,7 +22,7 @@ use axum::extract::ws::Message;
 use dashmap::DashMap;
 use nexus_common::protocol::{FileDownloadResponse, FileUploadResponse, FsPolicy, ToolExecutionResult};
 use sqlx::PgPool;
-use tokio::sync::{RwLock, Semaphore, mpsc, oneshot};
+use tokio::sync::{RwLock, mpsc, oneshot};
 
 use crate::bus::MessageBus;
 use crate::channels::ChannelManagerHandle;
@@ -57,7 +57,6 @@ pub struct AppState {
     pub session_manager: Arc<SessionManager>,
     /// ChannelManager handle for graceful shutdown — calls stop() on all channels.
     pub channel_manager_handle: Arc<RwLock<Option<ChannelManagerHandle>>>,
-    pub embedding_semaphore: Arc<Semaphore>,
     pub server_tools: Arc<ServerToolRegistry>,
     pub server_mcp: Arc<tokio::sync::RwLock<crate::server_mcp::ServerMcpManager>>,
     pub litellm: Arc<crate::litellm::LiteLlmManager>,
@@ -76,7 +75,6 @@ impl AppState {
             bus,
             session_manager,
             channel_manager_handle: Arc::new(RwLock::new(None)),
-            embedding_semaphore: Arc::new(Semaphore::new(10)),
             server_mcp: Arc::new(tokio::sync::RwLock::new(crate::server_mcp::ServerMcpManager::new())),
             litellm,
             server_tools: Arc::new({

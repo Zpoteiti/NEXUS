@@ -9,15 +9,6 @@ pub struct LlmConfig {
     pub max_output_tokens: usize,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct EmbeddingConfig {
-    pub api_base: String,
-    pub api_key: String,
-    pub model: String,
-    pub max_input_length: usize,
-    pub max_concurrency: usize,
-}
-
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -33,7 +24,6 @@ pub struct ServerConfig {
     pub bcrypt_cost: u32,
     pub litellm_port: u16,
     pub llm: Arc<RwLock<Option<LlmConfig>>>,
-    pub embedding: Arc<RwLock<Option<EmbeddingConfig>>>,
     pub skills_dir: String,
 }
 
@@ -97,7 +87,6 @@ pub fn load_config() -> ServerConfig {
         bcrypt_cost,
         litellm_port,
         llm: Arc::new(RwLock::new(None)),
-        embedding: Arc::new(RwLock::new(None)),
         skills_dir,
     }
 }

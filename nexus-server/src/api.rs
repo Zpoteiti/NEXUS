@@ -99,26 +99,6 @@ pub async fn list_devices(
 }
 
 // ============================================================================
-// GET /api/memories
-// ============================================================================
-
-pub async fn list_memories(
-    State(state): State<AppState>,
-    Extension(claims): Extension<Claims>,
-    Query(params): Query<PaginationParams>,
-) -> Response {
-    let limit = params.limit.unwrap_or(20).min(100);
-    let offset = params.offset.unwrap_or(0);
-    match db::list_memory_chunks(&state.db, &claims.sub, limit, offset).await {
-        Ok(chunks) => Json(chunks).into_response(),
-        Err(e) => {
-            tracing::error!("list_memories error: {e}");
-            ApiError::new(ErrorCode::InternalError, "failed to list memories").into_response()
-        }
-    }
-}
-
-// ============================================================================
 // GET /api/user/soul
 // ============================================================================
 

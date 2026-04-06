@@ -1,6 +1,6 @@
 /// 职责边界：
 /// 1. 负责所有与 PostgreSQL 的交互 (SQLx 操作)。
-/// 2. 处理 users、sessions、messages、memory_chunks 四张表的增删改查。
+/// 2. 处理 users、sessions、messages 三张表的增删改查。
 /// 3. 所有函数均为纯粹的 async CRUD，不包含任何业务逻辑。
 ///    业务逻辑（如 consolidation 触发判断、JWT 签发）由上层模块（memory.rs、auth.rs）负责。
 ///
@@ -11,7 +11,6 @@
 mod users;
 mod sessions;
 mod messages;
-mod memory;
 mod devices;
 mod discord;
 mod cron;
@@ -21,7 +20,6 @@ mod checkpoints;
 pub use users::*;
 pub use sessions::*;
 pub use messages::*;
-pub use memory::*;
 pub use devices::*;
 pub use discord::*;
 pub use cron::*;
@@ -31,11 +29,6 @@ pub use checkpoints::*;
 use sqlx::PgPool;
 
 pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
-    // pgvector extension (must be first — memory_chunks uses the vector type)
-    sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
-        .execute(pool)
-        .await?;
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS users (
@@ -127,23 +120,6 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL,
             updated_at TIMESTAMPTZ DEFAULT NOW()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS memory_chunks (
-            id SERIAL PRIMARY KEY,
-            session_id TEXT NOT NULL REFERENCES sessions(session_id),
-            user_id TEXT NOT NULL REFERENCES users(user_id),
-            history_entry TEXT NOT NULL,
-            memory_text TEXT NOT NULL,
-            embedding vector,
-            truncated BOOLEAN NOT NULL DEFAULT FALSE,
-            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         "#,
     )

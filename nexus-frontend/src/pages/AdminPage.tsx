@@ -4,7 +4,7 @@ import { apiRequest } from '../lib/api'
 import { useAuthStore } from '../lib/store'
 import { useNavigate } from 'react-router-dom'
 
-type Tab = 'llm' | 'embedding' | 'server-mcp' | 'default-soul'
+type Tab = 'llm' | 'server-mcp' | 'default-soul'
 
 export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('llm')
@@ -17,7 +17,6 @@ export default function AdminPage() {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'llm', label: 'LLM Config' },
-    { id: 'embedding', label: 'Embedding' },
     { id: 'server-mcp', label: 'Server MCP' },
     { id: 'default-soul', label: 'Default Soul' },
   ]
@@ -40,60 +39,10 @@ export default function AdminPage() {
           </div>
           <div className="p-6">
             {tab === 'llm' && <LlmConfigTab />}
-            {tab === 'embedding' && <EmbeddingConfigTab />}
             {tab === 'server-mcp' && <ServerMcpTab />}
             {tab === 'default-soul' && <DefaultSoulTab />}
           </div>
         </div>
-      </div>
-    </div>
-  )
-}
-
-function ConfigForm({ endpoint, fields }: { endpoint: string; fields: { key: string; label: string; type?: string }[] }) {
-  const [values, setValues] = useState<Record<string, string>>({})
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    apiRequest(endpoint).then(r => r.json()).then(data => {
-      const v: Record<string, string> = {}
-      fields.forEach(f => { v[f.key] = data[f.key]?.toString() || '' })
-      setValues(v)
-    }).catch(() => {})
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [endpoint])
-
-  async function save() {
-    setError('')
-    const body: Record<string, unknown> = {}
-    fields.forEach(f => {
-      const val = values[f.key]
-      if (f.type === 'number') body[f.key] = parseInt(val) || 0
-      else body[f.key] = val
-    })
-    const res = await apiRequest(endpoint, { method: 'PUT', body: JSON.stringify(body) })
-    if (res.ok) { setSaved(true); setTimeout(() => setSaved(false), 2000) }
-    else { const data = await res.json().catch(() => ({})); setError(data.message || 'Failed to save') }
-  }
-
-  return (
-    <div className="space-y-3">
-      {fields.map(f => (
-        <div key={f.key}>
-          <label className="block text-sm font-medium text-gray-700 mb-1">{f.label}</label>
-          <input
-            value={values[f.key] || ''}
-            onChange={e => setValues({ ...values, [f.key]: e.target.value })}
-            type={f.type === 'number' ? 'number' : 'text'}
-            className="w-full px-3 py-2 border rounded text-sm"
-          />
-        </div>
-      ))}
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="flex items-center gap-3">
-        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save</button>
-        {saved && <span className="text-green-600 text-sm">Saved!</span>}
       </div>
     </div>
   )
@@ -181,16 +130,6 @@ function LlmConfigTab() {
       </div>
     </div>
   )
-}
-
-function EmbeddingConfigTab() {
-  return <ConfigForm endpoint="/api/embedding-config" fields={[
-    { key: 'model', label: 'Model' },
-    { key: 'api_base', label: 'API Base URL' },
-    { key: 'api_key', label: 'API Key' },
-    { key: 'max_input_length', label: 'Max Input Length', type: 'number' },
-    { key: 'max_concurrency', label: 'Max Concurrency', type: 'number' },
-  ]} />
 }
 
 function ServerMcpTab() {
