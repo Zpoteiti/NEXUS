@@ -14,7 +14,7 @@ interface UseWebSocketReturn {
   progress: string | null
   sessionId: string | null
   connected: boolean
-  send: (content: string) => void
+  send: (content: string, media?: string[]) => void
   newSession: () => void
   switchSession: (sessionId: string) => void
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
@@ -107,9 +107,13 @@ export function useWebSocket(): UseWebSocketReturn {
     }
   }, [connect])
 
-  const send = useCallback((content: string) => {
+  const send = useCallback((content: string, media?: string[]) => {
     if (ws.current?.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({ type: 'message', content }))
+      const msg: Record<string, unknown> = { type: 'message', content }
+      if (media && media.length > 0) {
+        msg.media = media
+      }
+      ws.current.send(JSON.stringify(msg))
       setMessages((prev) => [
         ...prev,
         {

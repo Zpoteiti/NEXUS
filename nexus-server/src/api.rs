@@ -308,9 +308,14 @@ pub async fn download_file(
     Extension(claims): Extension<Claims>,
     Path(file_id): Path<String>,
 ) -> Response {
-    // Only serve files from the requesting user's upload directory
+    // Search the requesting user's upload directory first
     let user_dir = format!("/tmp/nexus-uploads/{}", claims.sub);
     if let Some(resp) = try_serve_file_from_dir(&user_dir, &file_id).await {
+        return resp;
+    }
+
+    // Also search /tmp/nexus-media/ for agent-generated files (e.g. send_file results)
+    if let Some(resp) = try_serve_file_from_dir("/tmp/nexus-media", &file_id).await {
         return resp;
     }
 

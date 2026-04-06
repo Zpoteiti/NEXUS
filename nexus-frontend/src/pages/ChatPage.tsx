@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useWebSocket } from '../lib/useWebSocket'
 import type { ChatMessage } from '../lib/useWebSocket'
-import { apiRequest } from '../lib/api'
+import { apiRequest, uploadFile } from '../lib/api'
 import { useAuthStore } from '../lib/store'
 import { useNavigate, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
@@ -23,6 +23,9 @@ export default function ChatPage() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [devices, setDevices] = useState<Device[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [pendingFiles, setPendingFiles] = useState<{ file_id: string; file_name: string }[]>([])
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const logout = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
@@ -74,8 +77,10 @@ export default function ChatPage() {
   function handleSend() {
     const text = input.trim()
     if (!text) return
-    send(text)
+    const media = pendingFiles.map((f) => `${f.file_id}:${f.file_name}`)
+    send(text, media.length > 0 ? media : undefined)
     setInput('')
+    setPendingFiles([])
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -83,6 +88,25 @@ export default function ChatPage() {
       e.preventDefault()
       handleSend()
     }
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading(true)
+    try {
+      const result = await uploadFile(file)
+      setPendingFiles((prev) => [...prev, { file_id: result.file_id, file_name: result.file_name }])
+    } catch (err) {
+      console.error('File upload failed:', err)
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  function removePendingFile(index: number) {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
   function handleLogout() {
@@ -210,6 +234,26 @@ export default function ChatPage() {
                 ) : (
                   <p className="whitespace-pre-wrap">{msg.content}</p>
                 )}
+                {msg.media && msg.media.length > 0 && (
+                  <div className="mt-2 space-y-2">
+                    {msg.media.map((url, j) => {
+                      const isImage = /\.(png|jpg|jpeg|gif|webp)(\?|$)/i.test(url)
+                      return isImage ? (
+                        <img key={j} src={url} alt="attachment" className="max-w-full max-h-64 rounded" />
+                      ) : (
+                        <a
+                          key={j}
+                          href={url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-sm text-blue-600 hover:underline"
+                        >
+                          📎 Download file
+                        </a>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -233,22 +277,56 @@ export default function ChatPage() {
               This session is read-only (from {readOnlySource})
             </div>
           ) : (
-            <div className="flex gap-2">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Type a message..."
-                rows={1}
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <button
-                onClick={handleSend}
-                disabled={!input.trim() || !connected}
-                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Send
-              </button>
+            <div>
+              {pendingFiles.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {pendingFiles.map((f, i) => (
+                    <span
+                      key={i}
+                      className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs px-2 py-1 rounded"
+                    >
+                      📎 {f.file_name}
+                      <button
+                        onClick={() => removePendingFile(i)}
+                        className="ml-1 text-blue-400 hover:text-blue-600"
+                      >
+                        x
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading || !connected}
+                  className="px-3 py-2 border border-gray-300 rounded-md hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-gray-600"
+                  title="Attach file"
+                >
+                  {uploading ? '...' : '📎'}
+                </button>
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type a message..."
+                  rows={1}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  onClick={handleSend}
+                  disabled={!input.trim() || !connected}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Send
+                </button>
+              </div>
             </div>
           )}
         </div>

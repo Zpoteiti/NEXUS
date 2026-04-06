@@ -94,11 +94,11 @@ async fn browser_connection(socket: WebSocket, state: SharedState, user_id: Stri
         };
 
         match inbound {
-            BrowserInbound::Message { content } => {
+            BrowserInbound::Message { content, media } => {
                 let current_session = state.browser_conns.get(&chat_id)
                     .map(|c| c.session_id.clone())
                     .unwrap_or_default();
-                if let Err(e) = forward_browser_message(&state, &chat_id, &user_id, &content, &current_session).await {
+                if let Err(e) = forward_browser_message(&state, &chat_id, &user_id, &content, &current_session, media.as_deref()).await {
                     warn!("browser forward failed: {}", e);
                     let err_json = serde_json::to_string(&BrowserOutbound::Error {
                         reason: "Nexus server not connected".to_string(),
@@ -148,12 +148,14 @@ pub async fn forward_browser_message(
     user_id: &str,
     content: &str,
     session_id: &str,
+    media: Option<&[String]>,
 ) -> Result<(), String> {
     let msg = NexusOutbound::Message {
         chat_id: chat_id.to_string(),
         sender_id: user_id.to_string(),
         content: content.to_string(),
         session_id: session_id.to_string(),
+        media: media.map(|m| m.to_vec()),
     };
     let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
 
@@ -175,7 +177,7 @@ mod tests {
         let (nexus_tx, mut nexus_rx) = tokio::sync::mpsc::channel::<String>(8);
         *state.nexus_tx.write().await = Some(nexus_tx);
 
-        let result = forward_browser_message(&state, "test-chat", "test-user-id", "hello nexus", "gateway:test-user-id:sess1").await;
+        let result = forward_browser_message(&state, "test-chat", "test-user-id", "hello nexus", "gateway:test-user-id:sess1", None).await;
         assert!(result.is_ok());
 
         let msg = nexus_rx.recv().await.unwrap();
@@ -190,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn forward_to_nexus_when_disconnected_returns_err() {
         let state = AppState::new("token".into(), "test-secret".into(), "http://localhost:8080".into());
-        let result = forward_browser_message(&state, "chat1", "test-user-id", "hello", "gateway:test-user-id:sess1").await;
+        let result = forward_browser_message(&state, "chat1", "test-user-id", "hello", "gateway:test-user-id:sess1", None).await;
         assert!(result.is_err());
     }
 

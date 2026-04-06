@@ -34,7 +34,7 @@ pub enum NexusToGateway {
 pub enum GatewayToNexus {
     AuthOk,
     AuthFail { reason: String },
-    Message { chat_id: String, sender_id: String, content: String, #[serde(default)] session_id: Option<String> },
+    Message { chat_id: String, sender_id: String, content: String, #[serde(default)] session_id: Option<String>, #[serde(default)] media: Option<Vec<String>> },
 }
 
 // ============================================================================
@@ -43,6 +43,46 @@ pub enum GatewayToNexus {
 
 pub fn make_session_id(chat_id: &str) -> String {
     format!("gateway:{}", chat_id)
+}
+
+/// Search /tmp/nexus-uploads/ recursively for a file whose name starts with `file_id`.
+async fn resolve_upload_file_id(file_id: &str) -> Option<String> {
+    let base = "/tmp/nexus-uploads";
+    let mut user_dirs = match tokio::fs::read_dir(base).await {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    while let Ok(Some(user_entry)) = user_dirs.next_entry().await {
+        let user_path = user_entry.path();
+        if !user_path.is_dir() {
+            continue;
+        }
+        let mut files = match tokio::fs::read_dir(&user_path).await {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        while let Ok(Some(file_entry)) = files.next_entry().await {
+            let name = file_entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(file_id) {
+                return Some(file_entry.path().to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Convert a `__FILE__:/tmp/nexus-media/uuid_filename` path to a `/api/files/uuid` download URL.
+fn file_path_to_download_url(path: &str) -> Option<String> {
+    let path = path.strip_prefix("__FILE__:")?;
+    let filename = path.rsplit('/').next()?;
+    // Filename format: {uuid}_{original_name}
+    let uuid_part = filename.split('_').next()?;
+    // Validate it looks like a UUID (36 chars with hyphens)
+    if uuid_part.len() == 36 && uuid_part.chars().filter(|c| *c == '-').count() == 4 {
+        Some(format!("/api/files/{}", uuid_part))
+    } else {
+        None
+    }
 }
 
 // ============================================================================
@@ -77,12 +117,32 @@ impl GatewayChannel {
         sender_id: String,
         content: String,
         forwarded_session_id: Option<String>,
+        media: Option<Vec<String>>,
     ) {
         // Use the session_id forwarded by the gateway if available,
         // otherwise fall back to generating one from chat_id.
         let session_id = forwarded_session_id
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| make_session_id(&chat_id));
+
+        // Resolve media file_ids to filesystem paths.
+        // Frontend sends items as "file_id:file_name". We search /tmp/nexus-uploads/
+        // for files whose name starts with the file_id.
+        let resolved_media = if let Some(items) = media {
+            let mut paths = Vec::new();
+            for item in &items {
+                let file_id = item.split(':').next().unwrap_or(item);
+                if let Some(path) = resolve_upload_file_id(file_id).await {
+                    paths.push(path);
+                } else {
+                    warn!("GatewayChannel: could not resolve media file_id: {}", file_id);
+                }
+            }
+            paths
+        } else {
+            Vec::new()
+        };
+
         let event = InboundEvent {
             channel: "gateway".to_string(),
             sender_id,
@@ -90,7 +150,7 @@ impl GatewayChannel {
             content,
             session_id,
             timestamp: Some(chrono::Utc::now()),
-            media: Vec::new(),
+            media: resolved_media,
             metadata: HashMap::new(),
         };
         crate::session::ensure_session_and_publish(&self.state, event).await;
@@ -172,8 +232,9 @@ impl GatewayChannel {
                             sender_id,
                             content,
                             session_id,
+                            media,
                         }) => {
-                            self.handle_inbound(chat_id, sender_id, content, session_id).await;
+                            self.handle_inbound(chat_id, sender_id, content, session_id, media).await;
                         }
                         Ok(GatewayToNexus::AuthOk | GatewayToNexus::AuthFail { .. }) => {
                             warn!("GatewayChannel: unexpected auth message in read loop");
@@ -282,7 +343,18 @@ impl Channel for GatewayChannel {
         content: &str,
         media: &[String],
     ) -> Result<(), nexus_common::error::NexusError> {
-        self.send_with_metadata(chat_id, content, Some(serde_json::json!({"media": media}))).await
+        // Convert __FILE__:/tmp/nexus-media/... paths to /api/files/... download URLs
+        let urls: Vec<String> = media
+            .iter()
+            .filter_map(|m| {
+                if m.starts_with("__FILE__:") {
+                    file_path_to_download_url(m)
+                } else {
+                    Some(m.clone())
+                }
+            })
+            .collect();
+        self.send_with_metadata(chat_id, content, Some(serde_json::json!({"media": urls}))).await
     }
 }
 
@@ -303,14 +375,33 @@ mod tests {
     fn parse_gateway_message_ok() {
         let json = r#"{"type":"message","chat_id":"c1","sender_id":"u1","content":"hi","session_id":"gateway:u1:sess1"}"#;
         let msg: GatewayToNexus = serde_json::from_str(json).unwrap();
-        assert!(matches!(msg, GatewayToNexus::Message { session_id: Some(s), .. } if s == "gateway:u1:sess1"));
+        assert!(matches!(msg, GatewayToNexus::Message { session_id: Some(s), media: None, .. } if s == "gateway:u1:sess1"));
     }
 
     #[test]
     fn parse_gateway_message_without_session_id() {
         let json = r#"{"type":"message","chat_id":"c1","sender_id":"u1","content":"hi"}"#;
         let msg: GatewayToNexus = serde_json::from_str(json).unwrap();
-        assert!(matches!(msg, GatewayToNexus::Message { session_id: None, .. }));
+        assert!(matches!(msg, GatewayToNexus::Message { session_id: None, media: None, .. }));
+    }
+
+    #[test]
+    fn parse_gateway_message_with_media() {
+        let json = r#"{"type":"message","chat_id":"c1","sender_id":"u1","content":"hi","media":["abc-123:test.png"]}"#;
+        let msg: GatewayToNexus = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, GatewayToNexus::Message { media: Some(m), .. } if m.len() == 1));
+    }
+
+    #[test]
+    fn file_path_to_download_url_valid() {
+        let url = file_path_to_download_url("__FILE__:/tmp/nexus-media/550e8400-e29b-41d4-a716-446655440000_photo.png");
+        assert_eq!(url, Some("/api/files/550e8400-e29b-41d4-a716-446655440000".to_string()));
+    }
+
+    #[test]
+    fn file_path_to_download_url_no_prefix() {
+        let url = file_path_to_download_url("/tmp/nexus-media/550e8400-e29b-41d4-a716-446655440000_photo.png");
+        assert_eq!(url, None);
     }
 
     #[test]

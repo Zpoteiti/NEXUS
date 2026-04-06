@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type")]
 pub enum BrowserInbound {
     #[serde(rename = "message")]
-    Message { content: String },
+    Message { content: String, #[serde(default)] media: Option<Vec<String>> },
     #[serde(rename = "new_session")]
     NewSession,
     #[serde(rename = "switch_session")]
@@ -42,7 +42,7 @@ pub enum NexusInbound {
 pub enum NexusOutbound {
     AuthOk,
     AuthFail { reason: String },
-    Message { chat_id: String, sender_id: String, content: String, session_id: String },
+    Message { chat_id: String, sender_id: String, content: String, session_id: String, #[serde(skip_serializing_if = "Option::is_none")] media: Option<Vec<String>> },
 }
 
 #[cfg(test)]
@@ -53,7 +53,14 @@ mod tests {
     fn browser_inbound_deserializes() {
         let json = r#"{"type":"message","content":"hello"}"#;
         let msg: BrowserInbound = serde_json::from_str(json).unwrap();
-        assert!(matches!(msg, BrowserInbound::Message { content } if content == "hello"));
+        assert!(matches!(msg, BrowserInbound::Message { content, media } if content == "hello" && media.is_none()));
+    }
+
+    #[test]
+    fn browser_inbound_with_media_deserializes() {
+        let json = r#"{"type":"message","content":"hello","media":["file1:test.png"]}"#;
+        let msg: BrowserInbound = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, BrowserInbound::Message { content, media } if content == "hello" && media.as_ref().unwrap().len() == 1));
     }
 
     #[test]
@@ -100,10 +107,27 @@ mod tests {
             sender_id: "user1".to_string(),
             content: "hello".to_string(),
             session_id: "gateway:user1:test".to_string(),
+            media: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"message""#));
         assert!(json.contains(r#""chat_id":"abc""#));
+        // media should be omitted when None
+        assert!(!json.contains("media"));
+    }
+
+    #[test]
+    fn nexus_outbound_message_with_media_serializes() {
+        let msg = NexusOutbound::Message {
+            chat_id: "abc".to_string(),
+            sender_id: "user1".to_string(),
+            content: "hello".to_string(),
+            session_id: "gateway:user1:test".to_string(),
+            media: Some(vec!["file1:test.png".to_string()]),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("media"));
+        assert!(json.contains("file1:test.png"));
     }
 
     #[test]
