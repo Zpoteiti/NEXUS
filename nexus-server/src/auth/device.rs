@@ -1,4 +1,4 @@
-/// Device token handlers (create, list, revoke), device policy handlers, device MCP handlers.
+/// Device token handlers (create, list, delete), device policy handlers, device MCP handlers.
 
 use axum::{
     extract::{Json, Path, State},
@@ -71,18 +71,18 @@ pub async fn list_device_tokens(
     }
 }
 
-/// DELETE /api/device-tokens/:token -- revoke a device token
-pub async fn revoke_device_token(
+/// DELETE /api/device-tokens/:token -- delete a device token permanently
+pub async fn delete_device_token(
     State(state): State<AppState>,
     claims: axum::Extension<Claims>,
     Path(token): Path<String>,
 ) -> Response {
-    match db::revoke_device_token(&state.db, &token, &claims.sub).await {
-        Ok(true) => Json(json!({"message": "Token revoked"})).into_response(),
-        Ok(false) => ApiError::new(ErrorCode::NotFound, "token not found or already revoked").into_response(),
+    match db::delete_device_token(&state.db, &token, &claims.sub).await {
+        Ok(true) => Json(json!({"message": "Token deleted"})).into_response(),
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "token not found").into_response(),
         Err(e) => {
-            tracing::error!("revoke_device_token error: {e}");
-            ApiError::new(ErrorCode::InternalError, "failed to revoke token").into_response()
+            tracing::error!("delete_device_token error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to delete token").into_response()
         }
     }
 }
@@ -131,7 +131,7 @@ pub async fn update_device_policy(
             fs_policy: payload.fs_policy,
         })
         .into_response(),
-        Ok(false) => ApiError::new(ErrorCode::NotFound, "device not found or revoked").into_response(),
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "device not found").into_response(),
         Err(e) => {
             tracing::error!("update_device_policy error: {e}");
             ApiError::new(ErrorCode::InternalError, "operation failed").into_response()
@@ -181,7 +181,7 @@ pub async fn update_device_mcp(
             device_name,
             mcp_servers: payload.mcp_servers,
         }).into_response(),
-        Ok(false) => ApiError::new(ErrorCode::NotFound, "device not found or revoked").into_response(),
+        Ok(false) => ApiError::new(ErrorCode::NotFound, "device not found").into_response(),
         Err(e) => {
             tracing::error!("update_device_mcp error: {e}");
             ApiError::new(ErrorCode::InternalError, "operation failed").into_response()

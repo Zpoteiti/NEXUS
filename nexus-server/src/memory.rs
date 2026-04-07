@@ -126,7 +126,7 @@ async fn compress_messages(
     messages: &[Value],
 ) -> Option<String> {
     let system_prompt = "You are a conversation compressor. Faithfully summarize the following conversation history. \
-        Preserve all important facts, decisions, tool results, file paths, error messages, and user preferences. \
+        Preserve all important facts, decisions, tool results, file paths, and error messages. \
         Be concise but complete. Do not lose any actionable information. \
         Output the summary as a clear, structured text.";
 

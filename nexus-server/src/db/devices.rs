@@ -11,22 +11,19 @@ pub struct DeviceTokenVerification {
 pub struct DeviceTokenInfo {
     pub token: String,
     pub device_name: Option<String>,
-    pub revoked: bool,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// A registered device from the DB, grouped by device_name (preferring non-revoked).
+/// A registered device from the DB, grouped by device_name.
 #[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)] // Fields populated by sqlx FromRow, used in API serialization
 pub struct RegisteredDevice {
     pub device_name: String,
-    pub revoked: bool,
     pub fs_policy: Option<serde_json::Value>,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Returns all registered devices for a user, grouped by device_name.
-/// When multiple tokens exist for the same device_name (e.g. revoked + re-created),
-/// the non-revoked entry is preferred.
 pub async fn list_user_devices(
     db: &PgPool,
     user_id: &str,
@@ -34,10 +31,10 @@ pub async fn list_user_devices(
     sqlx::query_as::<_, RegisteredDevice>(
         r#"
         SELECT DISTINCT ON (device_name)
-            device_name, revoked, fs_policy, created_at
+            device_name, fs_policy, created_at
         FROM device_tokens
         WHERE user_id = $1
-        ORDER BY device_name, revoked ASC, created_at DESC
+        ORDER BY device_name, created_at DESC
         "#,
     )
     .bind(user_id)
@@ -62,7 +59,7 @@ pub async fn create_device_token(
     Ok(())
 }
 
-/// Returns user_id and device_name if token is valid and not revoked.
+/// Returns user_id and device_name if token exists (deleted tokens won't be found).
 pub async fn verify_device_token(
     pool: &PgPool,
     token: &str,
@@ -72,7 +69,6 @@ pub async fn verify_device_token(
         SELECT user_id, COALESCE(device_name, 'unnamed') AS device_name
         FROM device_tokens
         WHERE token = $1
-          AND revoked = FALSE
         "#,
     )
     .bind(token)
@@ -85,20 +81,21 @@ pub async fn list_device_tokens(
     user_id: &str,
 ) -> Result<Vec<DeviceTokenInfo>, sqlx::Error> {
     sqlx::query_as::<_, DeviceTokenInfo>(
-        "SELECT token, device_name, revoked, created_at FROM device_tokens WHERE user_id = $1 ORDER BY created_at DESC",
+        "SELECT token, device_name, created_at FROM device_tokens WHERE user_id = $1 ORDER BY created_at DESC",
     )
     .bind(user_id)
     .fetch_all(db)
     .await
 }
 
-pub async fn revoke_device_token(
+/// Hard-deletes a device token. Gone forever.
+pub async fn delete_device_token(
     db: &PgPool,
     token: &str,
     user_id: &str,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
-        "UPDATE device_tokens SET revoked = TRUE WHERE token = $1 AND user_id = $2 AND revoked = FALSE",
+        "DELETE FROM device_tokens WHERE token = $1 AND user_id = $2",
     )
     .bind(token)
     .bind(user_id)
@@ -117,7 +114,7 @@ pub async fn get_device_policy(
     device_name: &str,
 ) -> Result<nexus_common::protocol::FsPolicy, sqlx::Error> {
     let row: (serde_json::Value,) = sqlx::query_as(
-        "SELECT COALESCE(fs_policy, '{\"mode\":\"sandbox\"}'::jsonb) FROM device_tokens WHERE user_id = $1 AND device_name = $2 AND revoked = FALSE"
+        "SELECT COALESCE(fs_policy, '{\"mode\":\"sandbox\"}'::jsonb) FROM device_tokens WHERE user_id = $1 AND device_name = $2 "
     )
     .bind(user_id)
     .bind(device_name)
@@ -138,7 +135,7 @@ pub async fn update_device_policy(
         .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize policy: {e}")))?;
 
     let result = sqlx::query(
-        "UPDATE device_tokens SET fs_policy = $1 WHERE user_id = $2 AND device_name = $3 AND revoked = FALSE"
+        "UPDATE device_tokens SET fs_policy = $1 WHERE user_id = $2 AND device_name = $3 "
     )
     .bind(json)
     .bind(user_id)
@@ -159,7 +156,7 @@ pub async fn get_device_mcp_config(
     device_name: &str,
 ) -> Result<Vec<nexus_common::protocol::McpServerEntry>, sqlx::Error> {
     let row: (serde_json::Value,) = sqlx::query_as(
-        "SELECT COALESCE(mcp_config, '[]'::jsonb) FROM device_tokens WHERE user_id = $1 AND device_name = $2 AND revoked = FALSE"
+        "SELECT COALESCE(mcp_config, '[]'::jsonb) FROM device_tokens WHERE user_id = $1 AND device_name = $2 "
     )
     .bind(user_id)
     .bind(device_name)
@@ -180,7 +177,7 @@ pub async fn update_device_mcp_config(
         .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize mcp_config: {e}")))?;
 
     let result = sqlx::query(
-        "UPDATE device_tokens SET mcp_config = $1 WHERE user_id = $2 AND device_name = $3 AND revoked = FALSE"
+        "UPDATE device_tokens SET mcp_config = $1 WHERE user_id = $2 AND device_name = $3 "
     )
     .bind(json)
     .bind(user_id)

@@ -96,31 +96,7 @@ pub async fn update_user_soul(db: &PgPool, user_id: &str, soul: &str) -> Result<
     Ok(())
 }
 
-pub async fn get_user_preferences(
-    db: &PgPool,
-    user_id: &str,
-) -> Result<Option<serde_json::Value>, sqlx::Error> {
-    let row = sqlx::query_as::<_, (Option<serde_json::Value>,)>(
-        "SELECT preferences FROM users WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
-    Ok(row.and_then(|r| r.0))
-}
 
-pub async fn update_user_preferences(
-    db: &PgPool,
-    user_id: &str,
-    prefs: &serde_json::Value,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users SET preferences = $1 WHERE user_id = $2")
-        .bind(prefs)
-        .bind(user_id)
-        .execute(db)
-        .await?;
-    Ok(())
-}
 
 // ============================================================================
 // User Memory (simple text string, 4K cap)

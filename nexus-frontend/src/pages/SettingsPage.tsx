@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { apiRequest } from '../lib/api'
-import { ArrowLeft, User, Monitor, Zap, Heart, Brain, SlidersHorizontal, Clock, Trash2, Power, PowerOff } from 'lucide-react'
+import { ArrowLeft, User, Monitor, Zap, Heart, Brain, Clock, Trash2, Power, PowerOff, Copy, Check, ChevronDown, ChevronRight } from 'lucide-react'
 
-type Tab = 'profile' | 'devices' | 'skills' | 'soul' | 'memory' | 'preferences' | 'cron'
+type Tab = 'profile' | 'devices' | 'skills' | 'soul' | 'memory' | 'cron'
 
 const inputStyle: React.CSSProperties = {
   background: 'rgba(255,255,255,0.05)',
@@ -39,7 +39,6 @@ export default function SettingsPage() {
     { id: 'skills', label: 'Skills', icon: <Zap className="w-4 h-4" /> },
     { id: 'soul', label: 'Soul', icon: <Heart className="w-4 h-4" /> },
     { id: 'memory', label: 'Memory', icon: <Brain className="w-4 h-4" /> },
-    { id: 'preferences', label: 'Preferences', icon: <SlidersHorizontal className="w-4 h-4" /> },
     { id: 'cron', label: 'Cron Jobs', icon: <Clock className="w-4 h-4" /> },
   ]
 
@@ -79,7 +78,6 @@ export default function SettingsPage() {
             {tab === 'skills' && <SkillsTab />}
             {tab === 'soul' && <SoulTab />}
             {tab === 'memory' && <MemoryTab />}
-            {tab === 'preferences' && <PreferencesTab />}
             {tab === 'cron' && <CronTab />}
           </div>
         </div>
@@ -119,33 +117,141 @@ function ProfileTab() {
   )
 }
 
-function DevicesTab() {
-  const [devices, setDevices] = useState<Array<{ device_name: string; status: 'online' | 'offline' | 'revoked'; last_seen_secs_ago?: number; tools_count: number; fs_policy?: unknown }>>([])
-  const [tokens, setTokens] = useState<Array<{ token: string; device_name: string; created_at: string }>>([])
-  const [newName, setNewName] = useState('')
+function DeviceConfigPanel({ deviceName }: { deviceName: string }) {
+  const [policyMode, setPolicyMode] = useState('sandbox')
+  const [allowedPaths, setAllowedPaths] = useState('')
+  const [mcpJson, setMcpJson] = useState('[]')
+  const [policySaved, setPolicySaved] = useState(false)
+  const [mcpSaved, setMcpSaved] = useState(false)
+  const [mcpError, setMcpError] = useState('')
 
   useEffect(() => {
-    apiRequest('/api/devices').then(r => r.json()).then(d => setDevices(Array.isArray(d) ? d : [])).catch(() => {})
+    apiRequest(`/api/devices/${deviceName}/policy`).then(r => r.json()).then(d => {
+      const p = d.fs_policy || { mode: 'sandbox' }
+      setPolicyMode(p.mode || 'sandbox')
+      setAllowedPaths((p.allowed_paths || []).join('\n'))
+    }).catch(() => {})
+    apiRequest(`/api/devices/${deviceName}/mcp`).then(r => r.json()).then(d => {
+      setMcpJson(JSON.stringify(d.mcp_servers || [], null, 2))
+    }).catch(() => {})
+  }, [deviceName])
+
+  async function savePolicy() {
+    const fs_policy: Record<string, unknown> = { mode: policyMode }
+    if (policyMode === 'whitelist') {
+      fs_policy.allowed_paths = allowedPaths.split('\n').map(s => s.trim()).filter(Boolean)
+    }
+    await apiRequest(`/api/devices/${deviceName}/policy`, {
+      method: 'PATCH', body: JSON.stringify({ fs_policy }),
+    })
+    setPolicySaved(true); setTimeout(() => setPolicySaved(false), 2000)
+  }
+
+  async function saveMcp() {
+    setMcpError('')
+    try {
+      const parsed = JSON.parse(mcpJson)
+      if (!Array.isArray(parsed)) { setMcpError('Must be a JSON array'); return }
+      await apiRequest(`/api/devices/${deviceName}/mcp`, {
+        method: 'PUT', body: JSON.stringify({ mcp_servers: parsed }),
+      })
+      setMcpSaved(true); setTimeout(() => setMcpSaved(false), 2000)
+    } catch { setMcpError('Invalid JSON') }
+  }
+
+  return (
+    <div className="space-y-5 pt-3 pb-1">
+      {/* FS Policy */}
+      <div>
+        <label className="block text-xs font-medium uppercase tracking-wider mb-2" style={{ color: '#64748b' }}>Filesystem Policy</label>
+        <select
+          value={policyMode}
+          onChange={e => setPolicyMode(e.target.value)}
+          className="px-3 py-2 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 cursor-pointer"
+          style={{ ...inputStyle, appearance: 'none', paddingRight: '2rem', backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' fill=\'%2364748b\' viewBox=\'0 0 16 16\'%3E%3Cpath d=\'M8 11L3 6h10z\'/%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.75rem center' }}
+        >
+          <option value="sandbox">Sandbox</option>
+          <option value="whitelist">Whitelist</option>
+          <option value="unrestricted">Unrestricted</option>
+        </select>
+        <p className="mt-1 text-xs" style={{ color: '#475569' }}>
+          {policyMode === 'sandbox' && 'Tools can only access the workspace directory.'}
+          {policyMode === 'whitelist' && 'Workspace (read+write) plus listed paths (read-only).'}
+          {policyMode === 'unrestricted' && 'Full filesystem access. Use with caution.'}
+        </p>
+        {policyMode === 'whitelist' && (
+          <textarea
+            value={allowedPaths}
+            onChange={e => setAllowedPaths(e.target.value)}
+            placeholder="/path/one&#10;/path/two"
+            rows={3}
+            className="w-full mt-2 px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+            style={inputStyle}
+          />
+        )}
+        <div className="mt-2">
+          <SaveButton onClick={savePolicy} saved={policySaved} />
+        </div>
+      </div>
+
+      {/* MCP Config */}
+      <div>
+        <label className="block text-xs font-medium uppercase tracking-wider mb-2" style={{ color: '#64748b' }}>MCP Servers</label>
+        <textarea
+          value={mcpJson}
+          onChange={e => { setMcpJson(e.target.value); setMcpError('') }}
+          rows={6}
+          className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+          placeholder='[{"name": "server-name", "command": "uvx", "args": ["package-name"], "env": {"KEY": "value"}}]'
+        />
+        {mcpError && <p className="mt-1 text-xs" style={{ color: '#ef4444' }}>{mcpError}</p>}
+        <p className="mt-1 text-xs" style={{ color: '#475569' }}>
+          JSON array of MCP server entries. Each needs: name, command, args. Optional: env, tool_timeout, enabled.
+        </p>
+        <div className="mt-2">
+          <SaveButton onClick={saveMcp} saved={mcpSaved} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DevicesTab() {
+  const [devices, setDevices] = useState<Array<{ device_name: string; status: 'online' | 'offline'; last_seen_secs_ago?: number; tools_count: number }>>([])
+  const [tokens, setTokens] = useState<Array<{ token: string; device_name: string; created_at: string }>>([])
+  const [newName, setNewName] = useState('')
+  const [copiedToken, setCopiedToken] = useState<string | null>(null)
+  const [expandedDevice, setExpandedDevice] = useState<string | null>(null)
+
+  function loadTokens() {
     apiRequest('/api/device-tokens').then(r => r.json()).then(t => setTokens(Array.isArray(t) ? t : [])).catch(() => {})
-  }, [])
+  }
+
+  function loadDevices() {
+    apiRequest('/api/devices').then(r => r.json()).then(d => setDevices(Array.isArray(d) ? d : [])).catch(() => {})
+  }
+
+  useEffect(() => { loadDevices(); loadTokens() }, [])
 
   async function createToken() {
     if (!newName.trim()) return
     await apiRequest('/api/device-tokens', { method: 'POST', body: JSON.stringify({ device_name: newName }) })
     setNewName('')
-    apiRequest('/api/device-tokens').then(r => r.json()).then(setTokens).catch(() => {})
+    loadTokens()
+    loadDevices()
   }
 
-  function statusColor(status: string) {
-    if (status === 'online') return '#22c55e'
-    if (status === 'revoked') return '#ef4444'
-    return '#64748b'
+  async function deleteToken(token: string) {
+    await apiRequest(`/api/device-tokens/${token}`, { method: 'DELETE' })
+    loadTokens()
+    loadDevices()
   }
 
-  function statusLabel(d: { status: string; last_seen_secs_ago?: number }) {
-    if (d.status === 'online') return 'Online'
-    if (d.status === 'revoked') return 'Revoked'
-    return 'Offline'
+  function copyToken(token: string) {
+    navigator.clipboard.writeText(token)
+    setCopiedToken(token)
+    setTimeout(() => setCopiedToken(null), 2000)
   }
 
   return (
@@ -153,27 +259,45 @@ function DevicesTab() {
       <div>
         <h3 className="font-medium text-white mb-3">Devices</h3>
         {devices.length === 0 ? <p className="text-sm" style={{ color: '#64748b' }}>No devices registered</p> : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr style={{ color: '#64748b' }} className="text-left">
-                <th className="pb-2 font-medium">Name</th>
-                <th className="pb-2 font-medium">Status</th>
-                <th className="pb-2 font-medium">Tools</th>
-              </tr>
-            </thead>
-            <tbody>{devices.map(d => (
-              <tr key={d.device_name} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-                <td className="py-2" style={d.status === 'revoked' ? { color: '#64748b', textDecoration: 'line-through' } : { color: '#ffffff' }}>{d.device_name}</td>
-                <td className="py-2">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: d.status === 'online' ? '0 0 6px rgba(34, 197, 94, 0.5)' : 'none' }} />
-                    <span style={{ color: statusColor(d.status) }}>{statusLabel(d)}</span>
+          <div className="text-sm">
+            {/* Header */}
+            <div className="flex items-center gap-3 pb-2" style={{ color: '#64748b' }}>
+              <span className="w-5" />
+              <span className="flex-1 font-medium">Name</span>
+              <span className="w-20 font-medium">Status</span>
+              <span className="w-12 font-medium text-right">Tools</span>
+            </div>
+            {/* Rows */}
+            {devices.map(d => (
+              <div key={d.device_name}>
+                <div
+                  className="flex items-center gap-3 py-2.5 cursor-pointer transition-colors"
+                  style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}
+                  onClick={() => setExpandedDevice(expandedDevice === d.device_name ? null : d.device_name)}
+                >
+                  <span className="w-5 flex items-center justify-center" style={{ color: '#64748b' }}>
+                    {expandedDevice === d.device_name
+                      ? <ChevronDown className="w-4 h-4" />
+                      : <ChevronRight className="w-4 h-4" />}
                   </span>
-                </td>
-                <td className="py-2" style={{ color: '#94a3b8' }}>{d.tools_count}</td>
-              </tr>
-            ))}</tbody>
-          </table>
+                  <span className="flex-1 text-white">{d.device_name}</span>
+                  <span className="w-20">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: d.status === 'online' ? '#22c55e' : '#64748b', boxShadow: d.status === 'online' ? '0 0 6px rgba(34, 197, 94, 0.5)' : 'none' }} />
+                      <span style={{ color: d.status === 'online' ? '#22c55e' : '#64748b' }}>{d.status === 'online' ? 'Online' : 'Offline'}</span>
+                    </span>
+                  </span>
+                  <span className="w-12 text-right" style={{ color: '#94a3b8' }}>{d.tools_count}</span>
+                </div>
+                {/* Expanded config panel */}
+                {expandedDevice === d.device_name && (
+                  <div className="pl-8 pr-2 pb-3" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                    <DeviceConfigPanel deviceName={d.device_name} />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
@@ -201,14 +325,24 @@ function DevicesTab() {
               {t.device_name}{' '}
               <code className="text-xs font-mono" style={{ color: '#64748b' }}>{t.token.slice(0, 20)}...</code>
             </span>
-            <button
-              onClick={() => apiRequest(`/api/device-tokens/${t.token}`, { method: 'DELETE' }).then(() => apiRequest('/api/device-tokens').then(r => r.json()).then(setTokens))}
-              className="text-xs cursor-pointer flex items-center gap-1 transition-colors"
-              style={{ color: '#ef4444' }}
-            >
-              <Trash2 className="w-3 h-3" />
-              Revoke
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => copyToken(t.token)}
+                className="text-xs cursor-pointer flex items-center gap-1 transition-colors"
+                style={{ color: copiedToken === t.token ? '#22c55e' : '#94a3b8' }}
+              >
+                {copiedToken === t.token ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                {copiedToken === t.token ? 'Copied' : 'Copy'}
+              </button>
+              <button
+                onClick={() => deleteToken(t.token)}
+                className="text-xs cursor-pointer flex items-center gap-1 transition-colors"
+                style={{ color: '#ef4444' }}
+              >
+                <Trash2 className="w-3 h-3" />
+                Delete
+              </button>
+            </div>
           </div>
         ))}
       </div>
@@ -355,37 +489,6 @@ function MemoryTab() {
         </span>
         {saved && <span className="text-sm" style={{ color: '#22c55e' }}>Saved!</span>}
       </div>
-    </div>
-  )
-}
-
-function PreferencesTab() {
-  const [prefs, setPrefs] = useState('')
-  const [saved, setSaved] = useState(false)
-
-  useEffect(() => {
-    apiRequest('/api/user/preferences').then(r => r.json()).then(d => setPrefs(JSON.stringify(d.preferences || {}, null, 2))).catch(() => {})
-  }, [])
-
-  async function save() {
-    try {
-      const parsed = JSON.parse(prefs)
-      await apiRequest('/api/user/preferences', { method: 'PATCH', body: JSON.stringify({ preferences: parsed }) })
-      setSaved(true); setTimeout(() => setSaved(false), 2000)
-    } catch { alert('Invalid JSON') }
-  }
-
-  return (
-    <div className="space-y-3">
-      <p className="text-sm" style={{ color: '#64748b' }}>User preferences (JSON format).</p>
-      <textarea
-        value={prefs}
-        onChange={e => setPrefs(e.target.value)}
-        rows={10}
-        className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-        style={inputStyle}
-      />
-      <SaveButton onClick={save} saved={saved} />
     </div>
   )
 }

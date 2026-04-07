@@ -95,14 +95,7 @@ pub async fn list_devices(
     let merged: Vec<serde_json::Value> = registered
         .iter()
         .map(|reg| {
-            if reg.revoked {
-                serde_json::json!({
-                    "device_name": reg.device_name,
-                    "status": "revoked",
-                    "tools_count": 0,
-                    "fs_policy": serde_json::Value::Null,
-                })
-            } else if let Some(live) = live_lookup.get(reg.device_name.as_str()) {
+            if let Some(live) = live_lookup.get(reg.device_name.as_str()) {
                 serde_json::json!({
                     "device_name": reg.device_name,
                     "status": "online",
@@ -160,46 +153,6 @@ pub async fn update_soul(
         Err(e) => {
             tracing::error!("update_soul error: {e}");
             ApiError::new(ErrorCode::InternalError, "failed to update soul").into_response()
-        }
-    }
-}
-
-// ============================================================================
-// GET /api/user/preferences
-// ============================================================================
-
-pub async fn get_preferences(
-    State(state): State<AppState>,
-    Extension(claims): Extension<Claims>,
-) -> Response {
-    match db::get_user_preferences(&state.db, &claims.sub).await {
-        Ok(prefs) => Json(serde_json::json!({ "preferences": prefs })).into_response(),
-        Err(e) => {
-            tracing::error!("get_preferences error: {e}");
-            ApiError::new(ErrorCode::InternalError, "failed to get preferences").into_response()
-        }
-    }
-}
-
-// ============================================================================
-// PATCH /api/user/preferences
-// ============================================================================
-
-#[derive(Deserialize)]
-pub struct UpdatePreferencesRequest {
-    pub preferences: serde_json::Value,
-}
-
-pub async fn update_preferences(
-    State(state): State<AppState>,
-    Extension(claims): Extension<Claims>,
-    Json(payload): Json<UpdatePreferencesRequest>,
-) -> Response {
-    match db::update_user_preferences(&state.db, &claims.sub, &payload.preferences).await {
-        Ok(()) => Json(serde_json::json!({"message": "Preferences updated"})).into_response(),
-        Err(e) => {
-            tracing::error!("update_preferences error: {e}");
-            ApiError::new(ErrorCode::InternalError, "failed to update preferences").into_response()
         }
     }
 }

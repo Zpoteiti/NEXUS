@@ -1,6 +1,6 @@
 /// Responsibility boundary:
 /// 1. Assembles the complete prompt (System Prompt + History + Memory) before each LLM call.
-/// Soul and preferences are read from the DB users table.
+/// Soul is read from the DB users table.
 /// Memory uses a simple text string (4K cap).
 
 use crate::state::AppState;
@@ -16,7 +16,7 @@ use nexus_common::consts::MAX_HISTORY_MESSAGES;
 /// Sections are joined in this order, separated by SECTION_SEPARATOR:
 ///
 /// Section 1 -- Current time (required)
-/// Section 2 -- Soul (optional; injected only if DB has data; includes preferences)
+/// Section 2 -- Soul (optional; injected only if DB has data)
 /// Section 3 -- Online devices and available tools (required)
 /// Section 4 -- Persistent memory (optional; simple text string, 4K cap)
 /// Section 5 -- Skills summary (optional)
@@ -33,7 +33,7 @@ pub async fn build_system_prompt(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
     sections.push(format!("Current time: {}", now));
 
-    // Section 2 -- Soul (merged with preferences; no separate preferences injection)
+    // Section 2 -- Soul
     let user_soul = crate::db::get_user_soul(&state.db, user_id).await.ok().flatten();
     let soul = match user_soul {
         Some(s) => Some(s),

@@ -130,7 +130,7 @@ async fn main() {
     let protected = Router::new()
         // Device tokens
         .route("/api/device-tokens", axum::routing::post(auth::create_device_token).get(auth::list_device_tokens))
-        .route("/api/device-tokens/{token}", axum::routing::delete(auth::revoke_device_token))
+        .route("/api/device-tokens/{token}", axum::routing::delete(auth::delete_device_token))
         // Discord config
         .route("/api/discord-config", axum::routing::post(auth::upsert_discord_config).get(auth::get_discord_config).delete(auth::delete_discord_config))
         // Sessions
@@ -146,9 +146,8 @@ async fn main() {
         .route("/api/devices/{device_name}/mcp", axum::routing::get(auth::get_device_mcp).put(auth::update_device_mcp))
         // User profile
         .route("/api/user/profile", axum::routing::get(api::get_user_profile))
-        // User soul & preferences
+        // User soul
         .route("/api/user/soul", axum::routing::get(api::get_soul).patch(api::update_soul))
-        .route("/api/user/preferences", axum::routing::get(api::get_preferences).patch(api::update_preferences))
         // User memory
         .route("/api/user/memory", axum::routing::get(api::get_memory).patch(api::update_memory))
         // Admin: default soul

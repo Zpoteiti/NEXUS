@@ -82,7 +82,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         Ok(Some(v)) => v,
         _ => {
             let failed = ServerToClient::LoginFailed {
-                reason: "Invalid or revoked token".to_string(),
+                reason: "Invalid token".to_string(),
             };
             if let Ok(text) = serde_json::to_string(&failed) {
                 let _ = sink.send(Message::Text(text.into())).await;

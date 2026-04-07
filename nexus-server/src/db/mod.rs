@@ -33,7 +33,6 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             password_hash TEXT NOT NULL DEFAULT '',
             is_admin BOOLEAN NOT NULL DEFAULT FALSE,
             soul TEXT,
-            preferences JSONB,
             memory_text TEXT NOT NULL DEFAULT '',
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
@@ -48,7 +47,6 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             token TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES users(user_id),
             device_name TEXT NOT NULL,
-            revoked BOOLEAN NOT NULL DEFAULT FALSE,
             fs_policy JSONB NOT NULL DEFAULT '{"mode":"sandbox"}',
             mcp_config JSONB NOT NULL DEFAULT '[]',
             created_at TIMESTAMPTZ DEFAULT NOW()
@@ -58,7 +56,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_device_tokens_user_device ON device_tokens (user_id, device_name) WHERE revoked = FALSE")
+    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_device_tokens_user_device ON device_tokens (user_id, device_name)")
         .execute(pool)
         .await?;
 
