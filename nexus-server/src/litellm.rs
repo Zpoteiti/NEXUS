@@ -125,19 +125,19 @@ impl LiteLlmManager {
         let url = format!("http://127.0.0.1:{}/health", self.port);
         let client = reqwest::Client::new();
 
-        for i in 0..30 {
-            // 30 seconds timeout
+        for i in 0..60 {
+            // 60 seconds timeout
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if let Ok(resp) = client.get(&url).send().await {
                 if resp.status().is_success() {
                     return Ok(());
                 }
             }
-            if i % 5 == 4 {
+            if i % 10 == 9 {
                 info!("Waiting for LiteLLM to start... ({}s)", i + 1);
             }
         }
-        Err("LiteLLM failed to start within 30 seconds".into())
+        Err("LiteLLM failed to start within 60 seconds".into())
     }
 
     /// Add a model to LiteLLM via REST API
