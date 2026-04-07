@@ -106,7 +106,6 @@ impl AppState {
             api_key: self.litellm.api_key().to_string(),
             api_base: Some(self.litellm.api_base()),
             context_window: base_config.context_window,
-            max_output_tokens: base_config.max_output_tokens,
         }
     }
 }

@@ -36,7 +36,6 @@ pub async fn get_llm_config(
                 "api_key": masked_key,
                 "api_base": llm.api_base,
                 "context_window": llm.context_window,
-                "max_output_tokens": llm.max_output_tokens,
             })).into_response()
         }
         None => {
@@ -55,7 +54,6 @@ pub struct UpdateLlmConfigRequest {
     pub api_key: Option<String>,
     pub api_base: Option<String>,
     pub context_window: Option<usize>,
-    pub max_output_tokens: Option<usize>,
 }
 
 /// PUT /api/llm-config -- update LLM config at runtime (admin only)
@@ -74,7 +72,6 @@ pub async fn update_llm_config(
         api_key: String::new(),
         api_base: None,
         context_window: 204800,
-        max_output_tokens: 131072,
     });
     if let Some(provider) = payload.provider {
         llm.provider = provider;
@@ -96,10 +93,6 @@ pub async fn update_llm_config(
     if let Some(context_window) = payload.context_window {
         llm.context_window = context_window;
     }
-    if let Some(max_output_tokens) = payload.max_output_tokens {
-        llm.max_output_tokens = max_output_tokens;
-    }
-
     // Persist to database
     if let Ok(json_str) = serde_json::to_string(llm) {
         if let Err(e) = db::set_system_config(&state.db, "llm_config", &json_str).await {

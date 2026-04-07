@@ -6,7 +6,6 @@ pub struct LlmConfig {
     #[serde(default)]
     pub api_base: Option<String>,   // Optional, for custom endpoints
     pub context_window: usize,
-    pub max_output_tokens: usize,
 }
 
 use std::sync::Arc;

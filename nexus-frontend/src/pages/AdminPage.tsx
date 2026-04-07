@@ -105,7 +105,6 @@ function LlmConfigTab() {
         api_key: data.api_key?.toString() || '',
         api_base: data.api_base?.toString() || '',
         context_window: data.context_window?.toString() || '',
-        max_output_tokens: data.max_output_tokens?.toString() || '',
       })
     }).catch(() => {})
   }, [])
@@ -118,7 +117,6 @@ function LlmConfigTab() {
       api_key: values.api_key,
       api_base: values.api_base || undefined,
       context_window: parseInt(values.context_window) || 0,
-      max_output_tokens: parseInt(values.max_output_tokens) || 0,
     }
     const res = await apiRequest('/api/llm-config', { method: 'PUT', body: JSON.stringify(body) })
     if (res.ok) { setSaved(true); setTimeout(() => setSaved(false), 2000) }
@@ -176,16 +174,6 @@ function LlmConfigTab() {
         <input
           value={values.context_window || ''}
           onChange={e => setValues({ ...values, context_window: e.target.value })}
-          type="number"
-          className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-          style={inputStyle}
-        />
-      </div>
-      <div>
-        <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>Max Output Tokens</label>
-        <input
-          value={values.max_output_tokens || ''}
-          onChange={e => setValues({ ...values, max_output_tokens: e.target.value })}
           type="number"
           className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
           style={inputStyle}

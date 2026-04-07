@@ -254,28 +254,15 @@ pub async fn get_all_tools_schema(
 
 /// 构建历史消息窗口，供 LLM 上下文使用。
 ///
-/// 从 db::get_session_history 拉取未经 consolidation 的最新消息窗口，
-/// 截断至 MAX_HISTORY_MESSAGES 条，按 token 预算二次截断，并修复孤儿 tool_result。
+/// 从 db::get_session_history 拉取最新消息窗口，
+/// 截断至 MAX_HISTORY_MESSAGES 条，并修复孤儿 tool_result。
+/// Context budget enforcement is handled by consolidation (memory.rs).
 pub async fn build_message_history(
     state: &AppState,
     session_id: &str,
 ) -> Vec<serde_json::Value> {
-    let llm_config = state.config.llm.read().await;
-    let token_budget = llm_config.as_ref().map(|c| {
-        // Reserve space for system prompt (~2000 tokens) and max output
-        let reserved = 2000 + c.max_output_tokens;
-        c.context_window.saturating_sub(reserved)
-    });
-    drop(llm_config);
-
     match crate::db::get_session_history(&state.db, session_id).await {
-        Ok(messages) => {
-            let truncated = truncate_and_fix_orphans(messages, MAX_HISTORY_MESSAGES);
-            match token_budget {
-                Some(budget) if budget > 0 => truncate_by_token_budget(truncated, budget),
-                _ => truncated,
-            }
-        }
+        Ok(messages) => truncate_and_fix_orphans(messages, MAX_HISTORY_MESSAGES),
         Err(e) => {
             tracing::warn!("get_session_history failed: {}", e);
             Vec::new()
@@ -303,50 +290,8 @@ fn truncate_and_fix_orphans(
     window[start..].to_vec()
 }
 
-/// Estimate token count for a message using a simple heuristic (~4 chars per token).
-/// This is intentionally conservative — overestimating is safer than underestimating.
-fn estimate_message_tokens(message: &serde_json::Value) -> usize {
-    let json_str = serde_json::to_string(message).unwrap_or_default();
-    // ~4 chars per token is a reasonable heuristic for mixed English/Chinese/code content
-    (json_str.len() + 3) / 4
-}
-
-/// Truncate message history to fit within a token budget.
-/// Removes oldest messages first, aligning to user turn boundaries.
-fn truncate_by_token_budget(
-    messages: Vec<serde_json::Value>,
-    token_budget: usize,
-) -> Vec<serde_json::Value> {
-    // Calculate total tokens
-    let total: usize = messages.iter().map(|m| estimate_message_tokens(m)).sum();
-    if total <= token_budget {
-        return messages;
-    }
-
-    // Remove messages from the front until we're within budget
-    let mut cumulative = 0usize;
-    let mut start = 0;
-    let tokens_to_drop = total - token_budget;
-
-    for (i, msg) in messages.iter().enumerate() {
-        if cumulative >= tokens_to_drop {
-            start = i;
-            break;
-        }
-        cumulative += estimate_message_tokens(msg);
-        start = i + 1;
-    }
-
-    if start >= messages.len() {
-        // Budget is extremely tight — return just the last message
-        return messages.into_iter().last().into_iter().collect();
-    }
-
-    let window: Vec<_> = messages[start..].to_vec();
-    // Align to legal start (skip orphan tool results)
-    let legal = find_legal_start(&window);
-    window[legal..].to_vec()
-}
+// Token budget enforcement is handled by consolidation in memory.rs
+// (trigger: context_window - total_messages < 16K)
 
 /// Find the first legal start position: must be a `user` or standalone `assistant` message
 /// (not a tool result or assistant with tool_calls whose results are outside the window).
