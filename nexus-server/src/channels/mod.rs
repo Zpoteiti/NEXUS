@@ -40,7 +40,7 @@ pub trait Channel: Send + Sync {
         &self,
         chat_id: &str,
         content: &str,
-        media: &[String],
+        _media: &[String],
     ) -> Result<(), NexusError> {
         self.send(chat_id, content).await
     }

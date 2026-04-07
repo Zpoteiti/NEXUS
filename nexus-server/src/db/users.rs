@@ -3,6 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)] // Fields populated by sqlx FromRow, used in auth logic
 pub struct User {
     pub user_id: String,
     pub email: String,

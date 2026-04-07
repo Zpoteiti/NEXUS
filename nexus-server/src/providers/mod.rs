@@ -22,15 +22,11 @@ pub struct ChatCompletionRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionResponse {
-    pub id: String,
-    pub model: String,
     pub choices: Vec<Choice>,
-    pub usage: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Choice {
-    pub index: usize,
     pub message: AssistantMessage,
     pub finish_reason: String,
 }
