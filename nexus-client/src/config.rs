@@ -2,27 +2,27 @@ use std::collections::HashMap;
 use std::env;
 use nexus_common::consts::{DEVICE_TOKEN_PREFIX, DEVICE_TOKEN_RANDOM_LEN};
 
-/// MCP Server 传输类型
+/// MCP Server transport type.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum TransportType {
-    /// 通过标准输入输出与子进程通信（本地 MCP Server）
+    /// Communicate with child process via stdin/stdout (local MCP server).
     #[default]
     Stdio,
-    /// HTTP SSE 传输
+    /// HTTP SSE transport.
     Sse,
-    /// Streamable HTTP 传输
+    /// Streamable HTTP transport.
     StreamableHttp,
 }
 
 #[derive(Debug, Clone)]
 pub struct McpServerConfig {
     pub name: String,
-    /// 传输类型：stdio | sse | streamableHttp
+    /// Transport type: stdio | sse | streamableHttp
     pub transport_type: TransportType,
     pub command: String,
     pub args: Vec<String>,
     pub env: Option<HashMap<String, String>>,
-    /// 单个工具调用超时（秒），默认来自 nexus-common 的 DEFAULT_MCP_TOOL_TIMEOUT_SEC
+    /// Per-tool call timeout (seconds), default from nexus-common's DEFAULT_MCP_TOOL_TIMEOUT_SEC
     pub tool_timeout: Option<u64>,
     pub enabled: bool,
 }

@@ -11,11 +11,11 @@ pub struct BrowserConnection {
 }
 
 pub struct AppState {
-    /// chat_id → browser connection (推消息给浏览器)
+    /// chat_id -> browser connection (push messages to browser)
     pub browser_conns: Arc<DashMap<String, BrowserConnection>>,
-    /// nexus-server WS 写端（推消息给 nexus）
+    /// nexus-server WS write end (push messages to nexus)
     pub nexus_tx: Arc<RwLock<Option<mpsc::Sender<String>>>>,
-    /// 预期的 nexus-server 认证 token
+    /// Expected nexus-server authentication token
     pub gateway_token: String,
     /// JWT secret for validating browser connections
     pub jwt_secret: String,

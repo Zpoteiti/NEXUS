@@ -1,10 +1,6 @@
-/// 职责边界：
-/// 1. 仅包含 Server 和 Client 之间 WebSocket 通信的序列化结构体 (Structs/Enums)。
-/// 2. 绝对不能包含任何业务逻辑。
-///
-/// 参考 nanobot：
-/// - 这里的结构体设计应该替代 `nanobot/bus/queue.py` 中的内部消息传递机制，将其网络化。
-/// - Tool 请求的 Payload 结构可以参考 `nanobot/agent/tools/base.py` 中的 `ToolCallRequest`。
+/// Responsibility boundary:
+/// 1. Contains only serialization structs/enums for Server-Client WebSocket communication.
+/// 2. Must never contain any business logic.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -53,7 +49,7 @@ pub struct McpServerEntry {
 
 fn default_true() -> bool { true }
 
-/// 服务端下发给客户端的指令
+/// Commands sent from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerToClient {
@@ -96,7 +92,7 @@ pub struct FileUploadRequest {
     pub file_path: String,
 }
 
-/// 客户端上报给服务端的事件
+/// Events reported from client to server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientToServer {
@@ -136,13 +132,12 @@ pub struct FileDownloadResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolExecutionResult {
     pub request_id: String,
-    /// exit_code 语义约定（Client 和 Server 必须遵守此规范）：
-    ///   0  — 执行成功
-    ///   1  — 执行失败（stderr 或业务错误，output 中包含错误详情）
-    ///  -1  — 执行超时（被 tokio::time::timeout kill）
-    ///  -2  — 被取消（设备断线或 cancel_pending_requests_for_device 触发）
-    ///  -3  — 参数校验失败（executor.rs guardrails 或 schema 校验拦截，未执行）
-    /// 参考 nanobot：nanobot/agent/tools/shell.py ExecTool.run() 返回值语义
+    /// exit_code semantic conventions (Client and Server must follow this spec):
+    ///   0  -- execution succeeded
+    ///   1  -- execution failed (stderr or business error, details in output)
+    ///  -1  -- execution timed out (killed by tokio::time::timeout)
+    ///  -2  -- cancelled (device disconnected or cancel_pending_requests_for_device triggered)
+    ///  -3  -- validation failed (executor.rs guardrails or schema validation blocked, not executed)
     pub exit_code: i32,
     pub output: String,
 }

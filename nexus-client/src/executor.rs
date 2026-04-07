@@ -1,9 +1,9 @@
-/// 职责边界：
-/// 1. 接收 `protocol::ExecuteToolRequest`。
-/// 2. 扮演"路由器"角色：
-///    - 通过 `LOCAL_TOOL_REGISTRY` 查找内置工具并执行。
-///    - 如果 tool_name 以 "mcp_" 开头，解析出 server_name 和 tool_name，转发给 MCP 会话。
-/// 3. 将任何模块返回的 Ok(String) 或 Err(String) 统一包装为 `protocol::ToolExecutionResult` 向上层返回。
+/// Responsibility boundary:
+/// 1. Receives `protocol::ExecuteToolRequest`.
+/// 2. Acts as a router:
+///    - Looks up built-in tools via `LOCAL_TOOL_REGISTRY` and executes them.
+///    - If tool_name starts with "mcp_", extracts server_name and tool_name and forwards to the MCP session.
+/// 3. Wraps any Ok(String) or Err(String) from modules into `protocol::ToolExecutionResult` for the upper layer.
 
 use nexus_common::consts::{EXIT_CODE_SUCCESS, EXIT_CODE_TIMEOUT};
 use nexus_common::protocol::{ExecuteToolRequest, FsPolicy, ToolExecutionResult};
@@ -25,7 +25,7 @@ const EXECUTOR_TIMEOUT_SEC: u64 = 120;
 /// Filesystem tool names that require policy-aware dispatch.
 const FS_TOOLS: &[&str] = &["read_file", "write_file", "edit_file", "list_dir", "stat"];
 
-/// 本地工具注册表 — executor.rs 和 discovery.rs 共用的单一样本来源。
+/// Local tool registry -- single source of truth shared by executor.rs and discovery.rs.
 pub static LOCAL_TOOL_REGISTRY: LazyLock<HashMap<&'static str, Box<dyn LocalTool>>> =
     LazyLock::new(|| {
         HashMap::from_iter([
@@ -38,7 +38,7 @@ pub static LOCAL_TOOL_REGISTRY: LazyLock<HashMap<&'static str, Box<dyn LocalTool
         ])
     });
 
-/// 执行工具调用请求，带 120s 顶层超时保护。
+/// Execute a tool call request with a 120s top-level timeout guard.
 pub async fn execute_tool_request(
     req: ExecuteToolRequest,
     fs_policy: &Arc<RwLock<FsPolicy>>,
@@ -84,14 +84,14 @@ async fn execute_tool_inner(
         }
     }
 
-    // 路由到对应工具
+    // Route to the corresponding tool
     let result = if FS_TOOLS.contains(&tool_name.as_str()) {
         let policy = fs_policy.read().await.clone();
         execute_fs_tool(&tool_name, arguments, &policy).await
     } else if let Some(tool) = LOCAL_TOOL_REGISTRY.get(tool_name.as_str()) {
         tool.execute(arguments).await
     } else if tool_name.starts_with("mcp_") {
-        // MCP 工具 — manager finds the owning session by wrapped tool name
+        // MCP tool -- manager finds the owning session by wrapped tool name
         let manager = discovery::get_mcp_manager().await;
         manager
             .call_tool(&tool_name, arguments)

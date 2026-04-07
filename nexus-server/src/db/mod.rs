@@ -1,12 +1,8 @@
-/// 职责边界：
-/// 1. 负责所有与 PostgreSQL 的交互 (SQLx 操作)。
-/// 2. 处理 users、sessions、messages 三张表的增删改查。
-/// 3. 所有函数均为纯粹的 async CRUD，不包含任何业务逻辑。
-///    业务逻辑（如 consolidation 触发判断、JWT 签发）由上层模块（memory.rs、auth.rs）负责。
-///
-/// 参考 nanobot：
-/// - 这个文件替代了 `nanobot/agent/session.py`（会话管理）和 `nanobot/agent/memory.py`（长期记忆）。
-/// - nanobot 基于本地文件（JSONL session 文件、MEMORY.md、HISTORY.md），Nexus 改为 PostgreSQL。
+/// Responsibility boundary:
+/// 1. Handles all PostgreSQL interactions (SQLx operations).
+/// 2. CRUD operations for users, sessions, and messages tables.
+/// 3. All functions are pure async CRUD -- no business logic.
+///    Business logic (consolidation triggers, JWT issuance) is handled by upper-layer modules (memory.rs, auth.rs).
 
 mod users;
 mod sessions;

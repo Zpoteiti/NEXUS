@@ -27,14 +27,14 @@ pub fn load_config() -> ServerConfig {
     dotenvy::dotenv().ok();
 
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| panic!("环境变量 DATABASE_URL 未设置，Server 无法启动。\n  示例：DATABASE_URL=postgres://user:pass@localhost/nexus"));
+        .unwrap_or_else(|_| panic!("DATABASE_URL env var is not set. Server cannot start.\n  Example: DATABASE_URL=postgres://user:pass@localhost/nexus"));
 
     let admin_token = std::env::var("ADMIN_TOKEN")
-        .unwrap_or_else(|_| panic!("环境变量 ADMIN_TOKEN 未设置，Server 无法启动。\n  用途：/admin/register 端点的身份校验 Token"));
+        .unwrap_or_else(|_| panic!("ADMIN_TOKEN env var is not set. Server cannot start.\n  Used for: /admin/register endpoint authentication"));
 
     let server_port = match std::env::var("SERVER_PORT") {
         Ok(val) => val.parse::<u16>().unwrap_or_else(|_| {
-            panic!("环境变量 SERVER_PORT 格式错误：'{}'，必须是 1-65535 之间的整数", val)
+            panic!("SERVER_PORT env var has invalid format: '{}'. Must be an integer between 1-65535", val)
         }),
         Err(_) => 8080,
     };
@@ -55,7 +55,7 @@ pub fn load_config() -> ServerConfig {
     }
 
     let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| panic!("环境变量 JWT_SECRET 未设置，Server 无法启动。\n  用途：JWT 签名密钥，建议至少 32 字符"));
+        .unwrap_or_else(|_| panic!("JWT_SECRET env var is not set. Server cannot start.\n  Used for: JWT signing key, recommend at least 32 characters"));
 
     let bcrypt_cost = std::env::var("BCRYPT_COST")
         .ok()

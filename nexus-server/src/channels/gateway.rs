@@ -71,18 +71,11 @@ async fn resolve_upload_file_id(file_id: &str) -> Option<String> {
     None
 }
 
-/// Convert a `__FILE__:/tmp/nexus-media/uuid_filename` path to a `/api/files/uuid` download URL.
+/// Convert a media file path to a `/api/files/uuid` download URL.
+/// Supports both bare paths and legacy `__FILE__:` prefixed paths.
 fn file_path_to_download_url(path: &str) -> Option<String> {
-    let path = path.strip_prefix("__FILE__:")?;
-    let filename = path.rsplit('/').next()?;
-    // Filename format: {uuid}_{original_name}
-    let uuid_part = filename.split('_').next()?;
-    // Validate it looks like a UUID (36 chars with hyphens)
-    if uuid_part.len() == 36 && uuid_part.chars().filter(|c| *c == '-').count() == 4 {
-        Some(format!("/api/files/{}", uuid_part))
-    } else {
-        None
-    }
+    let clean = path.strip_prefix("__FILE__:").unwrap_or(path);
+    crate::file_store::path_to_download_url(clean)
 }
 
 // ============================================================================
@@ -343,16 +336,10 @@ impl Channel for GatewayChannel {
         content: &str,
         media: &[String],
     ) -> Result<(), nexus_common::error::NexusError> {
-        // Convert __FILE__:/tmp/nexus-media/... paths to /api/files/... download URLs
+        // Convert media file paths to /api/files/... download URLs
         let urls: Vec<String> = media
             .iter()
-            .filter_map(|m| {
-                if m.starts_with("__FILE__:") {
-                    file_path_to_download_url(m)
-                } else {
-                    Some(m.clone())
-                }
-            })
+            .filter_map(|m| file_path_to_download_url(m).or_else(|| Some(m.clone())))
             .collect();
         self.send_with_metadata(chat_id, content, Some(serde_json::json!({"media": urls}))).await
     }
@@ -399,9 +386,9 @@ mod tests {
     }
 
     #[test]
-    fn file_path_to_download_url_no_prefix() {
+    fn file_path_to_download_url_bare_path() {
         let url = file_path_to_download_url("/tmp/nexus-media/550e8400-e29b-41d4-a716-446655440000_photo.png");
-        assert_eq!(url, None);
+        assert_eq!(url, Some("/api/files/550e8400-e29b-41d4-a716-446655440000".to_string()));
     }
 
     #[test]

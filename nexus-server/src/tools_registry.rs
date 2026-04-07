@@ -1,20 +1,17 @@
-/// 职责边界：
-/// 1. 根据 user_id + device_name，O(1) 查找对应的 device_id。
-/// 2. 构建 LLM 工具 Schema：向 Client 上报的原始 Schema 中注入 `device_name` enum 参数。
-/// 3. 核心路由函数：根据 device_name 将 ExecuteToolRequest 路由到目标设备的 Client。
-///
-/// 参考 nanobot：
-/// - 对应 `nanobot/agent/tools/registry.py` 的工具管理逻辑，但 Nexus 增加了多设备路由层。
+/// Responsibility boundary:
+/// 1. O(1) lookup of device_id by user_id + device_name.
+/// 2. Build LLM tool schemas: inject `device_name` enum parameter into schemas reported by clients.
+/// 3. Core routing function: route ExecuteToolRequest to the target device's client by device_name.
 
 use serde_json::Value;
 use nexus_common::error::{ErrorCode, NexusError};
 use crate::state::AppState;
 
-/// 根据 user_id 和 device_name 查找 device_id。
+/// Find device_id by user_id and device_name.
 ///
-/// 返回值：
-///   Some(device_id) — 找到
-///   None            — 设备不存在或不属于该用户
+/// Returns:
+///   Some(device_id) -- found
+///   None            -- device does not exist or does not belong to this user
 pub async fn find_device_by_name(
     state: &AppState,
     user_id: &str,
@@ -28,21 +25,21 @@ pub async fn find_device_by_name(
 }
 
 fn inject_device_name_param(schema: Value, device_enum: &[String]) -> Value {
-    // 确保 schema 格式为 { "type": "function", "function": { ... } }
+    // Ensure schema format is { "type": "function", "function": { ... } }
     let obj = match schema {
         Value::Object(mut m) => {
-            // 获取 function 部分
+            // Get the function part
             if let Some(Value::Object(func)) = m.get_mut("function").map(|v| v.take()) {
                 let name = func.get("name").cloned();
                 let description = func.get("description").cloned();
 
-                // 获取 parameters，若不存在或不是 object 则创建空 object
+                // Get parameters; if absent or not an object, create an empty object
                 let mut params = match func.get("parameters") {
                     Some(Value::Object(p)) => p.clone(),
                     _ => serde_json::Map::new().into(),
                 };
 
-                // 注入 device_name 到 properties
+                // Inject device_name into properties
                 let props = params
                     .entry("properties")
                     .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -58,7 +55,7 @@ fn inject_device_name_param(schema: Value, device_enum: &[String]) -> Value {
                     );
                 }
 
-                // 合并 required：原有 required + device_name
+                // Merge required: existing required + device_name
                 let existing_required: Vec<String> = params
                     .get("required")
                     .and_then(|r| r.as_array())
@@ -79,7 +76,7 @@ fn inject_device_name_param(schema: Value, device_enum: &[String]) -> Value {
 
                 params.insert("required".to_string(), json!(required));
 
-                // 重建 function 对象
+                // Rebuild the function object
                 let mut new_func = serde_json::Map::new();
                 if let Some(n) = name {
                     new_func.insert("name".to_string(), n);
@@ -157,17 +154,17 @@ pub fn inject_device_name_into_schemas(schemas: &[Value], device_name: &str) -> 
         .collect()
 }
 
-/// 根据 device_name 路由工具调用到目标设备。
+/// Route a tool call to the target device by device_name.
 ///
-/// 流程：
-/// 1. 从 LLM arguments 中提取 device_name（LLM 从 schema enum 中选择）
-/// 2. 通过 find_device_by_name 查找目标 device_id
-/// 3. 验证设备在线
-/// 4. 从 arguments 中剥离 device_name（Client 不知道此字段）
-/// 5. 通过 ws_tx 发送 ExecuteToolRequest 到目标设备
-/// 6. 将 oneshot::Sender 存入 pending 表，挂起等待结果
+/// Flow:
+/// 1. Extract device_name from LLM arguments (LLM selects from schema enum)
+/// 2. Find the target device_id via find_device_by_name
+/// 3. Verify the device is online
+/// 4. Strip device_name from arguments (client does not know this field)
+/// 5. Send ExecuteToolRequest to the target device via ws_tx
+/// 6. Store oneshot::Sender in pending table and await the result
 ///
-/// 若设备不存在/离线，返回错误字符串，由调用方（agent_loop）包装为 Tool Result 喂回 LLM。
+/// If the device does not exist or is offline, returns an error for the caller (agent_loop) to feed back to the LLM.
 pub async fn route_tool(
     state: &AppState,
     user_id: &str,
@@ -175,19 +172,19 @@ pub async fn route_tool(
     mut arguments: Value,
     request_id: &str,
 ) -> Result<Value, NexusError> {
-    // 1. 提取 device_name
+    // 1. Extract device_name
     let device_name = arguments
         .get("device_name")
         .and_then(|v| v.as_str())
         .ok_or_else(|| NexusError::new(ErrorCode::DeviceNotFound, "device_name not found in tool arguments"))?
         .to_string();
 
-    // 2. 查找目标设备
+    // 2. Find the target device
     let device_id = find_device_by_name(state, user_id, &device_name)
         .await
         .ok_or_else(|| NexusError::new(ErrorCode::DeviceNotFound, format!("device '{}' not found or does not belong to this user", device_name)))?;
 
-    // 3. 验证设备在线
+    // 3. Verify device is online
     let ws_tx = {
         let devices = state.devices.read().await;
         let device_state = devices
@@ -195,23 +192,23 @@ pub async fn route_tool(
             .ok_or_else(|| NexusError::new(ErrorCode::DeviceNotFound, format!("device '{}' not found", device_name)))?;
 
         if device_state.device_name != device_name {
-            // device_id 找到了但 device_name 不匹配（说明 devices_by_user 有脏数据）
+            // device_id found but device_name does not match (stale data in devices_by_user)
             return Err(NexusError::new(ErrorCode::DeviceNotFound, format!("device '{}' name mismatch", device_name)));
         }
 
         device_state.ws_tx.clone()
     };
 
-    // 4. 剥离 device_name 从 arguments（Client 不需要知道设备名）
+    // 4. Strip device_name from arguments (client does not need it)
     if let Some(obj) = arguments.as_object_mut() {
         obj.remove("device_name");
     }
 
-    // 5. 创建 oneshot 通道，存入 pending 表
+    // 5. Create oneshot channel and store in pending table
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.pending.insert(request_id.to_string(), tx);
 
-    // 6. 发送 ExecuteToolRequest 到目标设备
+    // 6. Send ExecuteToolRequest to target device
     let execute_req = nexus_common::protocol::ServerToClient::ExecuteToolRequest(
         nexus_common::protocol::ExecuteToolRequest {
             request_id: request_id.to_string(),
@@ -229,7 +226,7 @@ pub async fn route_tool(
         return Err(NexusError::new(ErrorCode::ChannelError, format!("failed to send request to device '{}'", device_name)));
     }
 
-    // 7. 挂起等待结果（120s timeout to prevent indefinite hang）
+    // 7. Await the result (120s timeout to prevent indefinite hang)
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(120),
         rx,

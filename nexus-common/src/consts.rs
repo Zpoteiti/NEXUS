@@ -1,6 +1,6 @@
-/// 职责边界：
-/// 1. 存放 Server 和 Client 共享的全局常量。
-/// 2. 杜绝在两端代码中硬编码 (Hardcode) 魔法数字或字符串。
+/// Responsibility boundary:
+/// 1. Stores global constants shared between Server and Client.
+/// 2. Prevents hardcoded magic numbers or strings on either side.
 
 pub const PROTOCOL_VERSION: &str = "1.0";
 pub const HEARTBEAT_INTERVAL_SEC: u64 = 15;

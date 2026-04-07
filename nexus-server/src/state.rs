@@ -1,18 +1,18 @@
-/// 职责边界：
-/// 定义和管理全局共享状态 `AppState`，包含三张核心数据表：
+/// Responsibility boundary:
+/// Defines and manages the global shared state `AppState`, containing three core data structures:
 ///
-/// 【第一张】在线设备路由表
-///   device_key（= auth token）→ DeviceState
-///   扁平结构。DeviceState 内含 user_id，需要按用户过滤时遍历 values 即可。
+/// [Table 1] Online device routing table
+///   device_key (= auth token) -> DeviceState
+///   Flat structure. DeviceState contains user_id; filter by user by iterating values.
 ///
-/// 【第二张】设备名称索引（O(1) 路由查找）
-///   user_id → { device_name → device_key }
-///   用于 Server 解析 LLM 响应中的 device_name 并路由到对应 Client。
+/// [Table 2] Device name index (O(1) routing lookup)
+///   user_id -> { device_name -> device_key }
+///   Used by the server to resolve device_name from LLM responses and route to the corresponding client.
 ///
-/// 【第三张】工具调用挂起等待表
-///   request_id → oneshot::Sender<ToolExecutionResult>
-///   agent_loop 下发 ExecuteToolRequest 后挂起；ws.rs 收到结果后唤醒。
-///   request_id 格式为 "{device_key}:{uuid_v4()}"，按前缀可定位某设备的所有挂起请求。
+/// [Table 3] Pending tool call table
+///   request_id -> oneshot::Sender<ToolExecutionResult>
+///   agent_loop suspends after sending ExecuteToolRequest; ws.rs wakes it when the result arrives.
+///   request_id format: "{device_key}:{uuid_v4()}", prefix-searchable by device.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,15 +43,15 @@ pub struct DeviceState {
 pub struct AppState {
     pub config: ServerConfig,
     pub db: PgPool,
-    /// 在线设备路由表：device_key → DeviceState
+    /// Online device routing table: device_key -> DeviceState
     pub devices: Arc<RwLock<HashMap<String, DeviceState>>>,
-    /// 设备名称索引：user_id → { device_name → device_key }
+    /// Device name index: user_id -> { device_name -> device_key }
     pub devices_by_user: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
-    /// 工具调用挂起等待表：request_id → oneshot::Sender
+    /// Pending tool call table: request_id -> oneshot::Sender
     pub pending: Arc<DashMap<String, oneshot::Sender<ToolExecutionResult>>>,
-    /// 文件上传挂起等待表：request_id → oneshot::Sender
+    /// Pending file upload table: request_id -> oneshot::Sender
     pub file_upload_pending: Arc<DashMap<String, oneshot::Sender<FileUploadResponse>>>,
-    /// 文件下载挂起等待表：request_id → oneshot::Sender
+    /// Pending file download table: request_id -> oneshot::Sender
     pub file_download_pending: Arc<DashMap<String, oneshot::Sender<FileDownloadResponse>>>,
     pub bus: Arc<MessageBus>,
     pub session_manager: Arc<SessionManager>,
@@ -93,8 +93,8 @@ impl AppState {
     }
 }
 
-/// 设备断线时由 ws.rs 调用：drop 该设备所有挂起的 oneshot::Sender，
-/// 使 agent_loop 的 .await 立即返回 Err，避免永久挂起。
+/// Called by ws.rs when a device disconnects: drops all pending oneshot::Senders
+/// for that device, causing agent_loop's .await to return Err immediately, preventing indefinite hang.
 pub fn cancel_pending_requests_for_device(
     device_key: &str,
     pending: &DashMap<String, oneshot::Sender<ToolExecutionResult>>,

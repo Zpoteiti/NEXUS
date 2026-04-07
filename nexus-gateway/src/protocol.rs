@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// 浏览器 → nexus-gateway
+/// Browser -> nexus-gateway
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum BrowserInbound {
@@ -12,7 +12,7 @@ pub enum BrowserInbound {
     SwitchSession { session_id: String },
 }
 
-/// nexus-gateway → 浏览器
+/// nexus-gateway -> browser
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 pub enum BrowserOutbound {
@@ -28,7 +28,7 @@ pub enum BrowserOutbound {
     SessionSwitched { session_id: String },
 }
 
-/// nexus-server → nexus-gateway（通过 /ws/nexus）
+/// nexus-server -> nexus-gateway (via /ws/nexus)
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NexusInbound {
@@ -36,7 +36,7 @@ pub enum NexusInbound {
     Send { chat_id: String, content: String, metadata: Option<serde_json::Value> },
 }
 
-/// nexus-gateway → nexus-server（通过 /ws/nexus）
+/// nexus-gateway -> nexus-server (via /ws/nexus)
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NexusOutbound {

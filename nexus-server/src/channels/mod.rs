@@ -14,7 +14,7 @@ pub mod discord;
 pub mod gateway;
 
 // ============================================================================
-// Channel Trait - 各平台渠道（gateway/telegram/discord）需实现此 trait
+// Channel Trait - each platform channel (gateway/telegram/discord) must implement this trait
 // ============================================================================
 
 /// Active channel trait — each implementation is a self-managing WS client.
@@ -47,7 +47,7 @@ pub trait Channel: Send + Sync {
 }
 
 // ============================================================================
-// ChannelManager - 负责消费 OutboundEvent 并路由到正确的 Channel
+// ChannelManager - consumes OutboundEvents and routes them to the correct Channel
 // ============================================================================
 
 /// Handle returned by `ChannelManager::start()`, providing access to channels for shutdown.

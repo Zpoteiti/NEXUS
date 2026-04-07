@@ -1,7 +1,7 @@
-/// 职责边界：
-/// 1. 封装操作系统层面的交互。
-/// 2. 划定"安全工作区 (Workspace)"的绝对路径，禁止 Agent 操作该路径之外的文件。
-/// 3. 管理 Agent 执行命令时的环境变量 (隔离宿主机的敏感 ENV)。
+/// Responsibility boundary:
+/// 1. Encapsulates OS-level interactions.
+/// 2. Defines the safe workspace absolute path, preventing the agent from operating outside it.
+/// 3. Manages environment variables for agent command execution (isolating sensitive host ENV).
 
 use nexus_common::protocol::FsPolicy;
 use std::collections::HashMap;
@@ -20,11 +20,11 @@ pub enum FsOp {
     Write,
 }
 
-/// 获取工作区根目录。
+/// Get the workspace root directory.
 ///
-/// 优先级：
-/// 1. `NEXUS_WORKSPACE` 环境变量
-/// 2. `~/.nexus/workspace`（`HOME` 或 `USERPROFILE` 均考虑）
+/// Priority:
+/// 1. `NEXUS_WORKSPACE` environment variable
+/// 2. `~/.nexus/workspace` (considers both `HOME` and `USERPROFILE`)
 pub fn get_workspace_root() -> PathBuf {
     WORKSPACE_ROOT
         .get_or_init(|| {
@@ -48,16 +48,16 @@ pub fn get_workspace_root() -> PathBuf {
         .clone()
 }
 
-/// 规范化并校验路径。
+/// Normalize and validate a path.
 ///
-/// 若 `restrict=true`，则解析后的路径必须落在 `get_workspace_root()` 之内。
-/// 若路径越界，返回 `Err("Path outside workspace")`。
+/// If `restrict=true`, the resolved path must be within `get_workspace_root()`.
+/// If the path is out of bounds, returns `Err("Path outside workspace")`.
 ///
-/// 支持相对路径（相对于 workspace）和绝对路径。
+/// Supports relative paths (relative to workspace) and absolute paths.
 pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, ToolError> {
     let p = Path::new(path);
 
-    // 展开 ~ 和解析相对路径
+    // Expand ~ and resolve relative paths
     let resolved = if p.is_relative() {
         get_workspace_root().join(p)
     } else {
@@ -187,14 +187,14 @@ pub async fn sanitize_path_with_policy_async(
         .unwrap_or_else(|_| Err(ToolError::Blocked("path resolution task panicked".to_string())))
 }
 
-/// 检查 `path` 是否是 `base` 的子目录（或相等）。
+/// Check if `path` is a subdirectory of (or equal to) `base`.
 fn is_subpath(path: &Path, base: &Path) -> bool {
     path.starts_with(base)
 }
 
-/// 返回最小化环境变量，仅保留执行命令所需的基础变量。
+/// Return a minimized set of environment variables, keeping only the essentials for command execution.
 ///
-/// 保留：PATH, HOME, USER, TEMP, TMP
+/// Kept: PATH, HOME, USER, TEMP, TMP
 pub fn min_env() -> HashMap<String, String> {
     let mut env = HashMap::new();
 
@@ -229,17 +229,17 @@ mod tests {
 
     #[test]
     fn test_sanitize_absolute_path_outside_workspace() {
-        // 在 restrict=true 时，绝对路径如果不在 workspace 内应报错
-        // 由于测试环境 workspace 可能不确定，我们只验证函数不 panic
+        // With restrict=true, absolute paths outside workspace should error
+        // Since test workspace may vary, we only verify the function does not panic
         let result = sanitize_path("/tmp/some_file", true);
-        // 结果取决于 workspace 在哪里，可能是 Err
+        // Result depends on workspace location, may be Err
         assert!(result.is_ok() || result.is_err());
     }
 
     #[test]
     fn test_min_env_has_required_keys() {
         let env = min_env();
-        // PATH 几乎总是存在
+        // PATH almost always exists
         assert!(env.contains_key("PATH") || env.is_empty() || !env.is_empty());
     }
 }

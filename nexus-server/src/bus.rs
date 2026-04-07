@@ -5,21 +5,21 @@ use dashmap::DashMap;
 use chrono::{DateTime, Utc};
 use tracing::warn;
 
-/// 用户消息事件（来自任意 Channel）
+/// User message event (from any channel).
 #[derive(Debug, Clone)]
 pub struct InboundEvent {
     pub channel: String,                                      // "webui" | "discord" | "telegram"
-    pub sender_id: String,                                    // 用户 ID
-    pub chat_id: String,                                      // 会话 ID
-    pub content: String,                                       // 消息内容
-    pub session_id: String,                                    // Nexus 内部 session 标识
+    pub sender_id: String,                                    // user ID
+    pub chat_id: String,                                      // conversation ID
+    pub content: String,                                       // message content
+    pub session_id: String,                                    // Nexus internal session identifier
     #[allow(dead_code)]
-    pub timestamp: Option<DateTime<Utc>>,                    // 消息时间戳
-    pub media: Vec<String>,                                    // 媒体 URL 列表
-    pub metadata: HashMap<String, serde_json::Value>,         // 运行时控制字段
+    pub timestamp: Option<DateTime<Utc>>,                    // message timestamp
+    pub media: Vec<String>,                                    // media URL list
+    pub metadata: HashMap<String, serde_json::Value>,         // runtime control fields
 }
 
-/// Agent 响应事件（发往任意 Channel）
+/// Agent response event (sent to any channel).
 #[derive(Debug, Clone)]
 pub struct OutboundEvent {
     pub channel: String,
@@ -29,22 +29,22 @@ pub struct OutboundEvent {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-/// MessageBus - 进程内异步消息总线
+/// MessageBus - in-process async message bus.
 ///
-/// inbound: session 隔离路由。通过 `register_session` 注册后，
-///          `publish_inbound` 根据 session_id 路由到对应 session 的 inbox。
-/// outbound: 全局队列，ChannelManager 单消费者。
+/// inbound: session-isolated routing. After `register_session`,
+///          `publish_inbound` routes by session_id to the corresponding inbox.
+/// outbound: global queue, single consumer (ChannelManager).
 pub struct MessageBus {
-    /// session_id → 该 session 的 inbox sender（用于路由）
+    /// session_id -> inbox sender for that session (routing table)
     inbound_routes: Arc<DashMap<String, mpsc::Sender<InboundEvent>>>,
-    /// outbound 队列（ChannelManager 单消费者）
+    /// outbound queue (single consumer: ChannelManager)
     outbound_tx: Arc<mpsc::Sender<OutboundEvent>>,
     outbound_rx: Arc<Mutex<mpsc::Receiver<OutboundEvent>>>,
     shutdown_tx: broadcast::Sender<()>,
 }
 
 impl MessageBus {
-    /// 创建新的 MessageBus
+    /// Create a new MessageBus.
     pub fn new() -> Self {
         let (outbound_tx, outbound_rx) = mpsc::channel(256);
         let (shutdown_tx, _) = broadcast::channel(1);
@@ -56,19 +56,19 @@ impl MessageBus {
         }
     }
 
-    /// 注册一个 session 的 inbox sender 到路由表
-    /// 由 session_manager 在创建新 session 时调用
+    /// Register a session's inbox sender into the routing table.
+    /// Called by session_manager when creating a new session.
     pub fn register_session(&self, session_id: String, tx: mpsc::Sender<InboundEvent>) {
         self.inbound_routes.insert(session_id, tx);
     }
 
-    /// 从路由表移除一个 session
-    /// 由 session 结束时调用
+    /// Remove a session from the routing table.
+    /// Called when the session ends.
     pub fn unregister_session(&self, session_id: &str) {
         self.inbound_routes.remove(session_id);
     }
 
-    /// 发布一个 inbound 事件——根据 session_id 路由到对应 session 的 inbox
+    /// Publish an inbound event -- routes by session_id to the corresponding session inbox.
     pub async fn publish_inbound(&self, event: InboundEvent) {
         let session_id = event.session_id.clone();
         if let Some(tx) = self.inbound_routes.get(&session_id) {
@@ -82,14 +82,14 @@ impl MessageBus {
         }
     }
 
-    /// 发布一个 outbound 事件到队列
+    /// Publish an outbound event to the queue.
     pub async fn publish_outbound(&self, event: OutboundEvent) {
-        // ChannelManager 消费端已关闭时，send 会失败，忽略即可
+        // If the ChannelManager consumer is closed, send will fail; ignore it.
         let _ = self.outbound_tx.send(event).await;
     }
 
-    /// 消费一个 outbound 事件（阻塞直到有事件或收到 shutdown）
-    /// 返回 None 表示收到 shutdown 信号
+    /// Consume an outbound event (blocks until an event arrives or shutdown is received).
+    /// Returns None when a shutdown signal is received.
     pub async fn consume_outbound(&self) -> Option<OutboundEvent> {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let mut rx = self.outbound_rx.lock().await;

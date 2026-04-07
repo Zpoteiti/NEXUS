@@ -1,5 +1,5 @@
 //! Per-Session Agent Loop
-//! 每个 session 有独立的实例，消费自己的 inbox queue，不与其他 session 共享
+//! Each session has its own instance, consuming its own inbox queue, independent from other sessions.
 
 use crate::bus::{InboundEvent, OutboundEvent};
 use crate::context;
@@ -84,7 +84,7 @@ fn make_outbound(event: &InboundEvent, content: String) -> OutboundEvent {
     }
 }
 
-/// Per-Session AgentLoop：消费 session inbox，处理 ReAct 循环
+/// Per-Session AgentLoop: consumes the session inbox and runs the ReAct loop.
 pub async fn run_session(
     session_id: String,
     mut inbox: mpsc::Receiver<InboundEvent>,
@@ -105,7 +105,7 @@ pub async fn run_session(
         }
         debug!("agent_session {} received: content={}", session_id, event.content);
 
-        // 持有 session 锁（防止不同 channel 同时写数据库）
+        // Hold the session lock (prevent concurrent DB writes from different channels)
         let lock = state.session_manager.get_session_lock(&session_id).await
             .expect("session lock must exist after get_or_create_session");
         let _guard = lock.lock().await;
@@ -123,7 +123,15 @@ pub async fn run_session(
             }
             Err(e) => {
                 error!("agent_session {} error: {}", session_id, e);
-                state.bus.publish_outbound(make_outbound(&event, format!("Error: {}", e))).await;
+                // Show user-friendly message, log full error
+                let user_msg = match e.code {
+                    ErrorCode::ExecutionFailed => format!("Something went wrong: {}", e.message),
+                    ErrorCode::ToolTimeout => "The operation timed out. Please try again.".to_string(),
+                    ErrorCode::DeviceNotFound => "The device is not connected.".to_string(),
+                    ErrorCode::DeviceOffline => "The device appears to be offline.".to_string(),
+                    _ => format!("Error: {}", e.message),
+                };
+                state.bus.publish_outbound(make_outbound(&event, user_msg)).await;
             }
         }
     }
@@ -134,10 +142,10 @@ pub async fn run_session(
 }
 
 // ============================================================================
-// 循环检测
+// Loop detection
 // ============================================================================
 
-/// 单个工具调用的身份标识（工具名 + 参数）
+/// Identity key for a single tool call (tool name + arguments).
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct ToolCallKey {
     name: String,
@@ -150,8 +158,8 @@ impl ToolCallKey {
     }
 }
 
-/// 检测同一 (tool_name, arguments) 在一轮工具循环中被调用超过 MAX_REPEAT_THRESHOLD 次
-/// 即判定为 LLM 陷入重复调用死循环。
+/// If the same (tool_name, arguments) pair is called more than MAX_REPEAT_THRESHOLD times
+/// in a single tool loop, it is treated as the LLM being stuck in a repeat-call loop.
 const MAX_REPEAT_THRESHOLD: usize = 2;
 
 /// Parsed tool call with arguments as Value (parsed from JSON string)
@@ -179,7 +187,7 @@ fn parse_tool_calls(choice: &crate::providers::Choice) -> Vec<ToolCallParsed> {
         .unwrap_or_default()
 }
 
-/// 运行一轮 ReAct 循环
+/// Run a single ReAct turn.
 async fn run_single_turn(
     state: &Arc<AppState>,
     event: &InboundEvent,
@@ -329,7 +337,7 @@ async fn run_single_turn(
     }
 }
 
-/// 执行工具调用循环（无硬上限，通过循环检测打断真正的死循环）
+/// Execute the tool call loop (no hard cap; real infinite loops are broken by loop detection).
 async fn execute_tool_calls_loop(
     state: &Arc<AppState>,
     user_id: &str,
@@ -466,8 +474,8 @@ async fn execute_tool_calls_loop(
         let results = futures::future::join_all(futures).await;
         for join_result in results {
             let (tc, result) = join_result.map_err(|e| NexusError::new(ErrorCode::InternalError, format!("task join error: {}", e)))?;
-            let mut content = match result {
-                Ok(output) => output,
+            let (mut content, media) = match result {
+                Ok((output, media)) => (output, media),
                 Err(e) => {
                     let mut metadata = HashMap::new();
                     metadata.insert("_progress".to_string(), serde_json::json!(true));
@@ -479,15 +487,14 @@ async fn execute_tool_calls_loop(
                         media: Vec::new(),
                         metadata,
                     }).await;
-                    serde_json::json!({"error": e.to_string()}).to_string()
+                    (serde_json::json!({"error": e.to_string()}).to_string(), vec![])
                 }
             };
-            // Check for file transfer marker and extract media path
-            if content.starts_with("__FILE__:") {
-                let file_path = content.strip_prefix("__FILE__:").unwrap().to_string();
-                let file_name = file_path.split('/').last().unwrap_or(&file_path);
+            // Add media from server tools to pending_media
+            for m in media {
+                let file_name = m.split('/').last().unwrap_or(&m);
                 content = format!("File '{}' has been sent to the user.", file_name);
-                pending_media.push(file_path);
+                pending_media.push(m);
             }
             // Save tool result to DB
             let _ = crate::db::save_message(
@@ -547,7 +554,7 @@ async fn execute_single_tool(
     event_channel: &str,
     event_chat_id: &str,
     tc: &ToolCallParsed,
-) -> Result<String, NexusError> {
+) -> Result<(String, Vec<String>), NexusError> {
     debug!("execute_single_tool: tool_name={}, arguments={}", tc.name, tc.arguments);
 
     // 1. Determine tool location for progress hint
@@ -563,14 +570,10 @@ async fn execute_single_tool(
     emit_progress(state, event_channel, event_chat_id,
         &format!("🔧 {} on {}", tc.name, location)).await;
 
-    // ── Check server-native tools first ──
+    // Server-native tools: return output + media paths
     if let Some(tool) = state.server_tools.get(&tc.name) {
         let result = tool.execute(state, user_id, session_id, tc.arguments.clone(), event_channel, event_chat_id).await?;
-        // If tool produced media, return with __FILE__ markers
-        if !result.media.is_empty() {
-            return Ok(result.media.join("\n"));
-        }
-        return Ok(result.output);
+        return Ok((result.output, result.media));
     }
 
     let device_name = tc.arguments
@@ -580,10 +583,11 @@ async fn execute_single_tool(
         .to_string();
     info!("execute_single_tool: resolved device_name={}", device_name);
 
-    // ── Check server MCP tools (device_name="server") ──
+    // Server MCP tools (device_name="server")
     if device_name == "server" && tc.name.starts_with("mcp_") {
         let manager = state.server_mcp.read().await;
-        return manager.call_tool(&tc.name, tc.arguments.clone()).await;
+        let output = manager.call_tool(&tc.name, tc.arguments.clone()).await?;
+        return Ok((output, vec![]));
     }
 
     let params = tc.arguments.clone();
@@ -594,7 +598,7 @@ async fn execute_single_tool(
     let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(1);
     let output = result.get("output").and_then(|v| v.as_str()).unwrap_or("");
     if exit_code == 0 {
-        Ok(output.to_string())
+        Ok((output.to_string(), vec![]))
     } else {
         Err(NexusError::new(ErrorCode::ExecutionFailed, output.to_string()))
     }

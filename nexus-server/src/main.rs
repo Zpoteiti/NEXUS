@@ -1,8 +1,8 @@
-/// 职责边界：
-/// 1. 负责程序的启动、环境变量读取 (.env)、数据库连接池 (PgPool) 的初始化。
-/// 2. 调用 bus::init() 创建消息管道，初始化 AppState，启动 ChannelManager。
-/// 3. 挂载 Axum 的路由（HTTP API 路由来自 api.rs，WebSocket 路由来自 ws.rs）。
-/// 4. 绝对不要在这里写具体的 WebSocket 收发逻辑或 LLM 提示词逻辑。
+/// Responsibility boundary:
+/// 1. Program startup: read env vars (.env), initialize the database connection pool (PgPool).
+/// 2. Create the message bus via bus::init(), initialize AppState, start the ChannelManager.
+/// 3. Mount Axum routes (HTTP API routes from api.rs, WebSocket routes from ws.rs).
+/// 4. Never put concrete WebSocket I/O logic or LLM prompt logic here.
 
 mod agent_loop;
 mod api;
@@ -13,7 +13,7 @@ mod config;
 mod context;
 mod cron;
 mod db;
-
+mod file_store;
 mod memory;
 mod providers;
 mod server_mcp;
@@ -59,13 +59,13 @@ async fn main() {
             info!("Loaded LLM config from database");
         }
     }
-    // 创建 MessageBus
+    // Create MessageBus
     let bus = Arc::new(MessageBus::new());
 
-    // 创建 SessionManager
+    // Create SessionManager
     let session_manager = Arc::new(SessionManager::new());
 
-    // 创建 AppState
+    // Create AppState
     let state = state::AppState::new(pool, config.clone(), bus.clone(), session_manager);
     let state_arc = Arc::new(state);
 
@@ -80,13 +80,21 @@ async fn main() {
         }
     }
 
-    // 创建 ChannelManager，注册 Channel，然后启动
+    // Create ChannelManager, register channels, then start
     let mut channel_manager = ChannelManager::new(bus);
     channel_manager.register(GatewayChannel::new(state_arc.clone()));
     channel_manager.register(DiscordChannel::new(state_arc.clone()));
     let channel_manager_handle = channel_manager.start();
 
     *state_arc.channel_manager_handle.write().await = Some(channel_manager_handle);
+
+    // Spawn file cleanup task (every hour, delete files older than 24h)
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            crate::file_store::cleanup_old_files(86400).await;
+        }
+    });
 
     // Start cron scheduler
     let state_for_cron = state_arc.clone();

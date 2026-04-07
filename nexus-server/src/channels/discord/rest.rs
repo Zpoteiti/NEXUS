@@ -103,10 +103,8 @@ pub async fn download_attachment(
         .await
         .map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("download read error: {}", e)))?;
 
-    // Save to per-user upload directory
-    let safe_user = user_id.replace(['/', '\\', '\0'], "_");
-    let dir = std::path::Path::new("/tmp/nexus-uploads").join(&safe_user);
-    tokio::fs::create_dir_all(&dir).await.map_err(|e| NexusError::new(ErrorCode::ChannelError, format!("mkdir error: {}", e)))?;
+    // Save to per-user upload directory via file_store
+    let dir = crate::file_store::user_upload_dir(user_id).await;
 
     let safe_name = filename.replace(['/', '\\', '\0'], "_");
     let safe_att_id = attachment_id.replace(['/', '\\', '\0'], "_");

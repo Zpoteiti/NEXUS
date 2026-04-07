@@ -1,11 +1,8 @@
-/// 职责边界：
-/// 1. 负责真正调用操作系统的 Shell (Windows 调 cmd.exe，Linux 调 sh/bash)。
-/// 2. 实现 tokio::time::timeout 控制（默认 60s），超时则 Kill 子进程。
-/// 3. 实现输出的双端截断策略：超过 MAX_TOOL_OUTPUT_CHARS 时，
-///    只保留前 TOOL_OUTPUT_HEAD_CHARS 和后 TOOL_OUTPUT_TAIL_CHARS。
-///
-/// 参考 nanobot：
-/// - 对应 `nanobot/agent/tools/shell.py` 的底层执行与截断逻辑。
+/// Responsibility boundary:
+/// 1. Performs the actual OS shell invocation (cmd.exe on Windows, sh/bash on Linux).
+/// 2. Implements tokio::time::timeout control (default 60s), killing the child process on timeout.
+/// 3. Implements dual-end output truncation: when exceeding MAX_TOOL_OUTPUT_CHARS,
+///    keeps only the first TOOL_OUTPUT_HEAD_CHARS and last TOOL_OUTPUT_TAIL_CHARS.
 
 use async_trait::async_trait;
 use nexus_common::consts::{
@@ -23,9 +20,9 @@ use super::{LocalTool, ToolError};
 use crate::guardrails;
 use crate::env;
 
-/// 默认超时 = HEARTBEAT_INTERVAL_SEC * 4 = 60s
+/// Default timeout = HEARTBEAT_INTERVAL_SEC * 4 = 60s
 const DEFAULT_TIMEOUT_SEC: u64 = HEARTBEAT_INTERVAL_SEC * 4;
-/// 最大超时 600s
+/// Maximum timeout 600s
 const MAX_TIMEOUT_SEC: u64 = 600;
 
 pub struct ShellTool;
@@ -35,18 +32,18 @@ impl ShellTool {
         ShellTool
     }
 
-    /// 执行 shell 命令（经过 guardrails 检查）。
+    /// Execute a shell command (after guardrails checks).
     async fn run(&self, cmd: &str, timeout_sec: Option<u64>, working_dir: Option<&std::path::Path>) -> Result<String, ToolError> {
-        // 1. 安全校验（guardrails）- 异步 SSRF DNS 解析
+        // 1. Security validation (guardrails) - async SSRF DNS resolution
         guardrails::check_shell_command(cmd).await?;
 
-        // 2. 超时控制
+        // 2. Timeout control
         let timeout_sec = timeout_sec.unwrap_or(DEFAULT_TIMEOUT_SEC).min(MAX_TIMEOUT_SEC);
 
-        // 3. 执行命令
+        // 3. Execute command
         let output = run_shell_command(cmd, timeout_sec, working_dir).await?;
 
-        // 4. 截断输出
+        // 4. Truncate output
         let truncated = truncate_output(&output);
         Ok(truncated)
     }
@@ -110,7 +107,7 @@ impl LocalTool for ShellTool {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // 如果指定了 working_dir，校验并使用它
+        // If working_dir is specified, validate and use it
         let resolved_dir = if let Some(ref dir) = working_dir {
             Some(env::sanitize_path(dir, true)?)
         } else {
@@ -121,7 +118,7 @@ impl LocalTool for ShellTool {
     }
 }
 
-/// 实际执行 shell 命令，带超时控制。
+/// Actually execute a shell command, with timeout control.
 async fn run_shell_command(cmd: &str, timeout_sec: u64, working_dir: Option<&std::path::Path>) -> Result<String, ToolError> {
     let workspace = working_dir.map(|p| p.to_path_buf()).unwrap_or_else(env::get_workspace_root);
     let mut child = if cfg!(windows) {
@@ -189,14 +186,14 @@ async fn run_shell_command(cmd: &str, timeout_sec: u64, working_dir: Option<&std
         Ok(Ok(output)) => Ok(output),
         Ok(Err(e)) => Err(e),
         Err(_) => {
-            // 超时，Kill 子进程
+            // Timeout -- kill the child process
             let _ = child.kill().await;
             Err(ToolError::Timeout(timeout_sec))
         }
     }
 }
 
-/// 双端截断：超过 MAX_TOOL_OUTPUT_CHARS 时，保留前 HEAD + 后 TAIL。
+/// Dual-end truncation: when exceeding MAX_TOOL_OUTPUT_CHARS, keep HEAD + TAIL.
 fn truncate_output(output: &str) -> String {
     if output.len() <= MAX_TOOL_OUTPUT_CHARS {
         return output.to_string();
@@ -296,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_truncate_exact_boundary() {
-        // 正好等于 MAX_TOOL_OUTPUT_CHARS，不截断
+        // Exactly MAX_TOOL_OUTPUT_CHARS, no truncation
         let exact = "x".repeat(MAX_TOOL_OUTPUT_CHARS);
         assert_eq!(truncate_output(&exact), exact);
     }

@@ -1,7 +1,7 @@
-/// 职责边界：
-/// 1. 负责在本地启动并连接第三方 MCP Server（通过 rmcp SDK）。
-/// 2. 初始化时发送 `tools/list` 获取外部工具，并在命名前加上 `mcp_` 前缀（命名隔离）。
-/// 3. 收到执行请求时，将请求透传给对应的 MCP Server 并返回结果。
+/// Responsibility boundary:
+/// 1. Launches and connects to third-party MCP servers locally (via rmcp SDK).
+/// 2. On init, sends `tools/list` to discover external tools and prefixes names with `mcp_` (namespace isolation).
+/// 3. On execution requests, forwards them to the corresponding MCP server and returns results.
 
 use nexus_common::mcp_utils::normalize_schema_for_openai;
 use serde_json::{json, Value};
@@ -11,7 +11,7 @@ use tokio::time::{timeout, Duration};
 use crate::config::{McpServerConfig, TransportType};
 use crate::tools::ToolError;
 
-/// MCP Server 会话（基于 rmcp SDK）。
+/// MCP Server session (based on rmcp SDK).
 pub struct McpSession {
     server_name: String,
     client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
@@ -20,7 +20,7 @@ pub struct McpSession {
 }
 
 impl McpSession {
-    /// 连接 MCP Server 并完成初始化握手。
+    /// Connect to an MCP server and complete the initialization handshake.
     pub async fn connect(config: &McpServerConfig) -> Result<Self, ToolError> {
         let tool_timeout = config.tool_timeout.unwrap_or(nexus_common::consts::DEFAULT_MCP_TOOL_TIMEOUT_SEC);
 
@@ -49,7 +49,7 @@ impl McpSession {
         })
     }
 
-    /// 列出所有可用工具。
+    /// List all available tools.
     pub async fn list_tools(&mut self) -> Result<Vec<Value>, ToolError> {
         let tools = self.client.list_all_tools()
             .await
@@ -68,7 +68,7 @@ impl McpSession {
             let input_schema: Value = serde_json::to_value(&*tool.input_schema)
                 .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
 
-            // 规范化 schema，参考 nanobot _normalize_schema_for_openai()
+            // Normalize schema for OpenAI function calling format
             let normalized_schema = normalize_schema_for_openai(&input_schema);
 
             let schema = json!({
@@ -85,7 +85,7 @@ impl McpSession {
         Ok(schemas)
     }
 
-    /// 调用 MCP 工具。
+    /// Call an MCP tool.
     pub async fn call_tool(
         &self,
         wrapped_name: &str,
@@ -147,7 +147,7 @@ fn extract_text_from_content(content: &[rmcp::model::Content]) -> String {
     output.trim().to_string()
 }
 
-/// MCP 客户端全局管理器。
+/// MCP client global manager.
 pub struct McpClientManager {
     sessions: HashMap<String, McpSession>,
 }
@@ -159,7 +159,7 @@ impl McpClientManager {
         }
     }
 
-    /// 初始化所有 MCP 服务器。
+    /// Initialize all MCP servers.
     pub async fn initialize(&mut self, servers: &[McpServerConfig]) -> Result<(), ToolError> {
         for server in servers.iter().filter(|s| s.enabled) {
             if server.transport_type != TransportType::Stdio {
@@ -195,7 +195,7 @@ impl McpClientManager {
         Ok(())
     }
 
-    /// 调用 MCP 工具。根据 wrapped_name 查找拥有该工具的 session。
+    /// Call an MCP tool. Finds the session owning the tool by wrapped_name.
     pub async fn call_tool(
         &self,
         wrapped_name: &str,
@@ -208,12 +208,12 @@ impl McpClientManager {
         session.call_tool(wrapped_name, arguments).await
     }
 
-    /// 获取所有已连接服务器的名称。
+    /// Get names of all connected servers.
     pub fn server_names(&self) -> Vec<&str> {
         self.sessions.keys().map(|s| s.as_str()).collect()
     }
 
-    /// 获取指定服务器的可变会话引用。
+    /// Get a mutable reference to the session for a specific server.
     pub fn get_session_mut(&mut self, server_name: &str) -> Option<&mut McpSession> {
         self.sessions.get_mut(server_name)
     }

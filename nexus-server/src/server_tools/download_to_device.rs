@@ -62,9 +62,9 @@ impl ServerTool for DownloadToDeviceTool {
             .unwrap_or("")
             .to_string();
 
-        // 1. Search /tmp/nexus-uploads/{user_id}/ for the file (user isolation)
-        let upload_dir = format!("/tmp/nexus-uploads/{}", user_id);
-        let upload_path = find_uploaded_file(&upload_dir, &file_name).await
+        // 1. Search user upload dir for the file (user isolation)
+        let user_dir = crate::file_store::user_upload_dir(user_id).await;
+        let upload_path = find_uploaded_file(&user_dir.to_string_lossy(), &file_name).await
             .ok_or_else(|| NexusError::new(
                 ErrorCode::ExecutionFailed,
                 format!("File '{}' not found in uploads for this user", file_name),

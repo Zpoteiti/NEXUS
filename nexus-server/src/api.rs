@@ -1,10 +1,7 @@
-/// 职责边界：
-/// 1. 专门为 Vue WebUI 提供标准的 HTTP REST API。
-/// 2. 负责非对话类的 CRUD 操作。例如：拉取历史会话列表、重命名会话、拉取所有向量记忆文档、查询在线设备和可用工具等。
-/// 3. 直接调用 `db.rs` 和 `state.rs`，【绝对不与消息总线 bus 交互】。
-///
-/// 参考 nanobot：
-/// - 替代 `nanobot/session/manager.py` 中的 `list_sessions` 等文件查询方法，将其转化为 JSON API 接口。
+/// Responsibility boundary:
+/// 1. Provides standard HTTP REST API endpoints for the Vue WebUI.
+/// 2. Handles non-conversation CRUD operations (session listing, memory, devices, etc.).
+/// 3. Calls `db.rs` and `state.rs` directly -- never interacts with the message bus.
 
 use axum::{
     extract::{Multipart, Path, Query, State},
@@ -18,9 +15,6 @@ use nexus_common::error::{ApiError, ErrorCode};
 use crate::auth::Claims;
 use crate::db;
 use crate::state::AppState;
-
-/// Max upload size: 25 MB
-const MAX_UPLOAD_SIZE: usize = 25 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct PaginationParams {
@@ -300,30 +294,19 @@ pub async fn upload_file(
             }
         };
 
-        if bytes.len() > MAX_UPLOAD_SIZE {
-            return ApiError::new(ErrorCode::ValidationFailed, "file exceeds 25MB limit").into_response();
+        match crate::file_store::save_upload(&claims.sub, &file_name, &bytes).await {
+            Ok((file_id, _path)) => {
+                return Json(serde_json::json!({
+                    "file_id": file_id,
+                    "file_name": file_name,
+                }))
+                .into_response();
+            }
+            Err(e) => {
+                tracing::error!("upload_file: {e}");
+                return ApiError::new(ErrorCode::InternalError, e).into_response();
+            }
         }
-
-        let file_id = uuid::Uuid::new_v4().to_string();
-        let dir = format!("/tmp/nexus-uploads/{}", claims.sub);
-        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-            tracing::error!("upload_file: failed to create dir {dir}: {e}");
-            return ApiError::new(ErrorCode::InternalError, "failed to create upload directory").into_response();
-        }
-
-        let stored_name = format!("{}_{}", file_id, file_name);
-        let file_path = format!("{}/{}", dir, stored_name);
-
-        if let Err(e) = tokio::fs::write(&file_path, &bytes).await {
-            tracing::error!("upload_file: failed to write file: {e}");
-            return ApiError::new(ErrorCode::InternalError, "failed to save file").into_response();
-        }
-
-        return Json(serde_json::json!({
-            "file_id": file_id,
-            "file_name": file_name,
-        }))
-        .into_response();
     }
 
     ApiError::new(ErrorCode::ValidationFailed, "no 'file' field found in multipart data").into_response()
@@ -344,44 +327,26 @@ pub async fn download_file(
         return ApiError::new(ErrorCode::ValidationFailed, "invalid file id").into_response();
     }
 
-    // Search the requesting user's upload directory first
-    let user_dir = format!("/tmp/nexus-uploads/{}", claims.sub);
-    if let Some(resp) = try_serve_file_from_dir(&user_dir, &file_id).await {
-        return resp;
-    }
-
-    // Also search /tmp/nexus-media/ for agent-generated files (e.g. send_file results)
-    if let Some(resp) = try_serve_file_from_dir("/tmp/nexus-media", &file_id).await {
-        return resp;
-    }
-
-    ApiError::new(ErrorCode::NotFound, "file not found").into_response()
-}
-
-/// Search a directory for a file whose name starts with `file_id` and serve it.
-async fn try_serve_file_from_dir(dir: &str, file_id: &str) -> Option<Response> {
-    let mut entries = match tokio::fs::read_dir(dir).await {
-        Ok(e) => e,
-        Err(_) => return None,
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(file_id) {
-            let path = entry.path();
+    // Search user uploads then shared media via file_store
+    match crate::file_store::find_download(&claims.sub, &file_id).await {
+        Some(path) => {
             let bytes = match tokio::fs::read(&path).await {
                 Ok(b) => b,
-                Err(_) => return None,
+                Err(_) => return ApiError::new(ErrorCode::InternalError, "failed to read file").into_response(),
             };
+            let name = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             let content_type = mime_from_filename(&name);
             let headers = [
                 (axum::http::header::CONTENT_TYPE, content_type),
                 (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", name)),
                 (axum::http::header::HeaderName::from_static("x-content-type-options"), "nosniff".to_string()),
             ];
-            return Some((headers, bytes).into_response());
+            (headers, bytes).into_response()
         }
+        None => ApiError::new(ErrorCode::NotFound, "file not found").into_response(),
     }
-    None
 }
 
 /// Guess MIME type from file extension.

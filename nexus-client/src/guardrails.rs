@@ -1,12 +1,8 @@
-/// 职责边界：
-/// 1. 纯粹的静态校验模块。在任何命令被传递给 OS 之前，必须通过这里的严格审查。
-/// 2. 实现高危命令正则拦截 (rm -rf, format, shutdown, fork bomb)。
-/// 3. 实现路径穿越防护 (Path Traversal)。
-/// 4. 实现 SSRF 网络拦截，校验 URL 是否指向内网段。
-///
-/// 参考 nanobot：
-/// - `nanobot/agent/tools/shell.py` 的 `_guard_command` 函数。
-/// - `nanobot/security/network.py` 的 CIDR 黑名单检测。
+/// Responsibility boundary:
+/// 1. Pure static validation module. Every command must pass through strict review before being passed to the OS.
+/// 2. Implements dangerous command regex interception (rm -rf, format, shutdown, fork bomb).
+/// 3. Implements path traversal protection.
+/// 4. Implements SSRF network interception, validating that URLs do not target internal networks.
 
 use regex::Regex;
 use std::net::IpAddr;
@@ -16,7 +12,7 @@ use tokio::net::lookup_host;
 
 use crate::tools::ToolError;
 
-/// 高危命令拒绝模式（预编译正则）
+/// Dangerous command deny patterns (precompiled regexes).
 static DENY_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     DENY_PATTERNS
         .iter()
@@ -24,28 +20,28 @@ static DENY_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         .collect()
 });
 
-/// 高危命令拒绝模式列表
+/// Dangerous command deny pattern list.
 static DENY_PATTERNS: &[&str] = &[
     r"\brm\s+-[rf]{1,2}\b",          // rm -rf, rm -r, rm -rf /
     r"\bdel\s+/[fq]\b",              // Windows: del /f, del /q
     r"\bformat\s+[a-z]:",            // format drive
-    r"\bdd\s+if=\b",                 // dd if= (直接读设备)
+    r"\bdd\s+if=\b",                 // dd if= (direct device read)
     r":\(\)\s*\{.*?\};:",             // fork bomb :(){ |:& };:
-    r"\b(shutdown|reboot|poweroff|init\s+0|init\s+6)\b", // 关机/重启
-    r">\s*/dev/sd[a-z]",            // 直接写盘
-    r"\b(mkfifo|mknod)\s+/dev/",    // 在 /dev 创建设备文件
+    r"\b(shutdown|reboot|poweroff|init\s+0|init\s+6)\b", // shutdown/reboot
+    r">\s*/dev/sd[a-z]",            // direct disk write
+    r"\b(mkfifo|mknod)\s+/dev/",    // create device files in /dev
 ];
 
-/// URL 提取正则（预编译）
+/// URL extraction regex (precompiled).
 static URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"https?://[^\s'"]+"#).expect("invalid url regex"));
 
-/// 检查 shell 命令是否包含危险模式。
+/// Check if a shell command contains dangerous patterns.
 ///
-/// 若命令安全，返回 `Ok(())`。
-/// 若命令被拦截，返回 `Err(reason)`。
+/// Returns `Ok(())` if the command is safe.
+/// Returns `Err(reason)` if the command is blocked.
 pub async fn check_shell_command(cmd: &str) -> Result<(), ToolError> {
-    // 1. 正则拦截高危命令
+    // 1. Regex-based dangerous command interception
     for re in DENY_REGEXES.iter() {
         if re.is_match(cmd) {
             return Err(ToolError::Blocked(format!(
@@ -55,7 +51,7 @@ pub async fn check_shell_command(cmd: &str) -> Result<(), ToolError> {
         }
     }
 
-    // 2. SSRF URL 检测（异步 DNS 解析）
+    // 2. SSRF URL detection (async DNS resolution)
     if contains_internal_url(cmd).await {
         return Err(ToolError::Blocked(
             "command blocked: contains URL pointing to internal network".to_string(),
@@ -65,7 +61,7 @@ pub async fn check_shell_command(cmd: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// 从命令字符串中提取 URL，并检查是否有指向内网的目标。
+/// Extract URLs from a command string and check if any target internal networks.
 pub async fn contains_internal_url(command: &str) -> bool {
     for cap in URL_REGEX.find_iter(command) {
         let url = cap.as_str();
@@ -76,30 +72,23 @@ pub async fn contains_internal_url(command: &str) -> bool {
     false
 }
 
-/// 校验 URL 目标是否安全（不在内网段）。
+/// Validate that a URL target is safe (not in a private network range).
 ///
-/// 阻塞以下网段（来自 nanobot security/network.py）：
-/// - 0.0.0.0/8
-/// - 10.0.0.0/8
-/// - 100.64.0.0/10
-/// - 127.0.0.0/8
-/// - 169.254.0.0/16
-/// - 172.16.0.0/12
-/// - 192.168.0.0/16
-/// - ::1/128
-/// - fc00::/7
-/// - fe80::/10
+/// Blocked ranges:
+/// - 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8
+/// - 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16
+/// - ::1/128, fc00::/7, fe80::/10
 ///
-/// 若 URL 中的 hostname 无法解析为 IP，保守地认为其可能指向内网而拒绝。
+/// If the hostname cannot be resolved to an IP, it is conservatively rejected.
 pub async fn validate_url_target(url: &str) -> Result<(), ToolError> {
-    // 解析 URL 获取 host
+    // Parse URL to get host
     let parsed = url::Url::parse(url)
         .map_err(|e| ToolError::Blocked(format!("invalid URL: {}", e)))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| ToolError::Blocked("URL has no host".to_string()))?;
 
-    // 检查是否是 IP 地址（直接检查）
+    // Check if it's an IP address (direct check)
     if let Ok(ip) = IpAddr::from_str(host) {
         if is_blocked_ip(ip) {
             return Err(ToolError::Blocked(format!(
@@ -110,8 +99,7 @@ pub async fn validate_url_target(url: &str) -> Result<(), ToolError> {
         return Ok(());
     }
 
-    // host 是域名，尝试 DNS 解析（异步）
-    // 参考 nanobot: socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    // Host is a domain name, try async DNS resolution
     let addr_string = format!("{}:80", host);
     let addrs: Vec<_> = lookup_host(&addr_string)
         .await
@@ -119,14 +107,14 @@ pub async fn validate_url_target(url: &str) -> Result<(), ToolError> {
         .collect();
 
     if addrs.is_empty() {
-        // 无法解析，保守策略：拒绝
+        // Cannot resolve -- conservative policy: reject
         return Err(ToolError::Blocked(format!(
             "cannot resolve hostname: {}",
             host
         )));
     }
 
-    // 检查所有解析出的 IP 地址
+    // Check all resolved IP addresses
     for addr in addrs {
         let ip = addr.ip();
         if is_blocked_ip(ip) {
@@ -140,7 +128,7 @@ pub async fn validate_url_target(url: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// 检查 IP 是否在阻塞的私网段内。
+/// Check if an IP is in a blocked private network range.
 fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ipv4) => {
@@ -228,9 +216,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_blocked_ip_localhost() {
-        // 127.0.0.1 是 IP，直接被拦截
+        // 127.0.0.1 is an IP, directly blocked
         assert!(validate_url_target("http://127.0.0.1/").await.is_err());
-        // localhost 通过 DNS 解析会得到 127.0.0.1，也被拦截
+        // localhost resolves to 127.0.0.1 via DNS, also blocked
         assert!(validate_url_target("http://localhost/api").await.is_err());
     }
 
@@ -243,17 +231,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_allowed_public_url() {
-        // 公网 URL 应该能通过（DNS 解析后检查）
+        // Public URLs should pass (checked after DNS resolution)
         assert!(validate_url_target("https://api.github.com/").await.is_ok());
         assert!(validate_url_target("https://httpbin.org/get").await.is_ok());
     }
 
     #[tokio::test]
     async fn test_ssrf_domain_resolves_to_private() {
-        // 模拟攻击场景：如果域名被 DNS 解析到私网段，应该被拦截
-        // 这个测试无法依赖具体域名，但我们可以测试无效域名返回错误
+        // Simulated attack: if a domain resolves to a private range, it should be blocked
+        // This test cannot rely on specific domains, but we can test that unresolvable domains return errors
         let result = validate_url_target("http://this-domain-does-not-exist-xyz123.invalid/").await;
-        // 无法解析的域名，保守地拒绝
+        // Unresolvable domain -- conservatively rejected
         assert!(result.is_err());
     }
 }

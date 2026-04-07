@@ -1,29 +1,25 @@
-/// 职责边界：
-/// 1. 负责在每次调用 LLM 前，拼接出完整的 Prompt（System Prompt + History + Memory）。
-///
-/// 参考 nanobot：
-/// - 【核心参考】nanobot/agent/context.py  ContextBuilder.build_system_prompt() L56-98
-/// - nanobot 从本地 SOUL.md / USER.md 文件读取 soul 与 user_preferences，
-///   Nexus 改为从 db.rs 的 users 表动态读取，soul 包含原 preferences 内容。
-/// - Memory 使用简单的 text string（4K cap），不再使用 RAG/embedding 检索。
+/// Responsibility boundary:
+/// 1. Assembles the complete prompt (System Prompt + History + Memory) before each LLM call.
+/// Soul and preferences are read from the DB users table.
+/// Memory uses a simple text string (4K cap).
 
 use crate::state::AppState;
 use crate::tools_registry::merge_device_tool_schemas;
 
-/// 系统提示词各段之间的分隔符（与 nanobot 保持一致）
+/// Separator between system prompt sections.
 const SECTION_SEPARATOR: &str = "\n\n---\n\n";
 
 use nexus_common::consts::MAX_HISTORY_MESSAGES;
 
-/// 构建完整的 System Prompt。
+/// Build the full System Prompt.
 ///
-/// 各段按以下顺序拼接，段间以 SECTION_SEPARATOR 分隔：
+/// Sections are joined in this order, separated by SECTION_SEPARATOR:
 ///
-/// 段 1 — 当前时间（必须段）
-/// 段 2 — soul（按需段，DB 中有数据才注入；含原 preferences）
-/// 段 3 — 在线设备与可用工具（必须段）
-/// 段 4 — 持久记忆（按需段，simple text string, 4K cap）
-/// 段 5 — 常驻 Skill 摘要（按需段）
+/// Section 1 -- Current time (required)
+/// Section 2 -- Soul (optional; injected only if DB has data; includes preferences)
+/// Section 3 -- Online devices and available tools (required)
+/// Section 4 -- Persistent memory (optional; simple text string, 4K cap)
+/// Section 5 -- Skills summary (optional)
 pub async fn build_system_prompt(
     state: &AppState,
     user_id: &str,
@@ -33,11 +29,11 @@ pub async fn build_system_prompt(
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
 
-    // 段 1 — 当前时间
+    // Section 1 -- Current time
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
     sections.push(format!("Current time: {}", now));
 
-    // 段 2 — soul（merged with preferences; no separate preferences injection）
+    // Section 2 -- Soul (merged with preferences; no separate preferences injection)
     let user_soul = crate::db::get_user_soul(&state.db, user_id).await.ok().flatten();
     let soul = match user_soul {
         Some(s) => Some(s),
@@ -50,22 +46,22 @@ pub async fn build_system_prompt(
         sections.push(soul_text);
     }
 
-    // 段 2.5 — 消息发送者身份与安全边界（Discord 等外部渠道）
+    // Section 2.5 -- Sender identity and security boundary (Discord and other external channels)
     if let Some(sender_section) = build_sender_identity_section(metadata) {
         sections.push(sender_section);
     }
 
-    // 段 3 — 在线设备与可用工具（必须段）
+    // Section 3 -- Online devices and available tools (required)
     let device_section = build_device_section(state, user_id).await;
     sections.push(device_section);
 
-    // 段 4 — 持久记忆（simple string, always injected if non-empty, 4K cap）
+    // Section 4 -- Persistent memory (simple string, always injected if non-empty, 4K cap)
     let memory = crate::db::get_user_memory(&state.db, user_id).await.unwrap_or_default();
     if !memory.is_empty() {
         sections.push(format!("## Memory\n{}", memory));
     }
 
-    // 段 5 — Skills（progressive disclosure: DB-based）
+    // Section 5 -- Skills (progressive disclosure: DB-based)
     let skill_section = build_skills_section(state, user_id).await;
     if !skill_section.is_empty() {
         sections.push(skill_section);
@@ -139,11 +135,12 @@ async fn build_skills_section(state: &AppState, user_id: &str) -> String {
     section
 }
 
-/// 构建发送者身份与安全边界段。
+/// Build sender identity and security boundary section.
 ///
-/// 当消息来自 Discord 等外部渠道时，根据 is_owner 标记注入不同的安全策略：
-/// - owner：完全信任
-/// - 非 owner 的授权用户：限制敏感操作
+/// When messages come from external channels like Discord, inject different security policies
+/// based on the is_owner flag:
+/// - owner: fully trusted
+/// - non-owner authorized user: restricted from sensitive operations
 fn build_sender_identity_section(
     metadata: &std::collections::HashMap<String, serde_json::Value>,
 ) -> Option<String> {
@@ -174,15 +171,15 @@ fn build_sender_identity_section(
     }
 }
 
-/// 构建段 3：在线设备与可用工具列表。
+/// Build Section 3: online devices and available tools.
 ///
-/// 从 AppState.devices 中筛选出属于该 user_id 的在线设备，
-/// 列出每台设备的 device_name、状态（online/busy）及其注册的工具。
+/// Filters devices belonging to user_id from AppState.devices,
+/// listing each device's name, status (online/offline), and registered tools.
 async fn build_device_section(state: &AppState, user_id: &str) -> String {
     let devices = state.devices.read().await;
     let devices_by_user = state.devices_by_user.read().await;
 
-    // 获取该用户的所有设备名称
+    // Get all device names for this user
     let user_device_names: std::collections::HashSet<&str> = devices_by_user
         .get(user_id)
         .map(|d| d.keys().map(|s| s.as_str()).collect())
@@ -216,7 +213,7 @@ async fn build_device_section(state: &AppState, user_id: &str) -> String {
     lines.join("\n")
 }
 
-/// 获取该用户所有设备的工具 Schema（Server 已注入 device_name enum）。
+/// Get all tool schemas for devices belonging to this user (with device_name enum injected by server).
 pub async fn get_all_tools_schema(
     state: &AppState,
     user_id: &str,
@@ -252,10 +249,10 @@ pub async fn get_all_tools_schema(
     all_schemas
 }
 
-/// 构建历史消息窗口，供 LLM 上下文使用。
+/// Build the message history window for LLM context.
 ///
-/// 从 db::get_session_history 拉取最新消息窗口，
-/// 截断至 MAX_HISTORY_MESSAGES 条，并修复孤儿 tool_result。
+/// Pulls the latest message window from db::get_session_history,
+/// truncates to MAX_HISTORY_MESSAGES, and fixes orphaned tool results.
 /// Context budget enforcement is handled by consolidation (memory.rs).
 pub async fn build_message_history(
     state: &AppState,
@@ -270,11 +267,11 @@ pub async fn build_message_history(
     }
 }
 
-/// 截断历史消息到 MAX_HISTORY_MESSAGES 条，并修复孤儿 tool_result。
+/// Truncate history to MAX_HISTORY_MESSAGES and fix orphaned tool results.
 ///
-/// 孤儿 tool_result 修复（_find_legal_start）：
-/// 若窗口起点处存在 tool_result 但对应的 tool_calls 已被截断移出，
-/// 则自动前移起点，跳过孤立的 tool_result，直到起点为 role=user 的消息。
+/// Orphan tool result fix (find_legal_start):
+/// If the window starts with a tool result whose corresponding tool_calls have been truncated away,
+/// advance the start to skip orphaned tool results until reaching a role=user message.
 fn truncate_and_fix_orphans(
     messages: Vec<serde_json::Value>,
     max_messages: usize,
@@ -282,10 +279,10 @@ fn truncate_and_fix_orphans(
     if messages.len() <= max_messages {
         return messages;
     }
-    // 从末尾取 max_messages 条
+    // Take max_messages from the end
     let window: Vec<_> = messages.into_iter().rev().take(max_messages).rev().collect();
 
-    // 修复孤儿 tool_result：确保起点不为孤立 tool_result
+    // Fix orphaned tool results: ensure start is not an orphaned tool result
     let start = find_legal_start(&window);
     window[start..].to_vec()
 }

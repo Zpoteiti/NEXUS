@@ -104,16 +104,12 @@ impl ServerTool for SendFileTool {
         let bytes = base64::engine::general_purpose::STANDARD.decode(&response.content_base64)
             .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("base64 decode error: {}", e)))?;
 
-        let dir = std::path::Path::new("/tmp/nexus-media");
-        tokio::fs::create_dir_all(dir).await
-            .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("mkdir error: {}", e)))?;
-        let save_path = dir.join(format!("{}_{}", uuid::Uuid::new_v4(), response.file_name));
-        tokio::fs::write(&save_path, &bytes).await
-            .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("write error: {}", e)))?;
+        let save_path = crate::file_store::save_media(&response.file_name, &bytes).await
+            .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, e))?;
 
         Ok(ServerToolResult {
             output: format!("File saved: {}", save_path.display()),
-            media: vec![format!("__FILE__:{}", save_path.to_string_lossy())],
+            media: vec![save_path.to_string_lossy().to_string()],
         })
     }
 }
