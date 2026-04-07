@@ -1,46 +1,63 @@
-/// 职责边界：
-/// 1. 封装操作系统层面的交互。
-/// 2. 划定"安全工作区 (Workspace)"的绝对路径，禁止 Agent 操作该路径之外的文件。
-/// 3. 管理 Agent 执行命令时的环境变量 (隔离宿主机的敏感 ENV)。
+/// Responsibility boundary:
+/// 1. Encapsulates OS-level interactions.
+/// 2. Defines the safe workspace absolute path, preventing the agent from operating outside it.
+/// 3. Manages environment variables for agent command execution (isolating sensitive host ENV).
 
+use nexus_common::protocol::FsPolicy;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-/// 获取工作区根目录。
-///
-/// 优先级：
-/// 1. `NEXUS_WORKSPACE` 环境变量
-/// 2. `~/.nexus/workspace`（`HOME` 或 `USERPROFILE` 均考虑）
-pub fn get_workspace_root() -> PathBuf {
-    if let Some(ws) = env::var("NEXUS_WORKSPACE").ok().and_then(|v| {
-        let trimmed = v.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(trimmed))
-        }
-    }) {
-        return ws;
-    }
+use crate::tools::ToolError;
 
-    let home = env::var("HOME")
-        .or_else(|_| env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
+static WORKSPACE_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
-    PathBuf::from(home).join(".nexus").join("workspace")
+/// Operation type for policy enforcement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FsOp {
+    Read,
+    Write,
 }
 
-/// 规范化并校验路径。
+/// Get the workspace root directory.
 ///
-/// 若 `restrict=true`，则解析后的路径必须落在 `get_workspace_root()` 之内。
-/// 若路径越界，返回 `Err("Path outside workspace")`。
+/// Priority:
+/// 1. `NEXUS_WORKSPACE` environment variable
+/// 2. `~/.nexus/workspace` (considers both `HOME` and `USERPROFILE`)
+pub fn get_workspace_root() -> PathBuf {
+    WORKSPACE_ROOT
+        .get_or_init(|| {
+            if let Some(ws) = env::var("NEXUS_WORKSPACE").ok().and_then(|v| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(trimmed))
+                }
+            }) {
+                return ws;
+            }
+
+            let home = env::var("HOME")
+                .or_else(|_| env::var("USERPROFILE"))
+                .unwrap_or_else(|_| ".".to_string());
+
+            PathBuf::from(home).join(".nexus").join("workspace")
+        })
+        .clone()
+}
+
+/// Normalize and validate a path.
 ///
-/// 支持相对路径（相对于 workspace）和绝对路径。
-pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, String> {
+/// If `restrict=true`, the resolved path must be within `get_workspace_root()`.
+/// If the path is out of bounds, returns `Err("Path outside workspace")`.
+///
+/// Supports relative paths (relative to workspace) and absolute paths.
+pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, ToolError> {
     let p = Path::new(path);
 
-    // 展开 ~ 和解析相对路径
+    // Expand ~ and resolve relative paths
     let resolved = if p.is_relative() {
         get_workspace_root().join(p)
     } else {
@@ -55,25 +72,129 @@ pub fn sanitize_path(path: &str, restrict: bool) -> Result<PathBuf, String> {
         let workspace = get_workspace_root();
         let workspace = workspace.canonicalize().unwrap_or(workspace);
         if !is_subpath(&resolved, &workspace) {
-            return Err(format!(
+            return Err(ToolError::Blocked(format!(
                 "Path {} is outside workspace {}",
                 resolved.display(),
                 workspace.display()
-            ));
+            )));
         }
     }
 
     Ok(resolved)
 }
 
-/// 检查 `path` 是否是 `base` 的子目录（或相等）。
+/// Policy-aware path sanitization.
+///
+/// Enforces the given `FsPolicy`:
+/// - `Unrestricted`: all paths allowed.
+/// - `Sandbox`: only workspace paths allowed.
+/// - `Whitelist`: workspace (read+write), whitelisted paths (read-only).
+pub fn sanitize_path_with_policy(
+    path: &str,
+    op: FsOp,
+    policy: &FsPolicy,
+) -> Result<PathBuf, ToolError> {
+    let p = Path::new(path);
+
+    let resolved = if p.is_relative() {
+        get_workspace_root().join(p)
+    } else {
+        PathBuf::from(p)
+    };
+
+    // For writes, if the file doesn't exist yet, canonicalize the parent to
+    // catch symlinks that escape the sandbox. For reads, the file must exist
+    // so canonicalize on the full path is sufficient.
+    let resolved = if op == FsOp::Write {
+        match resolved.canonicalize() {
+            Ok(p) => p,
+            Err(_) => {
+                // File doesn't exist — canonicalize parent to resolve symlinks
+                if let Some(parent) = resolved.parent() {
+                    let canon_parent = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+                    if let Some(file_name) = resolved.file_name() {
+                        canon_parent.join(file_name)
+                    } else {
+                        canon_parent
+                    }
+                } else {
+                    resolved.clone()
+                }
+            }
+        }
+    } else {
+        resolved.canonicalize().unwrap_or_else(|_| resolved.clone())
+    };
+
+    match policy {
+        FsPolicy::Unrestricted => Ok(resolved),
+        FsPolicy::Sandbox => {
+            let workspace = get_workspace_root();
+            let workspace = workspace.canonicalize().unwrap_or(workspace);
+            if !is_subpath(&resolved, &workspace) {
+                return Err(ToolError::Blocked(format!(
+                    "Path {} is outside workspace {}",
+                    resolved.display(),
+                    workspace.display()
+                )));
+            }
+            Ok(resolved)
+        }
+        FsPolicy::Whitelist { allowed_paths } => {
+            let workspace = get_workspace_root();
+            let workspace = workspace.canonicalize().unwrap_or(workspace);
+
+            // Workspace: always allowed (read+write)
+            if is_subpath(&resolved, &workspace) {
+                return Ok(resolved);
+            }
+
+            // Whitelisted paths: read-only
+            if op == FsOp::Write {
+                return Err(ToolError::Blocked(format!(
+                    "Path {} is outside workspace — writes only allowed in workspace",
+                    resolved.display()
+                )));
+            }
+
+            for allowed in allowed_paths {
+                let allowed_path = PathBuf::from(allowed);
+                let allowed_path = allowed_path.canonicalize().unwrap_or(allowed_path);
+                if is_subpath(&resolved, &allowed_path) {
+                    return Ok(resolved);
+                }
+            }
+
+            Err(ToolError::Blocked(format!(
+                "Path {} is outside workspace and not in whitelist",
+                resolved.display()
+            )))
+        }
+    }
+}
+
+/// Async wrapper around `sanitize_path_with_policy` that runs the blocking
+/// `canonicalize()` call on a dedicated thread via `spawn_blocking`.
+pub async fn sanitize_path_with_policy_async(
+    raw: &str,
+    op: FsOp,
+    policy: &FsPolicy,
+) -> Result<PathBuf, ToolError> {
+    let raw = raw.to_string();
+    let policy = policy.clone();
+    tokio::task::spawn_blocking(move || sanitize_path_with_policy(&raw, op, &policy))
+        .await
+        .unwrap_or_else(|_| Err(ToolError::Blocked("path resolution task panicked".to_string())))
+}
+
+/// Check if `path` is a subdirectory of (or equal to) `base`.
 fn is_subpath(path: &Path, base: &Path) -> bool {
     path.starts_with(base)
 }
 
-/// 返回最小化环境变量，仅保留执行命令所需的基础变量。
+/// Return a minimized set of environment variables, keeping only the essentials for command execution.
 ///
-/// 保留：PATH, HOME, USER, TEMP, TMP
+/// Kept: PATH, HOME, USER, TEMP, TMP
 pub fn min_env() -> HashMap<String, String> {
     let mut env = HashMap::new();
 
@@ -108,17 +229,17 @@ mod tests {
 
     #[test]
     fn test_sanitize_absolute_path_outside_workspace() {
-        // 在 restrict=true 时，绝对路径如果不在 workspace 内应报错
-        // 由于测试环境 workspace 可能不确定，我们只验证函数不 panic
+        // With restrict=true, absolute paths outside workspace should error
+        // Since test workspace may vary, we only verify the function does not panic
         let result = sanitize_path("/tmp/some_file", true);
-        // 结果取决于 workspace 在哪里，可能是 Err
+        // Result depends on workspace location, may be Err
         assert!(result.is_ok() || result.is_err());
     }
 
     #[test]
     fn test_min_env_has_required_keys() {
         let env = min_env();
-        // PATH 几乎总是存在
+        // PATH almost always exists
         assert!(env.contains_key("PATH") || env.is_empty() || !env.is_empty());
     }
 }

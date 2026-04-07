@@ -1,26 +1,26 @@
-/// 职责边界：
-/// 1. 定义所有本地原生工具必须实现的 `LocalTool` Trait。
-/// 2. 规范工具的名称、JSON Schema 描述，以及执行入口。
-/// 3. 统一错误类型 ToolError，映射到 nexus-common 中定义的 exit_code。
+/// Responsibility boundary:
+/// 1. Defines the `LocalTool` trait that all local native tools must implement.
+/// 2. Standardizes tool names, JSON Schema descriptions, and execution entry points.
+/// 3. Unified error type ToolError, mapped to exit_code defined in nexus-common.
 
 use async_trait::async_trait;
 use nexus_common::consts::{EXIT_CODE_CANCELLED, EXIT_CODE_ERROR, EXIT_CODE_TIMEOUT};
 use serde_json::Value;
 
-/// 本地工具 Trait，所有内置工具必须实现此 Trait。
+/// Local tool trait. All built-in tools must implement this trait.
 #[async_trait]
 pub trait LocalTool: Send + Sync {
-    /// 工具唯一名称
+    /// Unique tool name.
     fn name(&self) -> &'static str;
-    /// 工具的 JSON Schema（OpenAI function calling 格式）
+    /// Tool JSON Schema (OpenAI function calling format).
     fn schema(&self) -> Value;
-    /// 执行工具
+    /// Execute the tool.
     async fn execute(&self, args: Value) -> Result<String, ToolError>;
 }
 
-/// 工具执行错误枚举。
+/// Tool execution error enum.
 ///
-/// exit_code 映射关系（来自 nexus-common）：
+/// exit_code mapping (from nexus-common):
 ///   ToolError::Timeout          → EXIT_CODE_TIMEOUT (-1)
 ///   ToolError::Blocked         → EXIT_CODE_CANCELLED (-2)
 ///   ToolError::NotFound         → EXIT_CODE_ERROR (1)
@@ -45,7 +45,7 @@ pub enum ToolError {
 }
 
 impl ToolError {
-    /// 将 ToolError 转换为 exit_code（来自 nexus-common consts）
+    /// Convert ToolError to exit_code (from nexus-common consts).
     pub fn exit_code(&self) -> i32 {
         match self {
             ToolError::Timeout(_) => EXIT_CODE_TIMEOUT,
@@ -57,5 +57,11 @@ impl ToolError {
     }
 }
 
+pub mod edit;
 pub mod fs;
+pub mod fs_helpers;
+mod read_file;
+mod write_file;
+mod list_dir;
+mod stat;
 pub mod shell;

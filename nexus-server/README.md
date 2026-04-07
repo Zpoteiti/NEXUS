@@ -50,11 +50,11 @@ nexus-server 是 NEXUS 的中枢编排层，负责连接 WebUI 与 Client 设备
 - 依赖 PostgreSQL 16+（启用 pgvector）进行会话、用户、记忆持久化。
 
 ### 被谁依赖
-- 被 `nexus-webui` 作为唯一后端依赖。
+- 被 `nexus-gateway` 通过 `/ws/nexus` 连接（GatewayChannel 主动拨入）。
 - 被 `nexus-client` 作为控制平面与消息调度中心依赖。
 
 ### 通信方式
-- WebUI ↔ Server：HTTP REST（`/api/*`）+ WebSocket（`/ws/chat`）。
+- Gateway ↔ Server：WebSocket（`/ws/nexus`，GatewayChannel 主动连接）。
 - Client ↔ Server：WebSocket（`/ws`）。
 
 ## 5. 环境要求与运行方式

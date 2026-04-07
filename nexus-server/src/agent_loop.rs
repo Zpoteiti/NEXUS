@@ -1,222 +1,607 @@
-/// 职责边界：
-/// 1. 实现核心的 `run_agent_loop` 函数，控制 ReAct（思考-行动）的 while 循环。
-/// 2. 【挂起/唤醒机制】当 Provider 返回 ToolCall 时：
-///    a. 生成唯一的 request_id（UUID）。
-///    b. 创建 oneshot::channel，将 oneshot::Sender 存入 AppState 挂起等待表。
-///    c. 通过 route_tool 发送到目标设备。
-///    d. .await oneshot::Receiver 挂起当前循环，让出线程。
-///    e. ws.rs 收到 Client 返回的 ToolExecutionResult 后，唤醒继续执行。
-/// 3. 【自我纠正机制】收到执行错误时，将错误信息包装为 tool_result 喂回 LLM。
-///
-/// 参考 nanobot：
-/// - 完全复刻 nanobot/agent/loop.py 中的 _run_agent_loop 状态机逻辑。
-/// - nanobot/agent/loop.py _run_agent_loop 中 finish_reason=="error" 分支。
+//! Per-Session Agent Loop
+//! Each session has its own instance, consuming its own inbox queue, independent from other sessions.
 
+use crate::bus::{InboundEvent, OutboundEvent};
 use crate::context;
-use crate::providers::{LlmResponse, ToolCallRequest};
+use crate::providers::{call_with_retry, ChatCompletionRequest};
 use crate::state::AppState;
-use crate::tools_registry::{route_tool, RouteError};
-use serde_json::Value;
+use crate::tools_registry::route_tool;
+use base64::Engine;
+use nexus_common::error::{ErrorCode, NexusError};
+use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, info};
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
 
-/// ReAct 超时配置
-const AGENT_TIMEOUT_SECS: u64 = 120;
+/// Result of a single turn, including the reply text and any media file paths.
+struct TurnResult {
+    reply: String,
+    media: Vec<String>,
+}
 
-/// 运行一轮 ReAct 循环，处理单次用户输入。
-///
-/// 调用流程：
-/// 1. 构建 system_prompt（设备列表 + 可用工具 schema）
-/// 2. 构建 messages（含 history）
-/// 3. 调用 LLM
-/// 4. 若 LLM 返回 content → 返回
-/// 5. 若 LLM 返回 tool_calls → 逐个路由执行，结果喂回 LLM，重试（最多 MAX_TOOL_RETRIES 次）
-/// 6. 若 LLM 返回 error → 包装为错误 tool_result 重试
-pub async fn run_single_turn(
-    state: Arc<AppState>,
-    user_id: &str,
-    session_id: &str,
-    user_input: &str,
-    messages: &mut Vec<Value>,
-) -> Result<String, String> {
-    // 1. 构建 system prompt
-    let system_prompt = context::build_system_prompt(&state, user_id, session_id, user_input).await;
+/// Post-process LLM content before returning to user.
+/// Strips <think>...</think> blocks from reasoning models.
+fn finalize_content(content: &str) -> String {
+    static THINK_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<think>.*?</think>").unwrap());
+    let cleaned = THINK_RE.replace_all(content, "");
+    cleaned.trim().to_string()
+}
 
-    // 2. 获取工具 schema（带 device_name enum 注入）
-    let tools = context::get_all_tools_schema(&state, user_id).await;
-
-    // 3. 构建完整的 messages 列表
-    let mut all_messages = vec![Value::String(system_prompt)];
-    all_messages.extend(messages.clone());
-    all_messages.push(json!({
-        "role": "user",
-        "content": user_input
-    }));
-
-    // 4. 调用 LLM（providers 抽象）
-    let llm_response = call_llm_with_tools(&all_messages, &tools).await?;
-
-    // 5. 处理 LLM 返回
-    match llm_response.finish_reason.as_str() {
-        "stop" => {
-            // LLM 返回文本，直接追加到历史并返回
-            if let Some(content) = llm_response.content {
-                messages.push(json!({ "role": "assistant", "content": content }));
-                return Ok(content);
+/// Detect image MIME type from file path (extension first, then magic bytes).
+fn detect_image_mime(path: &str) -> Option<&'static str> {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".png") {
+        Some("image/png")
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        Some("image/jpeg")
+    } else if lower.ends_with(".gif") {
+        Some("image/gif")
+    } else if lower.ends_with(".webp") {
+        Some("image/webp")
+    } else if lower.ends_with(".bmp") {
+        Some("image/bmp")
+    } else {
+        // Try magic bytes
+        if let Ok(bytes) = std::fs::read(path) {
+            if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+                Some("image/png")
+            } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+                Some("image/jpeg")
+            } else if bytes.starts_with(b"GIF8") {
+                Some("image/gif")
+            } else if bytes.len() >= 12 && &bytes[8..12] == b"WEBP" {
+                Some("image/webp")
+            } else {
+                None
             }
-            Ok(String::new())
+        } else {
+            None
         }
-        "tool_calls" => {
-            // LLM 返回工具调用，进入工具执行循环
-            execute_tool_calls_loop(state, user_id, &mut all_messages, llm_response.tool_calls, messages).await
-        }
-        "error" => {
-            // LLM 错误，不写入历史，返回错误
-            Err(llm_response.content.unwrap_or_else(|| "LLM error".to_string()))
-        }
-        _ => Err(format!("unknown finish_reason: {}", llm_response.finish_reason)),
     }
 }
 
-/// 工具调用循环：执行工具调用，若结果触发 LLM 自我纠正则重试。
-async fn execute_tool_calls_loop(
+async fn emit_progress(state: &AppState, channel: &str, chat_id: &str, hint: &str) {
+    let mut metadata = HashMap::new();
+    metadata.insert("_progress".to_string(), serde_json::json!(true));
+    let _ = state.bus.publish_outbound(OutboundEvent {
+        channel: channel.to_string(),
+        chat_id: chat_id.to_string(),
+        content: hint.to_string(),
+        media: Vec::new(),
+        metadata,
+    }).await;
+}
+
+fn make_outbound(event: &InboundEvent, content: String) -> OutboundEvent {
+    let mut metadata = HashMap::new();
+    metadata.insert("sender_id".into(), serde_json::json!(event.sender_id));
+    OutboundEvent {
+        channel: event.channel.clone(),
+        chat_id: event.chat_id.clone(),
+        content,
+        media: Vec::new(),
+        metadata,
+    }
+}
+
+/// Per-Session AgentLoop: consumes the session inbox and runs the ReAct loop.
+pub async fn run_session(
+    session_id: String,
+    mut inbox: mpsc::Receiver<InboundEvent>,
     state: Arc<AppState>,
+) {
+    info!("agent_session started: session_id={}", session_id);
+
+    // Ensure session exists in DB (for message foreign key)
+    // Uses sender_id from the first event; silently ignores errors.
+    let mut db_session_created = false;
+
+    while let Some(event) = inbox.recv().await {
+        if !db_session_created {
+            if let Err(e) = crate::db::ensure_session(&state.db, &session_id, &event.sender_id).await {
+                warn!("failed to create DB session {}: {}", session_id, e);
+            }
+            db_session_created = true;
+        }
+        debug!("agent_session {} received: content={}", session_id, event.content);
+
+        // Hold the session lock (prevent concurrent DB writes from different channels)
+        let lock = state.session_manager.get_session_lock(&session_id).await
+            .expect("session lock must exist after get_or_create_session");
+        let _guard = lock.lock().await;
+
+        match run_single_turn(&state, &event).await {
+            Ok(result) => {
+                let outbound = OutboundEvent {
+                    channel: event.channel.clone(),
+                    chat_id: event.chat_id.clone(),
+                    content: finalize_content(&result.reply),
+                    media: result.media,
+                    metadata: HashMap::new(),
+                };
+                state.bus.publish_outbound(outbound).await;
+            }
+            Err(e) => {
+                error!("agent_session {} error: {}", session_id, e);
+                // Show user-friendly message, log full error
+                let user_msg = match e.code {
+                    ErrorCode::ExecutionFailed => format!("Something went wrong: {}", e.message),
+                    ErrorCode::ToolTimeout => "The operation timed out. Please try again.".to_string(),
+                    ErrorCode::DeviceNotFound => "The device is not connected.".to_string(),
+                    ErrorCode::DeviceOffline => "The device appears to be offline.".to_string(),
+                    _ => format!("Error: {}", e.message),
+                };
+                state.bus.publish_outbound(make_outbound(&event, user_msg)).await;
+            }
+        }
+    }
+
+    state.bus.unregister_session(&session_id);
+    state.session_manager.remove_session(&session_id).await;
+    info!("agent_session ended and cleaned up: session_id={}", session_id);
+}
+
+// ============================================================================
+// Loop detection
+// ============================================================================
+
+/// Identity key for a single tool call (tool name + arguments).
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct ToolCallKey {
+    name: String,
+    arguments: Value,
+}
+
+impl ToolCallKey {
+    fn new(name: String, arguments: Value) -> Self {
+        Self { name, arguments }
+    }
+}
+
+/// If the same (tool_name, arguments) pair is called more than MAX_REPEAT_THRESHOLD times
+/// in a single tool loop, it is treated as the LLM being stuck in a repeat-call loop.
+const MAX_REPEAT_THRESHOLD: usize = 2;
+
+/// Parsed tool call with arguments as Value (parsed from JSON string)
+#[derive(Debug, Clone)]
+struct ToolCallParsed {
+    id: String,
+    name: String,
+    arguments: Value,
+}
+
+/// Parse tool calls from a Choice, deserializing arguments from JSON string to Value
+fn parse_tool_calls(choice: &crate::providers::Choice) -> Vec<ToolCallParsed> {
+    choice.message.tool_calls.as_ref()
+        .map(|calls| {
+            calls.iter().map(|tc| {
+                let arguments: Value = serde_json::from_str(&tc.function.arguments)
+                    .unwrap_or_else(|_| json!({}));
+                ToolCallParsed {
+                    id: tc.id.clone(),
+                    name: tc.function.name.clone(),
+                    arguments,
+                }
+            }).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Run a single ReAct turn.
+async fn run_single_turn(
+    state: &Arc<AppState>,
+    event: &InboundEvent,
+) -> Result<TurnResult, NexusError> {
+    let user_input = &event.content;
+    let user_id = &event.sender_id;
+    let session_id = &event.session_id;
+
+    let llm_config = match state.config.llm.read().await.clone() {
+        Some(config) => config,
+        None => {
+            state.bus.publish_outbound(make_outbound(event,
+                "⚠️ LLM not configured. An admin must set up the LLM provider via the API first.".into()
+            )).await;
+            return Ok(TurnResult { reply: "LLM not configured".into(), media: Vec::new() });
+        }
+    };
+
+    // Check if this is a checkpoint resume
+    if let Some(resume_msgs) = event.metadata.get("resume_messages") {
+        if let Some(resume_arr) = resume_msgs.as_array() {
+            let resume_iteration = event.metadata.get("resume_iteration")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let resumed_messages: Vec<Value> = resume_arr.clone();
+            let tools = context::get_all_tools_schema(state, user_id).await;
+
+            info!(
+                "agent_session {} resuming from checkpoint: {} messages, iteration {}",
+                session_id, resumed_messages.len(), resume_iteration
+            );
+
+            // Re-call LLM with the saved context to continue the tool loop
+            let request = ChatCompletionRequest {
+                messages: resumed_messages.clone(),
+                tools: tools.clone(),
+                model: llm_config.model.clone(),
+                max_tokens: None,
+            };
+            let response = call_with_retry(&llm_config, request).await
+                .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("LLM provider error: {}", e)))?;
+            let choice = response.choices.first()
+                .ok_or_else(|| NexusError::new(ErrorCode::ExecutionFailed, "LLM returned empty choices array"))?;
+
+            return match choice.finish_reason.as_str() {
+                "stop" => {
+                    let reply = choice.message.content.clone().unwrap_or_default();
+                    let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None, None, None).await;
+                    let _ = crate::db::delete_checkpoint(&state.db, session_id).await;
+                    Ok(TurnResult { reply, media: Vec::new() })
+                }
+                "tool_calls" => {
+                    let tool_calls = parse_tool_calls(choice);
+                    info!("agent_session {} resume: LLM requested {} tool calls", session_id, tool_calls.len());
+                    execute_tool_calls_loop(state, user_id, session_id, &event.channel, &event.chat_id, resumed_messages, tool_calls, tools, &llm_config).await
+                }
+                _ => Err(NexusError::new(ErrorCode::ExecutionFailed, format!("unknown finish_reason: {}", choice.finish_reason))),
+            };
+        }
+    }
+
+    let system_prompt = context::build_system_prompt(state, user_id, session_id, user_input, &event.metadata).await;
+    let tools = context::get_all_tools_schema(state, user_id).await;
+    let history = context::build_message_history(state, session_id).await;
+
+    let mut messages = vec![
+        json!({ "role": "system", "content": system_prompt }),
+    ];
+    messages.extend(history);
+
+    // Build user message — include images as vision content blocks if media is present
+    let user_message = if event.media.is_empty() {
+        json!({ "role": "user", "content": user_input })
+    } else {
+        let mut parts: Vec<Value> = Vec::new();
+        for path in &event.media {
+            if let Ok(bytes) = tokio::fs::read(path).await {
+                let mime = detect_image_mime(path);
+                if let Some(mime) = mime {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    parts.push(json!({
+                        "type": "image_url",
+                        "image_url": {"url": format!("data:{};base64,{}", mime, b64)}
+                    }));
+                } else {
+                    let name = std::path::Path::new(path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let size_kb = tokio::fs::metadata(path).await
+                        .map(|m| m.len() / 1024)
+                        .unwrap_or(0);
+                    parts.push(json!({"type": "text", "text": format!(
+                        "[User uploaded: {} ({}KB) — use download_to_device to transfer to a device for processing]",
+                        name, size_kb
+                    )}));
+                }
+            }
+        }
+        parts.push(json!({"type": "text", "text": user_input}));
+        json!({"role": "user", "content": parts})
+    };
+    messages.push(user_message);
+
+    let _ = crate::db::save_message(&state.db, session_id, "user", user_input, None, None, None).await;
+
+    // Context compression: compress history if context window is running low
+    if let Some(consolidated) = crate::memory::maybe_consolidate(
+        session_id,
+        user_id,
+        &state.db,
+        &llm_config,
+        &messages,
+        llm_config.context_window,
+    ).await {
+        messages = consolidated;
+    }
+
+    emit_progress(state, &event.channel, &event.chat_id, "⏳ Thinking...").await;
+
+    info!("agent_session {} calling LLM with {} tools", session_id, tools.len());
+    let request = ChatCompletionRequest {
+        messages: messages.clone(),
+        tools: tools.clone(),
+        model: llm_config.model.clone(),
+        max_tokens: None,
+    };
+    let response = call_with_retry(&llm_config, request).await
+        .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("LLM provider error: {}", e)))?;
+    let choice = response.choices.first()
+        .ok_or_else(|| NexusError::new(ErrorCode::ExecutionFailed, "LLM returned empty choices array"))?;
+    info!("agent_session {} LLM returned: finish_reason={}", session_id, choice.finish_reason);
+
+    match choice.finish_reason.as_str() {
+        "stop" => {
+            let reply = choice.message.content.clone().unwrap_or_default();
+            info!("agent_session {} returning stop: {}", session_id, reply);
+            let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None, None, None).await;
+            Ok(TurnResult { reply, media: Vec::new() })
+        }
+        "tool_calls" => {
+            let tool_calls = parse_tool_calls(choice);
+            info!("agent_session {} calling execute_tool_calls_loop with {} tool_calls", session_id, tool_calls.len());
+            execute_tool_calls_loop(state, user_id, session_id, &event.channel, &event.chat_id, messages, tool_calls, tools, &llm_config).await
+        }
+        _ => Err(NexusError::new(ErrorCode::ExecutionFailed, format!("unknown finish_reason: {}", choice.finish_reason))),
+    }
+}
+
+/// Execute the tool call loop (no hard cap; real infinite loops are broken by loop detection).
+async fn execute_tool_calls_loop(
+    state: &Arc<AppState>,
     user_id: &str,
-    messages: &mut Vec<Value>,
-    initial_tool_calls: Vec<ToolCallRequest>,
-    history: &mut Vec<Value>,
-) -> Result<String, String> {
-    let max_retries = 3;
+    session_id: &str,
+    event_channel: &str,
+    event_chat_id: &str,
+    messages: Vec<Value>,
+    initial_tool_calls: Vec<ToolCallParsed>,
+    tools: Vec<Value>,
+    llm_config: &crate::config::LlmConfig,
+) -> Result<TurnResult, NexusError> {
     let mut current_messages = messages.clone();
     let mut current_tool_calls = initial_tool_calls;
+    let mut call_counts: HashMap<ToolCallKey, usize> = HashMap::new();
+    let mut gave_rethink_chance = false;
+    let mut pending_media: Vec<String> = Vec::new();
+    let mut iteration = 0u32;
 
-    for attempt in 0..max_retries {
-        // 追加当前轮次的 tool_calls 消息
+    loop {
+        iteration += 1;
+        if iteration > nexus_common::consts::MAX_AGENT_ITERATIONS {
+            let msg = format!("Agent reached maximum iteration limit ({}). Stopping.", nexus_common::consts::MAX_AGENT_ITERATIONS);
+            warn!("{}", msg);
+            let _ = crate::db::save_message(&state.db, session_id, "assistant", &msg, None, None, None).await;
+            return Ok(TurnResult { reply: msg, media: pending_media });
+        }
+        // Build a single assistant message with all tool calls
+        let tool_calls_json: Vec<Value> = current_tool_calls.iter().map(|tc| {
+            json!({
+                "id": tc.id,
+                "type": "function",
+                "function": { "name": tc.name, "arguments": tc.arguments.to_string() }
+            })
+        }).collect();
+        current_messages.push(json!({
+            "role": "assistant",
+            "tool_calls": tool_calls_json
+        }));
+        // Save each tool call to DB
         for tc in &current_tool_calls {
-            current_messages.push(json!({
-                "role": "assistant",
-                "tool_calls": [{
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": tc.arguments
-                    }
-                }]
+            let _ = crate::db::save_message(
+                &state.db, session_id, "assistant", "",
+                Some(&tc.id), Some(&tc.name), Some(&tc.arguments.to_string()),
+            ).await;
+        }
+
+        let mut loop_detected: Option<(&ToolCallParsed, usize)> = None;
+        for tc in &current_tool_calls {
+            let key = ToolCallKey::new(tc.name.clone(), tc.arguments.clone());
+            let count = call_counts.entry(key).or_insert(0);
+            *count += 1;
+            if *count > MAX_REPEAT_THRESHOLD {
+                loop_detected = Some((tc, *count));
+                break;
+            }
+        }
+
+        if let Some((tc, count)) = loop_detected {
+            if gave_rethink_chance {
+                warn!(
+                    "execute_tool_calls_loop: tool '{}' called {} times with identical arguments after rethink chance — hard error",
+                    tc.name, count
+                );
+                return Err(NexusError::new(ErrorCode::ExecutionFailed, format!(
+                    "Tool '{}' has been called repeatedly with the same arguments {} times. After being asked to try a different approach, the same tool was called again. Please try a fundamentally different strategy to complete this task.",
+                    tc.name, count
+                )));
+            }
+
+            gave_rethink_chance = true;
+            warn!(
+                "execute_tool_calls_loop: tool '{}' called {} times with identical arguments — injecting soft error",
+                tc.name, count
+            );
+            // Must provide a tool result for EVERY tool_call_id in the assistant message
+            for call in &current_tool_calls {
+                let content = if call.id == tc.id {
+                    format!(
+                        "[Loop Detected] The tool '{}' has been called {} times with identical arguments without progress. Please try a fundamentally different strategy or approach to complete this task.",
+                        tc.name, count
+                    )
+                } else {
+                    "[Skipped] Tool execution skipped due to loop detection on a parallel call.".to_string()
+                };
+                current_messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": content
+                }));
+            }
+
+            let request = ChatCompletionRequest {
+                messages: current_messages.clone(),
+                tools: tools.clone(),
+                model: llm_config.model.clone(),
+                max_tokens: None,
+            };
+            let response = call_with_retry(llm_config, request).await
+                .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("LLM provider error: {}", e)))?;
+            let choice = response.choices.first()
+                .ok_or_else(|| NexusError::new(ErrorCode::ExecutionFailed, "LLM returned empty choices array"))?;
+
+            match choice.finish_reason.as_str() {
+                "stop" => {
+                    let reply = choice.message.content.clone().unwrap_or_default();
+                    let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None, None, None).await;
+                    return Ok(TurnResult { reply, media: pending_media });
+                }
+                "tool_calls" => {
+                    current_tool_calls = parse_tool_calls(choice);
+                    info!("execute_tool_calls_loop: after soft error, LLM requested {} new tool calls", current_tool_calls.len());
+                    continue;
+                }
+                _ => {
+                    return Err(NexusError::new(ErrorCode::ExecutionFailed, format!("unknown finish_reason after soft error: {}", choice.finish_reason)));
+                }
+            }
+        }
+
+        // Execute all tool calls concurrently
+        let mut futures = Vec::new();
+        for tc in current_tool_calls.clone() {
+            let state = state.clone();
+            let user_id = user_id.to_string();
+            let session_id = session_id.to_string();
+            let channel = event_channel.to_string();
+            let chat_id = event_chat_id.to_string();
+            futures.push(tokio::spawn(async move {
+                let result = execute_single_tool(&state, &user_id, &session_id, &channel, &chat_id, &tc).await;
+                (tc, result)
             }));
         }
 
-        // 执行所有 tool_calls，追加 tool_results
-        let mut all_results: Vec<Value> = Vec::new();
-        for tc in &current_tool_calls {
-            let result = execute_single_tool(&state, user_id, tc).await;
-            let tool_result_content = match result {
-                Ok(output) => output,
-                Err(e) => format!("{{\"error\": \"{}\"}}", e),
+        let results = futures::future::join_all(futures).await;
+        for join_result in results {
+            let (tc, result) = join_result.map_err(|e| NexusError::new(ErrorCode::InternalError, format!("task join error: {}", e)))?;
+            let (mut content, media) = match result {
+                Ok((output, media)) => (output, media),
+                Err(e) => {
+                    let mut metadata = HashMap::new();
+                    metadata.insert("_progress".to_string(), serde_json::json!(true));
+                    metadata.insert("_error".to_string(), serde_json::json!(true));
+                    let _ = state.bus.publish_outbound(OutboundEvent {
+                        channel: event_channel.to_string(),
+                        chat_id: event_chat_id.to_string(),
+                        content: format!("⚠️ Tool `{}` error: {}", tc.name, e),
+                        media: Vec::new(),
+                        metadata,
+                    }).await;
+                    (serde_json::json!({"error": e.to_string()}).to_string(), vec![])
+                }
             };
-            let tr = json!({
+            // Add media from server tools to pending_media
+            for m in media {
+                let file_name = m.split('/').last().unwrap_or(&m);
+                content = format!("File '{}' has been sent to the user.", file_name);
+                pending_media.push(m);
+            }
+            // Save tool result to DB
+            let _ = crate::db::save_message(
+                &state.db, session_id, "tool", &content,
+                Some(&tc.id), None, None,
+            ).await;
+            current_messages.push(json!({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "content": tool_result_content
-            });
-            current_messages.push(tr.clone());
-            all_results.push(tr);
+                "content": content
+            }));
         }
 
-        // 若所有工具执行成功，追加 tool_results 到历史
-        history.extend(all_results);
+        // Save checkpoint after tool batch (for crash recovery)
+        let _ = crate::db::save_checkpoint(
+            &state.db, session_id, user_id,
+            &current_messages, iteration, event_channel, event_chat_id,
+        ).await;
 
-        // 调用 LLM 继续推理（带上工具执行结果）
-        let tools = context::get_all_tools_schema(&state, user_id).await;
-        let llm_response = call_llm_with_tools(&current_messages, &tools).await?;
+        emit_progress(state, event_channel, event_chat_id, "⏳ Analyzing results...").await;
 
-        match llm_response.finish_reason.as_str() {
+        let request = ChatCompletionRequest {
+            messages: current_messages.clone(),
+            tools: tools.clone(),
+            model: llm_config.model.clone(),
+            max_tokens: None,
+        };
+        let response = call_with_retry(llm_config, request).await
+            .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("LLM provider error: {}", e)))?;
+        let choice = response.choices.first()
+            .ok_or_else(|| NexusError::new(ErrorCode::ExecutionFailed, "LLM returned empty choices array"))?;
+
+        match choice.finish_reason.as_str() {
             "stop" => {
-                if let Some(content) = llm_response.content {
-                    history.push(json!({ "role": "assistant", "content": content }));
-                    return Ok(content);
-                }
-                return Ok(String::new());
+                emit_progress(state, event_channel, event_chat_id, "💬 Composing response...").await;
+                let reply = choice.message.content.clone().unwrap_or_default();
+                let _ = crate::db::save_message(&state.db, session_id, "assistant", &reply, None, None, None).await;
+                // Clear checkpoint on successful completion
+                let _ = crate::db::delete_checkpoint(&state.db, session_id).await;
+                return Ok(TurnResult { reply, media: pending_media });
             }
             "tool_calls" => {
-                // LLM 决定继续调用工具，更新 tool_calls 并继续循环
-                current_tool_calls = llm_response.tool_calls;
-                // 注意：不追加到 history（这轮还没结束）
-                info!("tool retry {} with {} new calls", attempt + 1, current_tool_calls.len());
-            }
-            "error" => {
-                // LLM 报错，将错误包装为 tool_result 重试
-                let error_msg = llm_response.content.unwrap_or_else(|| "LLM error".to_string());
-                history.push(json!({
-                    "role": "tool",
-                    "tool_call_id": current_tool_calls.first().map(|tc| tc.id.as_str()).unwrap_or("error"),
-                    "content": format!("{{\"error\": \"{}\"}}", error_msg)
-                }));
-                error!("LLM error during tool execution: {}", error_msg);
-                if attempt == max_retries - 1 {
-                    return Err(format!("LLM error after {} retries: {}", max_retries, error_msg));
-                }
+                current_tool_calls = parse_tool_calls(choice);
+                info!("execute_tool_calls_loop: LLM requested {} new tool calls", current_tool_calls.len());
             }
             _ => {
-                return Err(format!("unknown finish_reason in tool loop: {}", llm_response.finish_reason));
+                return Err(NexusError::new(ErrorCode::ExecutionFailed, format!("unknown finish_reason in tool loop: {}", choice.finish_reason)));
             }
         }
     }
-
-    Err(format!("exceeded max tool retries ({})", max_retries))
 }
 
-/// 执行单个工具调用，通过 route_tool 路由到目标设备。
 async fn execute_single_tool(
     state: &Arc<AppState>,
     user_id: &str,
-    tc: &ToolCallRequest,
-) -> Result<String, String> {
+    session_id: &str,
+    event_channel: &str,
+    event_chat_id: &str,
+    tc: &ToolCallParsed,
+) -> Result<(String, Vec<String>), NexusError> {
+    debug!("execute_single_tool: tool_name={}, arguments={}", tc.name, tc.arguments);
+
+    // 1. Determine tool location for progress hint
+    let location = if state.server_tools.get(&tc.name).is_some() {
+        "server".to_string()
+    } else if tc.arguments.get("device_name").and_then(|v| v.as_str()) == Some("server") && tc.name.starts_with("mcp_") {
+        "server".to_string()
+    } else {
+        tc.arguments.get("device_name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string()
+    };
+
+    // 2. Emit progress hint (ALWAYS, for all tool types)
+    emit_progress(state, event_channel, event_chat_id,
+        &format!("🔧 {} on {}", tc.name, location)).await;
+
+    // Server-native tools: return output + media paths
+    if let Some(tool) = state.server_tools.get(&tc.name) {
+        let result = tool.execute(state, user_id, session_id, tc.arguments.clone(), event_channel, event_chat_id).await?;
+        return Ok((result.output, result.media));
+    }
+
     let device_name = tc.arguments
         .get("device_name")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "device_name not found in tool call arguments".to_string())?
+        .ok_or_else(|| NexusError::new(ErrorCode::ToolInvalidParams, "device_name not found in tool call arguments"))?
         .to_string();
+    info!("execute_single_tool: resolved device_name={}", device_name);
 
-    let tool_name = &tc.name;
+    // Server MCP tools (device_name="server")
+    if device_name == "server" && tc.name.starts_with("mcp_") {
+        let manager = state.server_mcp.read().await;
+        let output = manager.call_tool(&tc.name, tc.arguments.clone()).await?;
+        return Ok((output, vec![]));
+    }
+
     let params = tc.arguments.clone();
     let request_id = tc.id.clone();
 
-    match route_tool(state, user_id, tool_name, params, &request_id).await {
-        Ok(result) => {
-            // ToolExecutionResult { exit_code, output }
-            let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(1);
-            let output = result.get("output").and_then(|v| v.as_str()).unwrap_or("");
-            if exit_code == 0 {
-                Ok(output.to_string())
-            } else {
-                Err(output.to_string())
-            }
-        }
-        Err(RouteError::DeviceNotFound(name)) => {
-            Err(format!("device '{}' not found", name))
-        }
-        Err(RouteError::DeviceOffline(name)) => {
-            Err(format!("device '{}' is offline", name))
-        }
-        Err(RouteError::SendFailed(name)) => {
-            Err(format!("failed to send request to '{}'", name))
-        }
+    info!("execute_single_tool: calling route_tool for device={}", device_name);
+    let result = route_tool(state, user_id, &tc.name, params, &request_id).await?;
+    let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(1);
+    let output = result.get("output").and_then(|v| v.as_str()).unwrap_or("");
+    if exit_code == 0 {
+        Ok((output.to_string(), vec![]))
+    } else {
+        Err(NexusError::new(ErrorCode::ExecutionFailed, output.to_string()))
     }
-}
-
-/// 调用 LLM（通过 providers trait）。
-///
-/// 目前 providers 为 stub，调用时会返回 mock 响应。
-async fn call_llm_with_tools(
-    messages: &[Value],
-    _tools: &[Value],
-) -> Result<LlmResponse, String> {
-    // TODO: 接入 providers::call_llm
-    // providers::openai::call_llm(messages, tools).await
-    Ok(LlmResponse {
-        content: Some("Tool execution completed.".to_string()),
-        tool_calls: Vec::new(),
-        finish_reason: "stop".to_string(),
-    })
 }
