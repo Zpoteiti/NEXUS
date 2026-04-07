@@ -1,10 +1,8 @@
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LlmConfig {
-    pub provider: String,           // "openai", "anthropic", "gemini", "deepseek", etc.
-    pub model: String,              // "gpt-4o", "claude-sonnet-4-20250514", etc.
+    pub api_base: String,        // Required: OpenAI-compatible endpoint URL
     pub api_key: String,
-    #[serde(default)]
-    pub api_base: Option<String>,   // Optional, for custom endpoints
+    pub model: String,
     pub context_window: usize,
 }
 
@@ -21,7 +19,6 @@ pub struct ServerConfig {
     pub gateway_token: String,
     pub jwt_secret: String,
     pub bcrypt_cost: u32,
-    pub litellm_port: u16,
     pub llm: Arc<RwLock<Option<LlmConfig>>>,
     pub skills_dir: String,
 }
@@ -65,11 +62,6 @@ pub fn load_config() -> ServerConfig {
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(12);
 
-    let litellm_port = std::env::var("LITELLM_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(4000);
-
     let skills_dir = std::env::var("NEXUS_SKILLS_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         format!("{}/.nexus/skills", home)
@@ -84,7 +76,6 @@ pub fn load_config() -> ServerConfig {
         gateway_token,
         jwt_secret,
         bcrypt_cost,
-        litellm_port,
         llm: Arc::new(RwLock::new(None)),
         skills_dir,
     }

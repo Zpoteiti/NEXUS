@@ -59,11 +59,10 @@ pub struct AppState {
     pub channel_manager_handle: Arc<RwLock<Option<ChannelManagerHandle>>>,
     pub server_tools: Arc<ServerToolRegistry>,
     pub server_mcp: Arc<tokio::sync::RwLock<crate::server_mcp::ServerMcpManager>>,
-    pub litellm: Arc<crate::litellm::LiteLlmManager>,
 }
 
 impl AppState {
-    pub fn new(db: PgPool, config: ServerConfig, bus: Arc<MessageBus>, session_manager: Arc<SessionManager>, litellm: Arc<crate::litellm::LiteLlmManager>) -> Self {
+    pub fn new(db: PgPool, config: ServerConfig, bus: Arc<MessageBus>, session_manager: Arc<SessionManager>) -> Self {
         Self {
             config,
             db,
@@ -76,7 +75,6 @@ impl AppState {
             session_manager,
             channel_manager_handle: Arc::new(RwLock::new(None)),
             server_mcp: Arc::new(tokio::sync::RwLock::new(crate::server_mcp::ServerMcpManager::new())),
-            litellm,
             server_tools: Arc::new({
                 let mut reg = ServerToolRegistry::new();
                 reg.register(Box::new(crate::server_tools::memory::SaveMemoryTool));
@@ -91,21 +89,6 @@ impl AppState {
                 reg.register(Box::new(crate::server_tools::skills::ReadSkillFileTool));
                 reg
             }),
-        }
-    }
-}
-
-impl AppState {
-    /// Returns a LlmConfig that routes through the LiteLLM proxy.
-    /// Model is "default" — mapped to the actual provider/model in LiteLLM's config.yaml.
-    /// api_base/api_key point to the local LiteLLM instance.
-    pub fn litellm_llm_config(&self, base_config: &crate::config::LlmConfig) -> crate::config::LlmConfig {
-        crate::config::LlmConfig {
-            provider: base_config.provider.clone(),
-            model: "default".to_string(),
-            api_key: self.litellm.api_key().to_string(),
-            api_base: Some(self.litellm.api_base()),
-            context_window: base_config.context_window,
         }
     }
 }

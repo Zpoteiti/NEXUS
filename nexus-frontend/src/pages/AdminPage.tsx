@@ -87,11 +87,6 @@ export default function AdminPage() {
   )
 }
 
-const LLM_PROVIDERS = [
-  'openai', 'anthropic', 'gemini', 'deepseek', 'mistral', 'groq',
-  'ollama', 'azure', 'bedrock', 'vertex_ai', 'openai_compatible',
-]
-
 function LlmConfigTab() {
   const [values, setValues] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState(false)
@@ -100,10 +95,9 @@ function LlmConfigTab() {
   useEffect(() => {
     apiRequest('/api/llm-config').then(r => r.json()).then(data => {
       setValues({
-        provider: data.provider?.toString() || '',
+        api_base: data.api_base?.toString() || '',
         model: data.model?.toString() || '',
         api_key: data.api_key?.toString() || '',
-        api_base: data.api_base?.toString() || '',
         context_window: data.context_window?.toString() || '',
       })
     }).catch(() => {})
@@ -112,10 +106,9 @@ function LlmConfigTab() {
   async function save() {
     setError('')
     const body: Record<string, unknown> = {
-      provider: values.provider,
+      api_base: values.api_base,
       model: values.model,
       api_key: values.api_key,
-      api_base: values.api_base || undefined,
       context_window: parseInt(values.context_window) || 0,
     }
     const res = await apiRequest('/api/llm-config', { method: 'PUT', body: JSON.stringify(body) })
@@ -123,21 +116,17 @@ function LlmConfigTab() {
     else { const data = await res.json().catch(() => ({})); setError(data.message || 'Failed to save') }
   }
 
-  const showApiBase = ['ollama', 'openai_compatible', 'azure'].includes(values.provider)
-
   return (
     <div className="space-y-4">
       <div>
-        <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>Provider</label>
-        <select
-          value={values.provider || ''}
-          onChange={e => setValues({ ...values, provider: e.target.value })}
-          className="w-full px-3 py-2.5 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 cursor-pointer appearance-none"
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>API Base URL</label>
+        <input
+          value={values.api_base || ''}
+          onChange={e => setValues({ ...values, api_base: e.target.value })}
+          className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
           style={inputStyle}
-        >
-          <option value="" style={{ background: '#1e293b' }}>Select a provider...</option>
-          {LLM_PROVIDERS.map(p => <option key={p} value={p} style={{ background: '#1e293b' }}>{p}</option>)}
-        </select>
+          placeholder="e.g. https://api.openai.com/v1"
+        />
       </div>
       <div>
         <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>Model</label>
@@ -157,18 +146,6 @@ function LlmConfigTab() {
           style={inputStyle}
         />
       </div>
-      {showApiBase && (
-        <div>
-          <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>API Base URL (optional)</label>
-          <input
-            value={values.api_base || ''}
-            onChange={e => setValues({ ...values, api_base: e.target.value })}
-            className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-            style={inputStyle}
-            placeholder="e.g. http://localhost:11434"
-          />
-        </div>
-      )}
       <div>
         <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>Context Window</label>
         <input
