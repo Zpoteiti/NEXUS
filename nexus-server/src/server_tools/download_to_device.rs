@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use nexus_common::error::{ErrorCode, NexusError};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::{ServerTool, ServerToolResult};
@@ -17,24 +18,29 @@ impl ServerTool for DownloadToDeviceTool {
             "type": "function",
             "function": {
                 "name": "download_to_device",
-                "description": "Transfer an uploaded file from the server to a client device for processing.",
+                "description": "Transfer a file from the server to a client device. Can download user uploads or skill files.",
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "source": {
+                            "type": "string",
+                            "enum": ["upload", "skill"],
+                            "description": "File source: 'upload' for user-uploaded files, 'skill' for skill-bundled files."
+                        },
                         "file_name": {
                             "type": "string",
-                            "description": "Name of the uploaded file to transfer."
+                            "description": "For uploads: the filename. For skills: 'skill_name/path/to/file' (e.g., 'weather/scripts/fetch.py')."
                         },
                         "device_name": {
                             "type": "string",
-                            "description": "The device to send the file to."
+                            "description": "The target device to download the file to."
                         },
                         "destination_path": {
                             "type": "string",
-                            "description": "Path on the device where the file should be saved. Defaults to the device workspace if omitted."
+                            "description": "Where to save on the device. Defaults to workspace root."
                         }
                     },
-                    "required": ["file_name", "device_name"]
+                    "required": ["source", "file_name", "device_name"]
                 }
             }
         })
@@ -49,6 +55,10 @@ impl ServerTool for DownloadToDeviceTool {
         _event_channel: &str,
         _event_chat_id: &str,
     ) -> Result<ServerToolResult, NexusError> {
+        let source = arguments.get("source")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| NexusError::new(ErrorCode::ToolInvalidParams, "download_to_device: missing source"))?
+            .to_string();
         let file_name = arguments.get("file_name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| NexusError::new(ErrorCode::ToolInvalidParams, "download_to_device: missing file_name"))?
@@ -62,38 +72,90 @@ impl ServerTool for DownloadToDeviceTool {
             .unwrap_or("")
             .to_string();
 
-        // 1. Search user upload dir for the file (user isolation)
-        let user_dir = crate::file_store::user_upload_dir(user_id).await;
-        let upload_path = find_uploaded_file(&user_dir.to_string_lossy(), &file_name).await
-            .ok_or_else(|| NexusError::new(
-                ErrorCode::ExecutionFailed,
-                format!("File '{}' not found in uploads for this user", file_name),
-            ))?;
+        // Resolve file bytes and actual file name based on source
+        let (bytes, actual_file_name) = match source.as_str() {
+            "upload" => {
+                // Search user upload dir for the file (user isolation)
+                let user_dir = crate::file_store::user_upload_dir(user_id).await;
+                let upload_path = find_uploaded_file(&user_dir.to_string_lossy(), &file_name).await
+                    .ok_or_else(|| NexusError::new(
+                        ErrorCode::ExecutionFailed,
+                        format!("File '{}' not found in uploads for this user", file_name),
+                    ))?;
 
-        // 2. Check file size (max 25MB)
-        let metadata = tokio::fs::metadata(&upload_path).await
-            .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("failed to read file metadata: {}", e)))?;
-        if metadata.len() > 25 * 1024 * 1024 {
+                let bytes = tokio::fs::read(&upload_path).await
+                    .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("failed to read file: {}", e)))?;
+
+                let actual_name = std::path::Path::new(&upload_path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| file_name.clone());
+
+                (bytes, actual_name)
+            }
+            "skill" => {
+                // Parse skill_name/relative_path
+                let parts: Vec<&str> = file_name.splitn(2, '/').collect();
+                if parts.len() != 2 {
+                    return Err(NexusError::new(
+                        ErrorCode::ToolInvalidParams,
+                        "skill file_name must be 'skill_name/path' format (e.g., 'weather/scripts/fetch.py')",
+                    ));
+                }
+                let (skill_name, relative_path) = (parts[0], parts[1]);
+
+                // Security: no path traversal
+                if relative_path.contains("..") || skill_name.contains("..") {
+                    return Err(NexusError::new(ErrorCode::ToolBlocked, "path traversal not allowed"));
+                }
+
+                // Build path: {skills_dir}/{user_id}/{skill_name}/{relative_path}
+                let skill_dir = PathBuf::from(&state.config.skills_dir)
+                    .join(user_id)
+                    .join(skill_name);
+                let file_path = skill_dir.join(relative_path);
+
+                // Security: verify resolved path stays within skill_dir
+                let canonical = file_path.canonicalize()
+                    .map_err(|_| NexusError::new(ErrorCode::ExecutionFailed, format!("file not found: {}", file_name)))?;
+                let canonical_skill_dir = skill_dir.canonicalize()
+                    .map_err(|_| NexusError::new(ErrorCode::ExecutionFailed, format!("skill '{}' not found", skill_name)))?;
+                if !canonical.starts_with(&canonical_skill_dir) {
+                    return Err(NexusError::new(ErrorCode::ToolBlocked, "access denied: path escapes skill directory"));
+                }
+
+                let bytes = tokio::fs::read(&canonical).await
+                    .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("failed to read skill file: {}", e)))?;
+
+                let actual_name = canonical.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| file_name.clone());
+
+                (bytes, actual_name)
+            }
+            other => {
+                return Err(NexusError::new(
+                    ErrorCode::ToolInvalidParams,
+                    format!("download_to_device: invalid source '{}', must be 'upload' or 'skill'", other),
+                ));
+            }
+        };
+
+        // Check file size (max 25MB)
+        if bytes.len() > 25 * 1024 * 1024 {
             return Err(NexusError::new(
                 ErrorCode::ExecutionFailed,
-                format!("File too large: {} bytes (max 25MB)", metadata.len()),
+                format!("File too large: {} bytes (max 25MB)", bytes.len()),
             ));
         }
 
-        // 3. Read and base64-encode
-        let bytes = tokio::fs::read(&upload_path).await
-            .map_err(|e| NexusError::new(ErrorCode::ExecutionFailed, format!("failed to read file: {}", e)))?;
-
+        // Base64-encode
         use base64::Engine;
         let content_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
-        // 4. Resolve the original file name (strip uuid prefix if present)
-        let actual_file_name = std::path::Path::new(&upload_path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| file_name.clone());
+        let size_kb = bytes.len() / 1024;
 
-        // 5. Find device
+        // Find device
         let device_key = {
             let by_user = state.devices_by_user.read().await;
             by_user.get(user_id)
@@ -140,7 +202,6 @@ impl ServerTool for DownloadToDeviceTool {
             return Err(NexusError::new(ErrorCode::ExecutionFailed, format!("file download failed on device: {}", err)));
         }
 
-        let size_kb = metadata.len() / 1024;
         Ok(ServerToolResult {
             output: format!("File '{}' ({} KB) successfully transferred to device '{}'.", actual_file_name, size_kb, device_name),
             media: Vec::new(),

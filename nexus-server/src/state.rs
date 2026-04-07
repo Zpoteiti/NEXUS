@@ -86,7 +86,6 @@ impl AppState {
                 reg.register(Box::new(crate::server_tools::cron::CronListTool));
                 reg.register(Box::new(crate::server_tools::cron::CronRemoveTool));
                 reg.register(Box::new(crate::server_tools::skills::ReadSkillTool));
-                reg.register(Box::new(crate::server_tools::skills::ReadSkillFileTool));
                 reg
             }),
         }
