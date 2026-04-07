@@ -96,10 +96,10 @@ impl LiteLlmManager {
         let mut cmd = Command::new(&litellm_bin);
         cmd.args(["--port", &self.port.to_string()])
             .args(["--host", "127.0.0.1"])
-            .args(["--master_key", &self.master_key]);
+            .env("LITELLM_MASTER_KEY", &self.master_key);
 
         if let Some(ref db_url) = self.database_url {
-            cmd.args(["--database_url", db_url]);
+            cmd.env("DATABASE_URL", db_url);
         }
 
         // Suppress litellm's verbose output
