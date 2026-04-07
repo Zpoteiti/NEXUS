@@ -58,19 +58,6 @@ pub async fn delete_session(
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn update_session_last_consolidated(
-    db: &PgPool,
-    session_id: &str,
-    last_message_id: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE sessions SET last_consolidated = $1 WHERE session_id = $2")
-        .bind(last_message_id)
-        .bind(session_id)
-        .execute(db)
-        .await?;
-    Ok(())
-}
-
 use super::messages::MessageInfo;
 
 pub async fn get_session_messages(

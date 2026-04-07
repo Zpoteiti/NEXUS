@@ -14,15 +14,6 @@ pub struct MessageInfo {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct StoredMessage {
-    pub message_id: String,
-    pub role: String,
-    pub content: String,
-    pub tool_arguments: Option<String>,
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
 pub async fn save_message(
     db: &PgPool,
     session_id: &str,
@@ -121,32 +112,6 @@ pub async fn get_session_history(
     }
 
     Ok(messages)
-}
-
-pub async fn get_unconsolidated_messages(
-    db: &PgPool,
-    session_id: &str,
-) -> Result<Vec<StoredMessage>, sqlx::Error> {
-    sqlx::query_as::<_, StoredMessage>(
-        "SELECT message_id, role, content, tool_arguments, created_at FROM messages WHERE session_id = $1 AND is_consolidated = FALSE ORDER BY created_at ASC",
-    )
-    .bind(session_id)
-    .fetch_all(db)
-    .await
-}
-
-pub async fn mark_messages_consolidated(
-    db: &PgPool,
-    message_ids: &[String],
-) -> Result<(), sqlx::Error> {
-    if message_ids.is_empty() {
-        return Ok(());
-    }
-    sqlx::query("UPDATE messages SET is_consolidated = TRUE WHERE message_id = ANY($1)")
-        .bind(message_ids)
-        .execute(db)
-        .await?;
-    Ok(())
 }
 
 pub async fn mark_messages_compressed(
