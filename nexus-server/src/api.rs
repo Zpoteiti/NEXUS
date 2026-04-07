@@ -71,25 +71,57 @@ pub async fn list_devices(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
 ) -> Response {
-    let devices = state.devices.read().await;
-    let user_devices: Vec<serde_json::Value> = devices
+    // 1. Query all registered devices from DB
+    let registered = match db::list_user_devices(&state.db, &claims.sub).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("list_devices db error: {e}");
+            return ApiError::new(ErrorCode::InternalError, "failed to list devices").into_response();
+        }
+    };
+
+    // 2. Read live devices from in-memory state
+    let live_devices = state.devices.read().await;
+
+    // Build a lookup: device_name -> &DeviceState for this user's online devices
+    let mut live_lookup = std::collections::HashMap::new();
+    for (_, dev) in live_devices.iter() {
+        if dev.user_id == claims.sub {
+            live_lookup.insert(dev.device_name.as_str(), dev);
+        }
+    }
+
+    // 3. Merge: for each registered device, enrich with live status
+    let merged: Vec<serde_json::Value> = registered
         .iter()
-        .filter(|(_, dev)| dev.user_id == claims.sub)
-        .map(|(key, dev)| {
-            let masked_key = if key.len() > 12 {
-                format!("{}...{}", &key[..8], &key[key.len() - 4..])
+        .map(|reg| {
+            if reg.revoked {
+                serde_json::json!({
+                    "device_name": reg.device_name,
+                    "status": "revoked",
+                    "tools_count": 0,
+                    "fs_policy": serde_json::Value::Null,
+                })
+            } else if let Some(live) = live_lookup.get(reg.device_name.as_str()) {
+                serde_json::json!({
+                    "device_name": reg.device_name,
+                    "status": "online",
+                    "last_seen_secs_ago": live.last_seen.elapsed().as_secs(),
+                    "tools_count": live.tools.len(),
+                    "fs_policy": reg.fs_policy,
+                })
             } else {
-                "****".to_string()
-            };
-            serde_json::json!({
-                "device_key": masked_key,
-                "device_name": dev.device_name,
-                "tools_count": dev.tools.len(),
-                "last_seen_secs_ago": dev.last_seen.elapsed().as_secs(),
-            })
+                serde_json::json!({
+                    "device_name": reg.device_name,
+                    "status": "offline",
+                    "tools_count": 0,
+                    "fs_policy": reg.fs_policy,
+                })
+            }
         })
         .collect();
-    Json(user_devices).into_response()
+
+    Json(merged).into_response()
 }
 
 // ============================================================================

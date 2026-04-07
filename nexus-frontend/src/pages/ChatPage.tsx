@@ -14,8 +14,10 @@ interface Session {
 
 interface Device {
   device_name: string
-  last_seen_secs_ago: number
+  status: 'online' | 'offline' | 'revoked'
+  last_seen_secs_ago?: number
   tools_count: number
+  fs_policy?: unknown
 }
 
 export default function ChatPage() {
@@ -252,7 +254,11 @@ export default function ChatPage() {
           {/* Device Status */}
           <div className="flex items-center gap-2">
             {devices.map((d) => {
-              const online = d.last_seen_secs_ago < 60
+              const dotColor = d.status === 'online' ? '#22c55e' : d.status === 'revoked' ? '#ef4444' : '#64748b'
+              const dotShadow = d.status === 'online' ? '0 0 6px rgba(34, 197, 94, 0.5)' : d.status === 'revoked' ? '0 0 6px rgba(239, 68, 68, 0.5)' : 'none'
+              const title = d.status === 'online'
+                ? `${d.tools_count} tools, last seen ${d.last_seen_secs_ago ?? 0}s ago`
+                : d.status === 'revoked' ? 'Token revoked' : 'Offline'
               return (
                 <span
                   key={d.device_name}
@@ -262,17 +268,14 @@ export default function ChatPage() {
                     border: '1px solid rgba(255,255,255,0.08)',
                     color: '#94a3b8',
                   }}
-                  title={`${d.tools_count} tools, last seen ${d.last_seen_secs_ago}s ago`}
+                  title={title}
                 >
                   <span
                     className="inline-block w-1.5 h-1.5 rounded-full"
-                    style={{
-                      background: online ? '#22c55e' : '#ef4444',
-                      boxShadow: online ? '0 0 6px rgba(34, 197, 94, 0.5)' : '0 0 6px rgba(239, 68, 68, 0.5)',
-                    }}
+                    style={{ background: dotColor, boxShadow: dotShadow }}
                   />
                   <Monitor className="w-3 h-3" />
-                  {d.device_name}
+                  <span style={d.status === 'revoked' ? { textDecoration: 'line-through' } : undefined}>{d.device_name}</span>
                 </span>
               )
             })}

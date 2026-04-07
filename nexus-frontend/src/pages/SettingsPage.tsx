@@ -120,7 +120,7 @@ function ProfileTab() {
 }
 
 function DevicesTab() {
-  const [devices, setDevices] = useState<Array<{ device_name: string; device_key: string; last_seen_secs_ago: number; tools_count: number }>>([])
+  const [devices, setDevices] = useState<Array<{ device_name: string; status: 'online' | 'offline' | 'revoked'; last_seen_secs_ago?: number; tools_count: number; fs_policy?: unknown }>>([])
   const [tokens, setTokens] = useState<Array<{ token: string; device_name: string; created_at: string }>>([])
   const [newName, setNewName] = useState('')
 
@@ -136,26 +136,41 @@ function DevicesTab() {
     apiRequest('/api/device-tokens').then(r => r.json()).then(setTokens).catch(() => {})
   }
 
+  function statusColor(status: string) {
+    if (status === 'online') return '#22c55e'
+    if (status === 'revoked') return '#ef4444'
+    return '#64748b'
+  }
+
+  function statusLabel(d: { status: string; last_seen_secs_ago?: number }) {
+    if (d.status === 'online') return 'Online'
+    if (d.status === 'revoked') return 'Revoked'
+    return 'Offline'
+  }
+
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="font-medium text-white mb-3">Online Devices</h3>
-        {devices.length === 0 ? <p className="text-sm" style={{ color: '#64748b' }}>No devices connected</p> : (
+        <h3 className="font-medium text-white mb-3">Devices</h3>
+        {devices.length === 0 ? <p className="text-sm" style={{ color: '#64748b' }}>No devices registered</p> : (
           <table className="w-full text-sm">
             <thead>
               <tr style={{ color: '#64748b' }} className="text-left">
                 <th className="pb-2 font-medium">Name</th>
+                <th className="pb-2 font-medium">Status</th>
                 <th className="pb-2 font-medium">Tools</th>
-                <th className="pb-2 font-medium">Last Seen</th>
               </tr>
             </thead>
             <tbody>{devices.map(d => (
               <tr key={d.device_name} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-                <td className="py-2 text-white">{d.device_name}</td>
-                <td className="py-2" style={{ color: '#94a3b8' }}>{d.tools_count}</td>
-                <td className="py-2" style={{ color: d.last_seen_secs_ago < 60 ? '#22c55e' : '#ef4444' }}>
-                  {d.last_seen_secs_ago < 60 ? 'Online' : `${Math.round(d.last_seen_secs_ago / 60)}m ago`}
+                <td className="py-2" style={d.status === 'revoked' ? { color: '#64748b', textDecoration: 'line-through' } : { color: '#ffffff' }}>{d.device_name}</td>
+                <td className="py-2">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: statusColor(d.status), boxShadow: d.status === 'online' ? '0 0 6px rgba(34, 197, 94, 0.5)' : 'none' }} />
+                    <span style={{ color: statusColor(d.status) }}>{statusLabel(d)}</span>
+                  </span>
                 </td>
+                <td className="py-2" style={{ color: '#94a3b8' }}>{d.tools_count}</td>
               </tr>
             ))}</tbody>
           </table>

@@ -15,6 +15,36 @@ pub struct DeviceTokenInfo {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// A registered device from the DB, grouped by device_name (preferring non-revoked).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct RegisteredDevice {
+    pub device_name: String,
+    pub revoked: bool,
+    pub fs_policy: Option<serde_json::Value>,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Returns all registered devices for a user, grouped by device_name.
+/// When multiple tokens exist for the same device_name (e.g. revoked + re-created),
+/// the non-revoked entry is preferred.
+pub async fn list_user_devices(
+    db: &PgPool,
+    user_id: &str,
+) -> Result<Vec<RegisteredDevice>, sqlx::Error> {
+    sqlx::query_as::<_, RegisteredDevice>(
+        r#"
+        SELECT DISTINCT ON (device_name)
+            device_name, revoked, fs_policy, created_at
+        FROM device_tokens
+        WHERE user_id = $1
+        ORDER BY device_name, revoked ASC, created_at DESC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
 pub async fn create_device_token(
     db: &PgPool,
     token: &str,
