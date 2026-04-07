@@ -97,7 +97,7 @@ impl AppState {
 
 impl AppState {
     /// Returns a LlmConfig that routes through the LiteLLM proxy.
-    /// The model is set to "default" (LiteLLM's model_name), and
+    /// Model is "default" — mapped to the actual provider/model in LiteLLM's config.yaml.
     /// api_base/api_key point to the local LiteLLM instance.
     pub fn litellm_llm_config(&self, base_config: &crate::config::LlmConfig) -> crate::config::LlmConfig {
         crate::config::LlmConfig {

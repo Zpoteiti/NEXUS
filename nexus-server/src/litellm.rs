@@ -96,13 +96,16 @@ impl LiteLlmManager {
         let mut cmd = Command::new(&litellm_bin);
         cmd.args(["--port", &self.port.to_string()])
             .args(["--host", "127.0.0.1"])
-            .env("LITELLM_MASTER_KEY", &self.master_key);
+            .env("LITELLM_MASTER_KEY", &self.master_key)
+            .env_remove("DATABASE_URL");
 
-        if let Some(ref db_url) = self.database_url {
-            cmd.env("DATABASE_URL", db_url);
+        // Use config file if it exists (from previous add_model call)
+        let config_path = self.venv_dir.parent().unwrap_or(&self.venv_dir)
+            .join("litellm-config").join("config.yaml");
+        if config_path.exists() {
+            cmd.args(["--config", config_path.to_str().unwrap()]);
         }
 
-        // Suppress litellm's verbose output
         cmd.stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped());
 
@@ -120,13 +123,12 @@ impl LiteLlmManager {
         Ok(())
     }
 
-    /// Wait until LiteLLM responds to health check
+    /// Wait until LiteLLM responds (root endpoint returns 200 even without models)
     async fn wait_for_ready(&self) -> Result<(), String> {
-        let url = format!("http://127.0.0.1:{}/health", self.port);
+        let url = format!("http://127.0.0.1:{}/", self.port);
         let client = reqwest::Client::new();
 
         for i in 0..60 {
-            // 60 seconds timeout
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if let Ok(resp) = client.get(&url).send().await {
                 if resp.status().is_success() {
@@ -140,7 +142,8 @@ impl LiteLlmManager {
         Err("LiteLLM failed to start within 60 seconds".into())
     }
 
-    /// Add a model to LiteLLM via REST API
+    /// Write a config file and restart LiteLLM with the new model configuration.
+    /// This avoids the /model/new REST API which requires a DB connection.
     pub async fn add_model(
         &self,
         provider: &str,
@@ -148,40 +151,45 @@ impl LiteLlmManager {
         api_key: &str,
         api_base: Option<&str>,
     ) -> Result<(), String> {
-        let url = format!("http://127.0.0.1:{}/model/new", self.port);
-        let client = reqwest::Client::new();
-
         let litellm_model = format!("{}/{}", provider, model);
-        let mut litellm_params = serde_json::json!({
-            "model": litellm_model,
-            "api_key": api_key,
-        });
-        if let Some(base) = api_base {
-            litellm_params["api_base"] = serde_json::json!(base);
-        }
+        let config_dir = self.venv_dir.parent().unwrap_or(&self.venv_dir).join("litellm-config");
+        tokio::fs::create_dir_all(&config_dir).await.ok();
 
-        let body = serde_json::json!({
-            "model_name": "default",
-            "litellm_params": litellm_params,
-        });
+        let config_path = config_dir.join("config.yaml");
 
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.master_key))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("failed to add model: {}", e))?;
-
-        if !resp.status().is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("LiteLLM add model failed: {}", text));
-        }
-
-        info!(
-            "LiteLLM model added: {} ({}/{})",
-            "default", provider, model
+        let mut config = format!(
+            "model_list:\n  - model_name: default\n    litellm_params:\n      model: {}\n      api_key: {}\n",
+            litellm_model, api_key
         );
+        if let Some(base) = api_base {
+            config.push_str(&format!("      api_base: {}\n", base));
+        }
+
+        tokio::fs::write(&config_path, &config).await
+            .map_err(|e| format!("failed to write LiteLLM config: {}", e))?;
+
+        info!("LiteLLM config written: {}/{}", provider, model);
+
+        // Restart LiteLLM with the new config
+        self.stop().await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let litellm_bin = self.venv_dir.join("bin").join("litellm");
+        let mut cmd = Command::new(&litellm_bin);
+        cmd.args(["--port", &self.port.to_string()])
+            .args(["--host", "127.0.0.1"])
+            .args(["--config", config_path.to_str().unwrap()])
+            .env("LITELLM_MASTER_KEY", &self.master_key)
+            .env_remove("DATABASE_URL")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+
+        let child = cmd.spawn()
+            .map_err(|e| format!("failed to restart litellm: {}", e))?;
+
+        *self.child.write().await = Some(child);
+        self.wait_for_ready().await?;
+        info!("LiteLLM restarted with model: {} ({}/{})", "default", provider, model);
         Ok(())
     }
 
