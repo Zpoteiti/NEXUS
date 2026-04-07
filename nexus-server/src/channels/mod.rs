@@ -34,6 +34,16 @@ pub trait Channel: Send + Sync {
     async fn send_progress(&self, chat_id: &str, content: &str) -> Result<(), NexusError> {
         self.send(chat_id, content).await
     }
+    /// Send an outbound message with metadata (e.g. sender_id for routing).
+    /// Default implementation ignores metadata and falls back to `send`.
+    async fn send_with_metadata(
+        &self,
+        chat_id: &str,
+        content: &str,
+        _metadata: Option<serde_json::Value>,
+    ) -> Result<(), NexusError> {
+        self.send(chat_id, content).await
+    }
     /// Send an outbound message with media attachments.
     /// Default implementation ignores media and falls back to `send`.
     async fn send_with_media(
@@ -120,14 +130,28 @@ impl ChannelManager {
                     .unwrap_or(false);
 
                 if let Some(channel) = dispatch_channels.get(ch_name) {
+                    // Build metadata JSON from event metadata map
+                    let meta_value = if event.metadata.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::Value::Object(
+                            event.metadata.iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect()
+                        ))
+                    };
+
                     let result = if is_progress {
                         channel.send_progress(&event.chat_id, &event.content).await
-                    } else if event.media.is_empty() {
-                        channel.send(&event.chat_id, &event.content).await
-                    } else {
+                    } else if !event.media.is_empty() {
                         channel
                             .send_with_media(&event.chat_id, &event.content, &event.media)
                             .await
+                    } else if meta_value.is_some() {
+                        // Pass metadata through (e.g. sender_id for gateway routing)
+                        channel.send_with_metadata(&event.chat_id, &event.content, meta_value).await
+                    } else {
+                        channel.send(&event.chat_id, &event.content).await
                     };
                     if let Err(e) = result {
                         warn!("ChannelManager: send to \"{}\" failed: {}", ch_name, e);

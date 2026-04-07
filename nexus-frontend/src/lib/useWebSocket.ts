@@ -68,6 +68,16 @@ export function useWebSocket(): UseWebSocketReturn {
           break
         case 'progress':
           setProgress(data.content)
+          setMessages((prev) => [
+            ...prev,
+            {
+              type: 'progress',
+              content: data.content,
+              session_id: data.session_id || '',
+              sender: 'agent',
+              timestamp: Date.now(),
+            },
+          ])
           break
         case 'session_created':
         case 'session_switched':

@@ -4,6 +4,7 @@ pub mod download_to_device;
 pub mod message;
 pub mod cron;
 pub mod skills;
+pub mod web_fetch;
 
 use async_trait::async_trait;
 use nexus_common::error::NexusError;

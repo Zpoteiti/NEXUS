@@ -122,35 +122,53 @@ pub async fn route_nexus_send(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    if let Some(conn) = state.browser_conns.get(chat_id) {
-        let session_id = conn.session_id.clone();
-
-        // Extract media URLs from metadata if present
-        let media = metadata
-            .and_then(|m| m.get("media"))
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>());
-
-        let msg = if is_progress {
-            serde_json::to_string(&BrowserOutbound::Progress {
-                content: content.to_string(),
-                session_id,
-            })
-            .unwrap()
-        } else {
-            serde_json::to_string(&BrowserOutbound::Message {
-                content: content.to_string(),
-                session_id,
-                media,
-            })
-            .unwrap()
-        };
-
-        if conn.tx.send(msg).await.is_err() {
-            warn!("nexus gateway: browser {} disconnected before send", chat_id);
-        }
+    // Try direct chat_id lookup first; fall back to finding any browser for the sender's user_id
+    let conn_ref = state.browser_conns.get(chat_id);
+    let fallback;
+    let conn = if conn_ref.is_some() {
+        conn_ref.as_ref().unwrap()
     } else {
-        warn!("nexus gateway: no browser found for chat_id={}", chat_id);
+        // Fallback: find any connected browser for this user (e.g. cron jobs)
+        let sender_id = metadata
+            .and_then(|m| m.get("sender_id"))
+            .and_then(|v| v.as_str());
+        fallback = sender_id.and_then(|uid| {
+            state.browser_conns.iter().find(|entry| entry.value().user_id == uid)
+        });
+        match fallback.as_ref() {
+            Some(entry) => entry.value(),
+            None => {
+                warn!("nexus gateway: no browser found for chat_id={}", chat_id);
+                return;
+            }
+        }
+    };
+
+    let session_id = conn.session_id.clone();
+
+    // Extract media URLs from metadata if present
+    let media = metadata
+        .and_then(|m| m.get("media"))
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>());
+
+    let msg = if is_progress {
+        serde_json::to_string(&BrowserOutbound::Progress {
+            content: content.to_string(),
+            session_id,
+        })
+        .unwrap()
+    } else {
+        serde_json::to_string(&BrowserOutbound::Message {
+            content: content.to_string(),
+            session_id,
+            media,
+        })
+        .unwrap()
+    };
+
+    if conn.tx.send(msg).await.is_err() {
+        warn!("nexus gateway: browser disconnected before send (chat_id={})", chat_id);
     }
 }
 

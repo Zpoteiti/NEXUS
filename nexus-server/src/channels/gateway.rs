@@ -253,8 +253,8 @@ impl GatewayChannel {
         Ok(())
     }
 
-    /// Send a message to the gateway with optional metadata.
-    async fn send_with_metadata(
+    /// Internal send helper — serializes and pushes to WS.
+    async fn ws_send(
         &self,
         chat_id: &str,
         content: &str,
@@ -323,11 +323,11 @@ impl Channel for GatewayChannel {
     }
 
     async fn send(&self, chat_id: &str, content: &str) -> Result<(), nexus_common::error::NexusError> {
-        self.send_with_metadata(chat_id, content, None).await
+        self.ws_send(chat_id, content, None).await
     }
 
     async fn send_progress(&self, chat_id: &str, content: &str) -> Result<(), nexus_common::error::NexusError> {
-        self.send_with_metadata(chat_id, content, Some(serde_json::json!({"_progress": true}))).await
+        self.ws_send(chat_id, content, Some(serde_json::json!({"_progress": true}))).await
     }
 
     async fn send_with_media(
@@ -341,7 +341,16 @@ impl Channel for GatewayChannel {
             .iter()
             .filter_map(|m| file_path_to_download_url(m).or_else(|| Some(m.clone())))
             .collect();
-        self.send_with_metadata(chat_id, content, Some(serde_json::json!({"media": urls}))).await
+        self.ws_send(chat_id, content, Some(serde_json::json!({"media": urls}))).await
+    }
+
+    async fn send_with_metadata(
+        &self,
+        chat_id: &str,
+        content: &str,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<(), nexus_common::error::NexusError> {
+        self.ws_send(chat_id, content, metadata).await
     }
 }
 

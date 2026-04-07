@@ -28,3 +28,4 @@ tokio-util = { version = "0.7", features = ["rt"] }
 regex = "1"
 rmcp = { version = "1", features = ["client", "transport-child-process"] }
 cron = "0.15"
+url = "2"

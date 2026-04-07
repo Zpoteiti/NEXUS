@@ -75,12 +75,14 @@ async fn emit_progress(state: &AppState, channel: &str, chat_id: &str, hint: &st
 }
 
 fn make_outbound(event: &InboundEvent, content: String) -> OutboundEvent {
+    let mut metadata = HashMap::new();
+    metadata.insert("sender_id".into(), serde_json::json!(event.sender_id));
     OutboundEvent {
         channel: event.channel.clone(),
         chat_id: event.chat_id.clone(),
         content,
         media: Vec::new(),
-        metadata: HashMap::new(),
+        metadata,
     }
 }
 

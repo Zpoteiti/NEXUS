@@ -36,7 +36,8 @@ pub struct CreateCronJobRequest {
     pub at: Option<String>,
     pub timezone: Option<String>,
     pub channel: String,
-    pub chat_id: String,
+    #[serde(default)]
+    pub chat_id: Option<String>,
     #[serde(default)]
     pub delete_after_run: bool,
     pub name: Option<String>,
@@ -61,7 +62,7 @@ pub async fn create_cron_job_api(
         timezone,
         &payload.message,
         &payload.channel,
-        &payload.chat_id,
+        payload.chat_id.as_deref().unwrap_or(""),
         payload.delete_after_run,
     )
     .await

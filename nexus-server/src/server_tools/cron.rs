@@ -52,7 +52,7 @@ impl ServerTool for CronCreateTool {
                             "description": "The chat ID to deliver results to."
                         }
                     },
-                    "required": ["message", "channel", "chat_id"]
+                    "required": ["message"]
                 }
             }
         })

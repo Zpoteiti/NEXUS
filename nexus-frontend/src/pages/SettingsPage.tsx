@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { apiRequest } from '../lib/api'
-import { ArrowLeft, User, Monitor, Zap, Heart, Brain, Clock, Trash2, Power, PowerOff, Copy, Check, ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowLeft, User, Monitor, Zap, Heart, Brain, Clock, Trash2, Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, Download, Plus } from 'lucide-react'
 
 type Tab = 'profile' | 'devices' | 'skills' | 'soul' | 'memory' | 'cron'
 
@@ -62,7 +62,7 @@ export default function SettingsPage() {
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`px-4 py-3 text-sm font-medium whitespace-nowrap flex items-center gap-2 cursor-pointer transition-colors ${
+                className={`flex-1 px-4 py-3 text-sm font-medium whitespace-nowrap flex items-center justify-center gap-2 cursor-pointer transition-colors ${
                   tab === t.id ? 'border-b-2 border-indigo-500 text-indigo-400' : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -352,13 +352,36 @@ function DevicesTab() {
 
 function SkillsTab() {
   const [skills, setSkills] = useState<Array<{ name: string; description: string; always_on: boolean }>>([])
+  const [repo, setRepo] = useState('')
+  const [installing, setInstalling] = useState(false)
+  const [installError, setInstallError] = useState('')
   const [name, setName] = useState('')
   const [content, setContent] = useState('')
+  const [showManual, setShowManual] = useState(false)
 
   useEffect(() => { loadSkills() }, [])
 
   function loadSkills() {
     apiRequest('/api/skills').then(r => r.json()).then(d => setSkills(d.skills || [])).catch(() => {})
+  }
+
+  async function installSkill() {
+    if (!repo.trim()) return
+    setInstalling(true)
+    setInstallError('')
+    try {
+      const res = await apiRequest('/api/skills/install', { method: 'POST', body: JSON.stringify({ repo: repo.trim() }) })
+      if (!res.ok) {
+        const err = await res.json()
+        setInstallError(err.message || 'Install failed')
+      } else {
+        setRepo('')
+        loadSkills()
+      }
+    } catch {
+      setInstallError('Network error')
+    }
+    setInstalling(false)
   }
 
   async function createSkill() {
@@ -374,48 +397,96 @@ function SkillsTab() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <input
-          value={name}
-          onChange={e => setName(e.target.value)}
-          placeholder="Skill name"
-          className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-          style={inputStyle}
-        />
-        <textarea
-          value={content}
-          onChange={e => setContent(e.target.value)}
-          placeholder="SKILL.md content (with frontmatter)"
-          rows={6}
-          className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-          style={inputStyle}
-        />
-        <button
-          onClick={createSkill}
-          className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
-          style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-        >
-          Create Skill
-        </button>
-      </div>
-      {skills.map(s => (
-        <div key={s.name} className="flex justify-between items-center py-2 text-sm" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-          <div>
-            <span className="font-medium text-white">{s.name}</span>
-            <span className="ml-2" style={{ color: '#64748b' }}>{s.description}</span>
-            {s.always_on && (
-              <span className="ml-2 text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(34, 197, 94, 0.15)', color: '#22c55e' }}>
-                always-on
-              </span>
-            )}
-          </div>
-          <button onClick={() => deleteSkill(s.name)} className="text-xs cursor-pointer flex items-center gap-1" style={{ color: '#ef4444' }}>
-            <Trash2 className="w-3 h-3" />
-            Delete
+    <div className="space-y-5">
+      {/* Install from GitHub */}
+      <div>
+        <label className="block text-xs font-medium uppercase tracking-wider mb-2" style={{ color: '#64748b' }}>Install from GitHub</label>
+        <div className="flex gap-2">
+          <input
+            value={repo}
+            onChange={e => { setRepo(e.target.value); setInstallError('') }}
+            placeholder="owner/repo (e.g. openclaw/weather)"
+            className="flex-1 px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+            style={inputStyle}
+            onKeyDown={e => e.key === 'Enter' && installSkill()}
+          />
+          <button
+            onClick={installSkill}
+            disabled={installing}
+            className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+            style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+          >
+            <Download className="w-3.5 h-3.5" />
+            {installing ? 'Installing...' : 'Install'}
           </button>
         </div>
-      ))}
+        {installError && <p className="mt-1.5 text-xs" style={{ color: '#ef4444' }}>{installError}</p>}
+        <p className="mt-1.5 text-xs" style={{ color: '#475569' }}>
+          Fetches SKILL.md from the repo's main branch.
+        </p>
+      </div>
+
+      {/* Manual creation (collapsed by default) */}
+      <div>
+        <button
+          onClick={() => setShowManual(!showManual)}
+          className="flex items-center gap-1.5 text-xs cursor-pointer transition-colors"
+          style={{ color: '#64748b' }}
+        >
+          {showManual ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+          Create manually
+        </button>
+        {showManual && (
+          <div className="space-y-2 mt-2">
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Skill name"
+              className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+              style={inputStyle}
+            />
+            <textarea
+              value={content}
+              onChange={e => setContent(e.target.value)}
+              placeholder="SKILL.md content (with frontmatter)"
+              rows={6}
+              className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+              style={inputStyle}
+            />
+            <button
+              onClick={createSkill}
+              className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
+              style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+            >
+              Create Skill
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Installed skills */}
+      {skills.length > 0 && (
+        <div>
+          <label className="block text-xs font-medium uppercase tracking-wider mb-2" style={{ color: '#64748b' }}>Installed Skills</label>
+          {skills.map(s => (
+            <div key={s.name} className="flex justify-between items-center py-2 text-sm" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+              <div>
+                <span className="font-medium text-white">{s.name}</span>
+                <span className="ml-2" style={{ color: '#64748b' }}>{s.description}</span>
+                {s.always_on && (
+                  <span className="ml-2 text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(34, 197, 94, 0.15)', color: '#22c55e' }}>
+                    always-on
+                  </span>
+                )}
+              </div>
+              <button onClick={() => deleteSkill(s.name)} className="text-xs cursor-pointer flex items-center gap-1" style={{ color: '#ef4444' }}>
+                <Trash2 className="w-3 h-3" />
+                Delete
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -493,29 +564,60 @@ function MemoryTab() {
   )
 }
 
+interface CronJob {
+  job_id: string
+  name: string
+  enabled: boolean
+  cron_expr?: string
+  every_seconds?: number
+  timezone: string
+  message: string
+  channel: string
+  chat_id: string
+  delete_after_run: boolean
+  next_run_at?: string
+  last_run_at?: string
+  run_count: number
+}
+
 function CronTab() {
-  const [jobs, setJobs] = useState<Array<{ job_id: string; name: string; enabled: boolean; cron_expr?: string; every_seconds?: number; next_run_at?: string }>>([])
+  const [jobs, setJobs] = useState<CronJob[]>([])
   const [message, setMessage] = useState('')
+  const [scheduleType, setScheduleType] = useState<'cron' | 'interval'>('cron')
   const [cronExpr, setCronExpr] = useState('')
+  const [intervalSecs, setIntervalSecs] = useState('')
+  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+  const [channel, setChannel] = useState('gateway')
+  const [chatId, setChatId] = useState('')
+  const [showCreate, setShowCreate] = useState(false)
 
   useEffect(() => { loadJobs() }, [])
 
   function loadJobs() {
-    apiRequest('/api/cron-jobs').then(r => r.json()).then(d => setJobs(Array.isArray(d) ? d : [])).catch(() => {})
+    apiRequest('/api/cron-jobs').then(r => r.json()).then(d => {
+      const list = Array.isArray(d) ? d : (d.cron_jobs || [])
+      setJobs(list)
+    }).catch(() => {})
   }
 
   async function createJob() {
     if (!message.trim()) return
-    await apiRequest('/api/cron-jobs', {
-      method: 'POST',
-      body: JSON.stringify({
-        message,
-        cron_expr: cronExpr || undefined,
-        channel: 'gateway',
-        chat_id: 'web',
-      }),
-    })
-    setMessage(''); setCronExpr('')
+    const body: Record<string, unknown> = {
+      message,
+      channel,
+      timezone,
+    }
+    if (chatId.trim()) body.chat_id = chatId.trim()
+    if (scheduleType === 'cron' && cronExpr.trim()) {
+      body.cron_expr = cronExpr.trim()
+    } else if (scheduleType === 'interval' && intervalSecs.trim()) {
+      body.every_seconds = parseInt(intervalSecs, 10) || 60
+    } else {
+      return
+    }
+    await apiRequest('/api/cron-jobs', { method: 'POST', body: JSON.stringify(body) })
+    setMessage(''); setCronExpr(''); setIntervalSecs('')
+    setShowCreate(false)
     loadJobs()
   }
 
@@ -529,54 +631,190 @@ function CronTab() {
     loadJobs()
   }
 
+  function formatSchedule(j: CronJob) {
+    if (j.cron_expr) return j.cron_expr
+    if (j.every_seconds) {
+      if (j.every_seconds >= 3600) return `every ${Math.round(j.every_seconds / 3600)}h`
+      if (j.every_seconds >= 60) return `every ${Math.round(j.every_seconds / 60)}m`
+      return `every ${j.every_seconds}s`
+    }
+    return 'one-time'
+  }
+
+  function formatTime(iso?: string) {
+    if (!iso) return '—'
+    return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
+
   return (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <input
-          value={message}
-          onChange={e => setMessage(e.target.value)}
-          placeholder="Task message (what the agent should do)"
-          className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-          style={inputStyle}
-        />
-        <input
-          value={cronExpr}
-          onChange={e => setCronExpr(e.target.value)}
-          placeholder="Cron expression (e.g., 0 9 * * *)"
-          className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-          style={inputStyle}
-        />
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <p className="text-sm" style={{ color: '#64748b' }}>
+          Scheduled tasks the agent executes automatically.
+          {jobs.length > 0 && <span className="ml-1">({jobs.length} job{jobs.length > 1 ? 's' : ''})</span>}
+        </p>
         <button
-          onClick={createJob}
-          className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
+          onClick={() => setShowCreate(!showCreate)}
+          className="px-3 py-1.5 text-white rounded-xl text-xs font-medium cursor-pointer flex items-center gap-1.5"
           style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
         >
-          Create Job
+          {showCreate ? <ChevronDown className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
+          New Job
         </button>
       </div>
-      {jobs.map(j => (
-        <div key={j.job_id} className="flex justify-between items-center py-2 text-sm" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+
+      {/* Create form */}
+      {showCreate && (
+        <div className="space-y-3 p-4 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
           <div>
-            <span className={j.enabled ? 'text-white' : 'line-through'} style={j.enabled ? {} : { color: '#64748b' }}>{j.name}</span>
-            <span className="ml-2 text-xs" style={{ color: '#64748b' }}>{j.cron_expr || `every ${j.every_seconds}s`}</span>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: '#64748b' }}>Task message</label>
+            <input
+              value={message}
+              onChange={e => setMessage(e.target.value)}
+              placeholder="What should the agent do?"
+              className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+              style={inputStyle}
+            />
           </div>
-          <div className="flex gap-3">
-            <button
-              onClick={() => toggleJob(j.job_id, j.enabled)}
-              className="text-xs cursor-pointer flex items-center gap-1 transition-colors"
-              style={{ color: j.enabled ? '#f59e0b' : '#22c55e' }}
-            >
-              {j.enabled ? <PowerOff className="w-3 h-3" /> : <Power className="w-3 h-3" />}
-              {j.enabled ? 'Disable' : 'Enable'}
-            </button>
-            <button
-              onClick={() => deleteJob(j.job_id)}
-              className="text-xs cursor-pointer flex items-center gap-1"
-              style={{ color: '#ef4444' }}
-            >
-              <Trash2 className="w-3 h-3" />
-              Delete
-            </button>
+
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: '#64748b' }}>Schedule type</label>
+            <div className="flex gap-2">
+              {(['cron', 'interval'] as const).map(t => (
+                <button
+                  key={t}
+                  onClick={() => setScheduleType(t)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors"
+                  style={scheduleType === t
+                    ? { background: 'rgba(99,102,241,0.2)', color: '#a5b4fc', border: '1px solid rgba(99,102,241,0.3)' }
+                    : { background: 'rgba(255,255,255,0.05)', color: '#64748b', border: '1px solid rgba(255,255,255,0.08)' }}
+                >
+                  {t === 'cron' ? 'Cron Expression' : 'Interval'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {scheduleType === 'cron' ? (
+            <div>
+              <label className="block text-xs font-medium mb-1.5" style={{ color: '#64748b' }}>Cron expression</label>
+              <input
+                value={cronExpr}
+                onChange={e => setCronExpr(e.target.value)}
+                placeholder="0 9 * * *  (9am daily)"
+                className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                style={inputStyle}
+              />
+              <p className="mt-1 text-xs" style={{ color: '#475569' }}>minute hour day month weekday</p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium mb-1.5" style={{ color: '#64748b' }}>Interval (seconds)</label>
+              <input
+                value={intervalSecs}
+                onChange={e => setIntervalSecs(e.target.value)}
+                placeholder="3600  (every hour)"
+                type="number"
+                min="10"
+                className="w-full px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                style={inputStyle}
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: '#64748b' }}>Deliver to</label>
+            <div className="flex gap-2">
+              {(['gateway', 'discord'] as const).map(ch => (
+                <button
+                  key={ch}
+                  onClick={() => { setChannel(ch); if (ch === 'gateway') setChatId('') }}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors capitalize"
+                  style={channel === ch
+                    ? { background: 'rgba(99,102,241,0.2)', color: '#a5b4fc', border: '1px solid rgba(99,102,241,0.3)' }
+                    : { background: 'rgba(255,255,255,0.05)', color: '#64748b', border: '1px solid rgba(255,255,255,0.08)' }}
+                >
+                  {ch === 'gateway' ? 'Web Chat' : 'Discord'}
+                </button>
+              ))}
+            </div>
+            {channel === 'discord' && (
+              <input
+                value={chatId}
+                onChange={e => setChatId(e.target.value)}
+                placeholder="Discord channel ID"
+                className="w-full mt-2 px-3 py-2 rounded-xl text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                style={inputStyle}
+              />
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: '#64748b' }}>Timezone</label>
+            <input
+              value={timezone}
+              onChange={e => setTimezone(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+              style={inputStyle}
+            />
+          </div>
+
+          <button
+            onClick={createJob}
+            className="px-4 py-2 text-white rounded-xl text-sm font-medium cursor-pointer"
+            style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+          >
+            Create Job
+          </button>
+        </div>
+      )}
+
+      {/* Job list */}
+      {jobs.length === 0 && !showCreate && (
+        <div className="text-center py-8">
+          <Clock className="w-8 h-8 mx-auto mb-2" style={{ color: '#334155' }} />
+          <p className="text-sm" style={{ color: '#475569' }}>No scheduled jobs yet</p>
+          <p className="text-xs mt-1" style={{ color: '#334155' }}>Create one above or ask the agent to set up a cron job for you.</p>
+        </div>
+      )}
+
+      {jobs.map(j => (
+        <div key={j.job_id} className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: j.enabled ? '#22c55e' : '#64748b', boxShadow: j.enabled ? '0 0 6px rgba(34,197,94,0.5)' : 'none' }} />
+                <span className="text-sm font-medium text-white truncate">{j.name}</span>
+                {j.delete_after_run && (
+                  <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' }}>one-time</span>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs" style={{ color: '#64748b' }}>
+                <span className="font-mono">{formatSchedule(j)}</span>
+                <span>{j.timezone}</span>
+                {j.next_run_at && <span>Next: {formatTime(j.next_run_at)}</span>}
+                {j.last_run_at && <span>Last: {formatTime(j.last_run_at)}</span>}
+                {j.run_count > 0 && <span>Runs: {j.run_count}</span>}
+              </div>
+              <p className="text-xs mt-1.5 truncate" style={{ color: '#475569' }}>{j.message}</p>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button
+                onClick={() => toggleJob(j.job_id, j.enabled)}
+                className="text-xs cursor-pointer flex items-center gap-1 transition-colors px-2 py-1 rounded-lg"
+                style={{ color: j.enabled ? '#f59e0b' : '#22c55e' }}
+              >
+                {j.enabled ? <PowerOff className="w-3 h-3" /> : <Power className="w-3 h-3" />}
+                {j.enabled ? 'Disable' : 'Enable'}
+              </button>
+              <button
+                onClick={() => deleteJob(j.job_id)}
+                className="text-xs cursor-pointer flex items-center gap-1 transition-colors px-2 py-1 rounded-lg"
+                style={{ color: '#ef4444' }}
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
           </div>
         </div>
       ))}

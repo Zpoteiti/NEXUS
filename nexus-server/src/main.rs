@@ -154,6 +154,7 @@ async fn main() {
         .route("/api/admin/default-soul", axum::routing::get(api::get_default_soul).put(api::set_default_soul))
         // Skills
         .route("/api/skills", axum::routing::get(auth::list_skills).post(auth::create_skill))
+        .route("/api/skills/install", axum::routing::post(auth::install_skill))
         .route("/api/skills/{name}", axum::routing::delete(auth::delete_skill))
         // Admin: all skills
         .route("/api/admin/skills", axum::routing::get(auth::admin_list_skills))

@@ -5,6 +5,9 @@ import { apiRequest, uploadFile } from '../lib/api'
 import { useAuthStore } from '../lib/store'
 import { useNavigate, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { MessageSquare, Plus, Settings, Shield, LogOut, Send, Paperclip, Monitor, WifiOff, Hash, Clock, PanelLeftClose, PanelLeft, Download } from 'lucide-react'
 
 interface Session {
@@ -64,16 +67,41 @@ export default function ChatPage() {
     apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/messages`)
       .then(r => r.json())
       .then(data => {
-        if (Array.isArray(data)) {
-          const loaded: ChatMessage[] = data.map((m: { role: string; content: string }) => ({
-            type: 'message' as const,
-            content: m.content || '',
-            session_id: sessionId,
-            sender: m.role === 'user' ? 'user' as const : 'agent' as const,
-            timestamp: Date.now(),
-          })).filter((m: ChatMessage) => m.content && (m.sender === 'user' || m.sender === 'agent'))
-          setMessages(loaded)
+        if (!Array.isArray(data)) return
+        const loaded: ChatMessage[] = []
+        for (const m of data as Array<{ role: string; content: string; tool_name?: string; tool_arguments?: string }>) {
+          // Skip tool result rows (role="tool")
+          if (m.role === 'tool') continue
+
+          // Assistant with tool_name = tool call invocation → derive progress hint
+          if (m.role === 'assistant' && m.tool_name) {
+            let hint = `Using ${m.tool_name}`
+            try {
+              const args = JSON.parse(m.tool_arguments || '{}')
+              if (args.device_name) hint += ` on ${args.device_name}`
+            } catch { /* ignore parse errors */ }
+            loaded.push({
+              type: 'progress',
+              content: hint,
+              session_id: sessionId,
+              sender: 'agent',
+              timestamp: Date.now(),
+            })
+            continue
+          }
+
+          // Regular user or assistant message with content
+          if (m.content) {
+            loaded.push({
+              type: 'message',
+              content: m.content,
+              session_id: sessionId,
+              sender: m.role === 'user' ? 'user' : 'agent',
+              timestamp: Date.now(),
+            })
+          }
         }
+        setMessages(loaded)
       })
       .catch(() => {})
   }, [sessionId, setMessages])
@@ -284,72 +312,118 @@ export default function ChatPage() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.map((msg, i) => (
-            <div
-              key={i}
-              className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className="max-w-[70%] rounded-2xl px-4 py-2.5"
-                style={msg.sender === 'user' ? {
-                  background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-                  color: '#ffffff',
-                  boxShadow: '0 0 20px rgba(99, 102, 241, 0.15)',
-                } : {
-                  background: '#0f172a',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  color: '#f1f5f9',
-                }}
-              >
-                {msg.sender === 'agent' ? (
-                  <div className="prose prose-sm prose-invert max-w-none">
-                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+          {messages.map((msg, i) => {
+            // Progress messages: compact inline hint style
+            if (msg.type === 'progress') {
+              // Check if this is the last progress message AND progress is still active → pulse
+              const isLast = progress && !messages.slice(i + 1).some(m => m.type === 'progress')
+              return (
+                <div key={i} className="flex justify-start">
+                  <div
+                    className={`text-sm rounded-2xl px-4 py-2${isLast ? ' animate-pulse' : ''}`}
+                    style={{
+                      background: isLast ? 'rgba(99, 102, 241, 0.1)' : 'rgba(99, 102, 241, 0.08)',
+                      border: `1px solid rgba(99, 102, 241, ${isLast ? '0.2' : '0.15'})`,
+                      color: isLast ? '#a5b4fc' : '#818cf8',
+                      boxShadow: isLast ? '0 0 15px rgba(99, 102, 241, 0.1)' : 'none',
+                    }}
+                  >
+                    {msg.content}
                   </div>
-                ) : (
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
-                )}
-                {msg.media && msg.media.length > 0 && (
-                  <div className="mt-2 space-y-2">
-                    {msg.media.map((url, j) => {
-                      const isImage = /\.(png|jpg|jpeg|gif|webp)(\?|$)/i.test(url)
-                      return isImage ? (
-                        <img key={j} src={url} alt="attachment" className="max-w-full max-h-64 rounded-xl" />
-                      ) : (
-                        <a
-                          key={j}
-                          href={url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 text-sm hover:underline"
-                          style={{ color: '#a5b4fc' }}
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          Download file
-                        </a>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
+                </div>
+              )
+            }
 
-          {/* Progress hint */}
-          {progress && (
-            <div className="flex justify-start">
+            return (
               <div
-                className="text-sm rounded-2xl px-4 py-2.5 animate-pulse"
-                style={{
-                  background: 'rgba(99, 102, 241, 0.1)',
-                  border: '1px solid rgba(99, 102, 241, 0.2)',
-                  color: '#a5b4fc',
-                  boxShadow: '0 0 15px rgba(99, 102, 241, 0.1)',
-                }}
+                key={i}
+                className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
               >
-                {progress}
+                <div
+                  className="max-w-[70%] rounded-2xl px-4 py-2.5"
+                  style={msg.sender === 'user' ? {
+                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                    color: '#ffffff',
+                    boxShadow: '0 0 20px rgba(99, 102, 241, 0.15)',
+                  } : {
+                    background: '#0f172a',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    color: '#f1f5f9',
+                  }}
+                >
+                  {msg.sender === 'agent' ? (
+                    <div className="prose prose-sm prose-invert max-w-none">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          code({ className, children, ...props }) {
+                            const match = /language-(\w+)/.exec(className || '')
+                            const code = String(children).replace(/\n$/, '')
+                            return match ? (
+                              <SyntaxHighlighter
+                                style={oneDark}
+                                language={match[1]}
+                                PreTag="div"
+                                customStyle={{ margin: '0.5rem 0', borderRadius: '0.75rem', fontSize: '0.8rem' }}
+                              >
+                                {code}
+                              </SyntaxHighlighter>
+                            ) : (
+                              <code className="px-1.5 py-0.5 rounded-md text-xs" style={{ background: 'rgba(255,255,255,0.1)', color: '#e2e8f0' }} {...props}>
+                                {children}
+                              </code>
+                            )
+                          },
+                          table({ children }) {
+                            return (
+                              <div className="overflow-x-auto my-2 rounded-xl" style={{ border: '1px solid rgba(255,255,255,0.08)' }}>
+                                <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>{children}</table>
+                              </div>
+                            )
+                          },
+                          thead({ children }) {
+                            return <thead style={{ background: 'rgba(255,255,255,0.05)' }}>{children}</thead>
+                          },
+                          th({ children }) {
+                            return <th className="px-3 py-2 text-left font-medium" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8' }}>{children}</th>
+                          },
+                          td({ children }) {
+                            return <td className="px-3 py-2" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#e2e8f0' }}>{children}</td>
+                          },
+                        }}
+                      >
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                  )}
+                  {msg.media && msg.media.length > 0 && (
+                    <div className="mt-2 space-y-2">
+                      {msg.media.map((url, j) => {
+                        const isImage = /\.(png|jpg|jpeg|gif|webp)(\?|$)/i.test(url)
+                        return isImage ? (
+                          <img key={j} src={url} alt="attachment" className="max-w-full max-h-64 rounded-xl" />
+                        ) : (
+                          <a
+                            key={j}
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 text-sm hover:underline"
+                            style={{ color: '#a5b4fc' }}
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Download file
+                          </a>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })}
 
           <div ref={messagesEndRef} />
         </div>
