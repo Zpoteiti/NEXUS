@@ -449,21 +449,6 @@ async fn execute_tool_calls_loop(
             }
         }
 
-        // Emit progress hints for all tool calls
-        for tc in &current_tool_calls {
-            let mut metadata = HashMap::new();
-            metadata.insert("_progress".to_string(), serde_json::json!(true));
-            metadata.insert("_tool_hint".to_string(), serde_json::json!(true));
-            let hint = format!("🔧 `{}`", tc.name);
-            let _ = state.bus.publish_outbound(OutboundEvent {
-                channel: event_channel.to_string(),
-                chat_id: event_chat_id.to_string(),
-                content: hint,
-                media: Vec::new(),
-                metadata,
-            }).await;
-        }
-
         // Execute all tool calls concurrently
         let mut futures = Vec::new();
         for tc in current_tool_calls.clone() {
@@ -564,6 +549,19 @@ async fn execute_single_tool(
     tc: &ToolCallParsed,
 ) -> Result<String, NexusError> {
     debug!("execute_single_tool: tool_name={}, arguments={}", tc.name, tc.arguments);
+
+    // 1. Determine tool location for progress hint
+    let location = if state.server_tools.get(&tc.name).is_some() {
+        "server".to_string()
+    } else if tc.arguments.get("device_name").and_then(|v| v.as_str()) == Some("server") && tc.name.starts_with("mcp_") {
+        "server".to_string()
+    } else {
+        tc.arguments.get("device_name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string()
+    };
+
+    // 2. Emit progress hint (ALWAYS, for all tool types)
+    emit_progress(state, event_channel, event_chat_id,
+        &format!("🔧 {} on {}", tc.name, location)).await;
 
     // ── Check server-native tools first ──
     if let Some(tool) = state.server_tools.get(&tc.name) {
