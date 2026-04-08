@@ -1,4 +1,10 @@
+pub mod edit_file;
+pub mod glob;
+pub mod grep;
 pub mod helpers;
+pub mod list_dir;
+pub mod read_file;
+pub mod write_file;
 
 use crate::config::ClientConfig;
 use nexus_common::consts::{EXIT_CODE_ERROR, EXIT_CODE_SUCCESS};
