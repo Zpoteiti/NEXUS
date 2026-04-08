@@ -44,10 +44,10 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
         Err(e) => return ToolResult::error(e),
     };
 
-    if let Some(parent) = path.parent() {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            return ToolResult::error(tool_error(&format!("mkdir: {e}")));
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = tokio::fs::create_dir_all(parent).await
+    {
+        return ToolResult::error(tool_error(&format!("mkdir: {e}")));
     }
 
     match tokio::fs::write(&path, content).await {

@@ -67,11 +67,42 @@ async fn run_session(ws_url: &str, token: &str) -> Result<(), String> {
     let sink = Arc::new(Mutex::new(sink));
     let missed_acks = Arc::new(AtomicU32::new(0));
 
-    // TODO (Section 6): Initialize MCP servers
-    // TODO (Section 3): Build tool registry and send RegisterTools
+    // Initialize MCP servers
+    let mcp_manager = Arc::new(Mutex::new(mcp::McpManager::new()));
+    {
+        let cfg = config.read().await;
+        mcp_manager.lock().await.initialize(&cfg.mcp_servers).await;
+    }
+
+    // Build tool registry
+    let mut registry = tools::ToolRegistry::new();
+    tools::register_builtin_tools(&mut registry);
+    let registry = Arc::new(registry);
+
+    // Collect and send tool schemas (built-in + MCP)
+    {
+        let mut schemas = registry.schemas();
+        schemas.extend(mcp_manager.lock().await.all_tool_schemas());
+        let msg = ClientToServer::RegisterTools { schemas };
+        let mut s = sink.lock().await;
+        send_message(&mut s, &msg).await?;
+        info!(
+            "Registered {} built-in + {} MCP tools",
+            registry.tool_count(),
+            mcp_manager.lock().await.session_count()
+        );
+    }
 
     let hb = spawn_heartbeat(Arc::clone(&sink), Arc::clone(&missed_acks));
-    let result = message_loop(&mut stream, &sink, &config, &missed_acks).await;
+    let result = message_loop(
+        &mut stream,
+        &sink,
+        &config,
+        &missed_acks,
+        &registry,
+        &mcp_manager,
+    )
+    .await;
     hb.cancel();
     result
 }
@@ -81,6 +112,8 @@ async fn message_loop(
     sink: &Arc<Mutex<WsSink>>,
     config: &Arc<RwLock<config::ClientConfig>>,
     missed_acks: &Arc<AtomicU32>,
+    registry: &Arc<tools::ToolRegistry>,
+    mcp_manager: &Arc<Mutex<mcp::McpManager>>,
 ) -> Result<(), String> {
     loop {
         let msg = recv_message(stream).await?;
@@ -89,15 +122,48 @@ async fn message_loop(
                 ack_heartbeat(missed_acks);
             }
             ServerToClient::ExecuteToolRequest(req) => {
-                // TODO (Section 7): dispatch to tool handler
-                warn!("Tool execution not yet implemented: {}", req.tool_name);
-                let result = ClientToServer::ToolExecutionResult(ToolExecutionResult {
-                    request_id: req.request_id,
-                    exit_code: 1,
-                    output: "Tool execution not yet implemented".into(),
+                let sink = Arc::clone(sink);
+                let config = Arc::clone(config);
+                let registry = Arc::clone(registry);
+                let mcp_mgr = Arc::clone(mcp_manager);
+
+                // Spawn tool execution in background so message loop continues
+                tokio::spawn(async move {
+                    let result =
+                        if mcp::McpManager::is_mcp_tool(&req.tool_name) {
+                            match mcp_mgr
+                                .lock()
+                                .await
+                                .call_tool(&req.tool_name, req.arguments)
+                                .await
+                            {
+                                Ok(out) => tools::ToolResult::success(out),
+                                Err(e) => tools::ToolResult::error(e),
+                            }
+                        } else {
+                            let cfg = config.read().await;
+                            registry
+                                .dispatch(
+                                    &req.tool_name,
+                                    req.arguments,
+                                    &cfg,
+                                )
+                                .await
+                        };
+
+                    let msg = ClientToServer::ToolExecutionResult(
+                        ToolExecutionResult {
+                            request_id: req.request_id,
+                            exit_code: result.exit_code,
+                            output: result.output,
+                        },
+                    );
+                    if let Err(e) =
+                        send_message(&mut *sink.lock().await, &msg).await
+                    {
+                        warn!("send result failed: {e}");
+                    }
                 });
-                let mut s = sink.lock().await;
-                send_message(&mut s, &result).await?;
             }
             ServerToClient::ConfigUpdate {
                 fs_policy,
@@ -109,13 +175,22 @@ async fn message_loop(
                 let mut cfg = config.write().await;
                 let mcp_changed = cfg.merge_update(
                     fs_policy,
-                    mcp_servers,
+                    mcp_servers.clone(),
                     workspace_path,
                     shell_timeout,
                     ssrf_whitelist,
                 );
-                if mcp_changed {
-                    info!("MCP servers config changed — reinit needed");
+                if mcp_changed
+                    && let Some(new_servers) = mcp_servers
+                {
+                    let mut mgr = mcp_manager.lock().await;
+                    mgr.apply_config(&new_servers).await;
+                    // Re-register tools with updated MCP schemas
+                    let mut schemas = registry.schemas();
+                    schemas.extend(mgr.all_tool_schemas());
+                    let msg = ClientToServer::RegisterTools { schemas };
+                    let _ =
+                        send_message(&mut *sink.lock().await, &msg).await;
                 }
             }
             other => {

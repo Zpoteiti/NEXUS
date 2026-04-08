@@ -115,8 +115,14 @@ impl ToolRegistry {
 }
 
 /// Register all 7 built-in tools.
-pub fn register_builtin_tools(_registry: &mut ToolRegistry) {
-    // TODO (Section 4-5): register each tool after creation
+pub fn register_builtin_tools(registry: &mut ToolRegistry) {
+    registry.register(Box::new(read_file::ReadFileTool));
+    registry.register(Box::new(write_file::WriteFileTool));
+    registry.register(Box::new(edit_file::EditFileTool));
+    registry.register(Box::new(list_dir::ListDirTool));
+    registry.register(Box::new(glob::GlobTool));
+    registry.register(Box::new(grep::GrepTool));
+    registry.register(Box::new(shell::ShellTool));
 }
 
 #[cfg(test)]
@@ -159,6 +165,13 @@ mod tests {
         let mut r = ToolRegistry::new();
         r.register(Box::new(DummyTool));
         assert_eq!(r.tool_count(), 1);
+    }
+
+    #[test]
+    fn test_builtin_count() {
+        let mut r = ToolRegistry::new();
+        register_builtin_tools(&mut r);
+        assert_eq!(r.tool_count(), 7);
     }
 
     #[tokio::test]

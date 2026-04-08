@@ -62,13 +62,13 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
         }
     };
 
-    if let Some(mime) = detect_mime_from_bytes(&bytes) {
-        if mime.starts_with("image/") {
-            return ToolResult::success(format!(
-                "[Image: {path_str}, {}KB]",
-                bytes.len() / 1024
-            ));
-        }
+    if let Some(mime) = detect_mime_from_bytes(&bytes)
+        && mime.starts_with("image/")
+    {
+        return ToolResult::success(format!(
+            "[Image: {path_str}, {}KB]",
+            bytes.len() / 1024
+        ));
     }
 
     let content = match String::from_utf8(bytes) {

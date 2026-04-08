@@ -85,10 +85,10 @@ fn search_dir(
         if p.is_dir() {
             search_dir(base, &p, re, incl, ctx, res);
         } else if p.is_file() {
-            if let Some(g) = incl {
-                if !g.matches(&n) {
-                    continue;
-                }
+            if let Some(g) = incl
+                && !g.matches(&n)
+            {
+                continue;
             }
             search_file(base, &p, re, ctx, res);
         }
@@ -114,9 +114,10 @@ fn search_file(
         if re.is_match(line) {
             let s = i.saturating_sub(ctx);
             let e = (i + ctx + 1).min(lines.len());
-            for j in s..e {
-                let pfx = if j == i { ">" } else { " " };
-                res.push(format!("{rel}:{}{pfx} {}", j + 1, lines[j]));
+            for (j, line) in lines[s..e].iter().enumerate() {
+                let line_num = s + j;
+                let pfx = if line_num == i { ">" } else { " " };
+                res.push(format!("{rel}:{}{pfx} {line}", line_num + 1));
             }
             if ctx > 0 {
                 res.push("--".into());

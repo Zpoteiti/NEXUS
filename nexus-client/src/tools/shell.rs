@@ -52,10 +52,10 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
         .unwrap_or_else(|| config.workspace.clone());
 
     // Guardrails check (Sandbox mode only)
-    if config.fs_policy == FsPolicy::Sandbox {
-        if let Some(reason) = guardrails::check_all(command, &config.ssrf_whitelist) {
-            return ToolResult::blocked(reason);
-        }
+    if config.fs_policy == FsPolicy::Sandbox
+        && let Some(reason) = guardrails::check_all(command, &config.ssrf_whitelist)
+    {
+        return ToolResult::blocked(reason);
     }
 
     // Build command
