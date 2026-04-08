@@ -1,5 +1,5 @@
 [workspace]
-members = ["nexus-common"]
+members = ["nexus-common", "nexus-client"]
 resolver = "2"
 
 [workspace.package]
