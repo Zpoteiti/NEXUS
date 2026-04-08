@@ -3,6 +3,7 @@ mod connection;
 mod env;
 mod guardrails;
 mod heartbeat;
+mod mcp;
 mod sandbox;
 mod tools;
 
