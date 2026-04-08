@@ -3,7 +3,7 @@ use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
-use super::fs_helpers::{execute_with_timeout, resolve_path_for_read};
+use super::fs_helpers::{self, execute_with_timeout, resolve_path_for_read};
 use super::{LocalTool, ToolError};
 
 pub struct StatTool;
@@ -58,15 +58,7 @@ impl StatTool {
     }
 
     async fn stat_core(fp: PathBuf) -> Result<String, ToolError> {
-        let metadata = fs::metadata(&fp).await.map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                ToolError::NotFound(format!("path not found: {}", fp.display()))
-            }
-            std::io::ErrorKind::PermissionDenied => {
-                ToolError::ExecutionFailed(format!("permission denied: {}", fp.display()))
-            }
-            _ => ToolError::ExecutionFailed(format!("failed to stat: {}", e)),
-        })?;
+        let metadata = fs::metadata(&fp).await.map_err(|e| fs_helpers::map_io_error(e, "path", &fp.display().to_string()))?;
 
         let file_type = if metadata.is_dir() {
             "directory"

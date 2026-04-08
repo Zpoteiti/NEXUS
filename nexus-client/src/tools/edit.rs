@@ -8,7 +8,7 @@ use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
-use super::fs_helpers::{execute_with_timeout, resolve_path_for_write};
+use super::fs_helpers::{self, execute_with_timeout, resolve_path_for_write};
 use super::{LocalTool, ToolError};
 
 pub struct EditFileTool;
@@ -97,15 +97,7 @@ impl EditFileTool {
         let path_display = fp.display().to_string();
 
         // Read current content — let the OS report not-found / is-a-directory / permission errors
-        let content = fs::read_to_string(&fp).await.map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                ToolError::NotFound(format!("file not found: {}", path_display))
-            }
-            std::io::ErrorKind::PermissionDenied => {
-                ToolError::ExecutionFailed(format!("permission denied: {}", path_display))
-            }
-            _ => ToolError::ExecutionFailed(format!("failed to read file: {}", e)),
-        })?;
+        let content = fs::read_to_string(&fp).await.map_err(|e| fs_helpers::map_io_error(e, "file", &path_display))?;
 
         // Validate old_string is non-empty
         if old_string.is_empty() {

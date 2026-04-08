@@ -124,6 +124,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
             .or_default()
             .insert(device_name.clone(), device_key.clone());
     }
+    state.config_dirty.insert(device_key.clone(), false);
 
     // Spawn writer task
     let writer = tokio::spawn(async move {
@@ -184,12 +185,12 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 let dirty = state.config_dirty.remove(&device_key).map(|(_, v)| v).unwrap_or(true);
 
                 let (policy, mcp) = if dirty {
-                    let fresh_policy = db::get_device_policy(&state.db, &user_id, &device_name)
-                        .await
-                        .unwrap_or_default();
-                    let fresh_mcp = db::get_device_mcp_config(&state.db, &user_id, &device_name)
-                        .await
-                        .unwrap_or_default();
+                    let (fresh_policy, fresh_mcp) = tokio::join!(
+                        db::get_device_policy(&state.db, &user_id, &device_name),
+                        db::get_device_mcp_config(&state.db, &user_id, &device_name),
+                    );
+                    let fresh_policy = fresh_policy.unwrap_or_default();
+                    let fresh_mcp = fresh_mcp.unwrap_or_default();
 
                     let mut devices = state.devices.write().await;
                     if let Some(device) = devices.get_mut(&device_key) {
@@ -271,5 +272,7 @@ async fn cleanup_device(state: &AppState, device_key: &str, user_id: &str) {
         }
     }
     cancel_pending_requests_for_device(device_key, &state.pending, &state.file_upload_pending, &state.file_download_pending);
+    // Clean up schema cache for the disconnecting user
+    state.tool_schema_cache.remove(user_id);
     state.bump_tool_schema_generation();
 }

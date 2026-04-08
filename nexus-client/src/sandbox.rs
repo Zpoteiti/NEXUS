@@ -51,11 +51,7 @@ pub fn wrap_command(command: &str, working_dir: &Path) -> String {
     ];
 
     // Required system directories (read-only)
-    for path in &["/usr"] {
-        args.push("--ro-bind".to_string());
-        args.push(path.to_string());
-        args.push(path.to_string());
-    }
+    args.extend_from_slice(&["--ro-bind".to_string(), "/usr".to_string(), "/usr".to_string()]);
 
     // Optional system directories (read-only, skip if missing)
     for path in &[

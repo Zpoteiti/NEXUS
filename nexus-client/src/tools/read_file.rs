@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
-use super::fs_helpers::{execute_with_timeout, resolve_path_for_read};
+use super::fs_helpers::{self, execute_with_timeout, resolve_path_for_read};
 use super::{LocalTool, ToolError};
 
 /// Maximum read characters (ref nanobot _MAX_CHARS = 128_000)
@@ -78,15 +78,7 @@ impl ReadFileTool {
     async fn read_file_core(&self, args: &Value, fp: PathBuf) -> Result<String, ToolError> {
         let path_display = fp.display().to_string();
 
-        let mut file = fs::File::open(&fp).await.map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                ToolError::NotFound(format!("file not found: {}", path_display))
-            }
-            std::io::ErrorKind::PermissionDenied => {
-                ToolError::ExecutionFailed(format!("permission denied: {}", path_display))
-            }
-            _ => ToolError::ExecutionFailed(format!("failed to open file: {}", e)),
-        })?;
+        let mut file = fs::File::open(&fp).await.map_err(|e| fs_helpers::map_io_error(e, "file", &path_display))?;
         let mut raw = Vec::new();
         file.read_to_end(&mut raw)
             .await

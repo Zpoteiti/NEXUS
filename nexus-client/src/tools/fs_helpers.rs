@@ -12,6 +12,15 @@ use crate::env::FsOp;
 /// Per-tool timeout in seconds for filesystem operations.
 pub const FS_TOOL_TIMEOUT_SEC: u64 = 30;
 
+/// Map an IO error to a ToolError with a descriptive message.
+pub fn map_io_error(e: std::io::Error, label: &str, path: &str) -> ToolError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => ToolError::NotFound(format!("{} not found: {}", label, path)),
+        std::io::ErrorKind::PermissionDenied => ToolError::ExecutionFailed(format!("permission denied: {}", path)),
+        _ => ToolError::ExecutionFailed(format!("failed to {}: {}", label, e)),
+    }
+}
+
 /// Wraps a filesystem tool operation with the standard timeout.
 pub async fn execute_with_timeout<F, Fut>(f: F) -> Result<String, ToolError>
 where

@@ -21,34 +21,27 @@ static SKILL_CONTENT_CACHE: LazyLock<RwLock<HashMap<String, CachedSkill>>> =
 
 /// Read a skill file with mtime-based caching.
 async fn read_skill_cached(path: &std::path::Path) -> Option<String> {
-    let path_str = path.to_string_lossy().to_string();
+    let key = path.to_string_lossy().to_string();
 
-    // Get current mtime
-    let meta = tokio::fs::metadata(path).await.ok()?;
-    let mtime = meta.modified().ok()?;
+    // Read content first
+    let content = tokio::fs::read_to_string(path).await.ok()?;
+    // Then get mtime — if file was modified during read, we get the newer mtime,
+    // which means we'll re-read on next access (safe direction)
+    let mtime = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
 
-    // Check cache with read lock
+    // Check if we already have this exact version cached
     {
         let cache = SKILL_CONTENT_CACHE.read().await;
-        if let Some(cached) = cache.get(&path_str) {
+        if let Some(cached) = cache.get(&key) {
             if cached.mtime == mtime {
                 return Some(cached.content.clone());
             }
         }
     }
 
-    // Cache miss or stale — read file and update cache
-    let content = tokio::fs::read_to_string(path).await.ok()?;
-    {
-        let mut cache = SKILL_CONTENT_CACHE.write().await;
-        cache.insert(
-            path_str,
-            CachedSkill {
-                content: content.clone(),
-                mtime,
-            },
-        );
-    }
+    // Update cache
+    let mut cache = SKILL_CONTENT_CACHE.write().await;
+    cache.insert(key, CachedSkill { content: content.clone(), mtime });
     Some(content)
 }
 
@@ -301,7 +294,7 @@ pub async fn get_all_tools_schema(
         let server_mcp = state.server_mcp.read().await;
         let mcp_schemas = server_mcp.all_tool_schemas();
         if !mcp_schemas.is_empty() {
-            let decorated = crate::tools_registry::inject_device_name_into_schemas(&mcp_schemas, "server");
+            let decorated = crate::tools_registry::inject_device_name_into_schemas(&mcp_schemas, nexus_common::consts::SERVER_DEVICE_NAME);
             all_schemas.extend(decorated);
         }
     }

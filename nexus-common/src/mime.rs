@@ -6,40 +6,32 @@
 ///
 /// No filesystem access; callers supply filenames or already-read bytes.
 
+static EXTENSION_MAP: &[(&str, &str)] = &[
+    (".png", "image/png"),
+    (".jpg", "image/jpeg"),
+    (".jpeg", "image/jpeg"),
+    (".gif", "image/gif"),
+    (".webp", "image/webp"),
+    (".bmp", "image/bmp"),
+    (".pdf", "application/pdf"),
+    (".txt", "text/plain"),
+    (".json", "application/json"),
+    (".csv", "text/csv"),
+    (".tar.gz", "application/gzip"),
+    (".tgz", "application/gzip"),
+    (".zip", "application/zip"),
+    (".mp3", "audio/mpeg"),
+    (".mp4", "video/mp4"),
+];
+
 /// Detect MIME type from a filename extension.
 ///
 /// Covers common image, document, audio, and video types.
 pub fn detect_mime_from_extension(filename: &str) -> Option<&'static str> {
     let lower = filename.to_lowercase();
-    if lower.ends_with(".png") {
-        Some("image/png")
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        Some("image/jpeg")
-    } else if lower.ends_with(".gif") {
-        Some("image/gif")
-    } else if lower.ends_with(".webp") {
-        Some("image/webp")
-    } else if lower.ends_with(".bmp") {
-        Some("image/bmp")
-    } else if lower.ends_with(".pdf") {
-        Some("application/pdf")
-    } else if lower.ends_with(".txt") {
-        Some("text/plain")
-    } else if lower.ends_with(".json") {
-        Some("application/json")
-    } else if lower.ends_with(".csv") {
-        Some("text/csv")
-    } else if lower.ends_with(".zip") {
-        Some("application/zip")
-    } else if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
-        Some("application/gzip")
-    } else if lower.ends_with(".mp3") {
-        Some("audio/mpeg")
-    } else if lower.ends_with(".mp4") {
-        Some("video/mp4")
-    } else {
-        None
-    }
+    EXTENSION_MAP.iter()
+        .find(|(ext, _)| lower.ends_with(ext))
+        .map(|(_, mime)| *mime)
 }
 
 /// Detect image MIME type from raw file bytes (magic-byte sniffing).

@@ -3,7 +3,7 @@ use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
-use super::fs_helpers::{execute_with_timeout, resolve_path_for_read};
+use super::fs_helpers::{self, execute_with_timeout, resolve_path_for_read};
 use super::{LocalTool, ToolError};
 
 /// list_dir default max entries
@@ -108,21 +108,19 @@ impl ListDirTool {
             let mut dir_queue: Vec<PathBuf> = vec![dp.clone()];
 
             // Open the root directory first to get a proper error
-            let root_read_dir = fs::read_dir(&dp).await.map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    ToolError::NotFound(format!("directory not found: {}", path_display))
-                }
-                std::io::ErrorKind::PermissionDenied => {
-                    ToolError::ExecutionFailed(format!("permission denied: {}", path_display))
-                }
-                _ => ToolError::ExecutionFailed(format!("failed to read directory: {}", e)),
-            })?;
-            drop(root_read_dir);
+            let root_read_dir = fs::read_dir(&dp).await.map_err(|e| fs_helpers::map_io_error(e, "directory", &path_display))?;
+
+            // Use the already-opened handle for the first iteration
+            let mut first_read_dir = Some(root_read_dir);
 
             while let Some(current) = dir_queue.pop() {
-                let read_dir = match fs::read_dir(&current).await {
-                    Ok(d) => d,
-                    Err(_) => continue,
+                let read_dir = if let Some(rd) = first_read_dir.take() {
+                    rd
+                } else {
+                    match fs::read_dir(&current).await {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    }
                 };
                 let mut stream = tokio_stream::wrappers::ReadDirStream::new(read_dir);
                 use tokio_stream::StreamExt;
@@ -151,15 +149,7 @@ impl ListDirTool {
                 }
             }
         } else {
-            let read_dir = fs::read_dir(&dp).await.map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    ToolError::NotFound(format!("directory not found: {}", path_display))
-                }
-                std::io::ErrorKind::PermissionDenied => {
-                    ToolError::ExecutionFailed(format!("permission denied: {}", path_display))
-                }
-                _ => ToolError::ExecutionFailed(format!("failed to read directory: {}", e)),
-            })?;
+            let read_dir = fs::read_dir(&dp).await.map_err(|e| fs_helpers::map_io_error(e, "directory", &path_display))?;
             let mut stream = tokio_stream::wrappers::ReadDirStream::new(read_dir);
             use tokio_stream::StreamExt;
             while let Some(item) = stream.next().await {
