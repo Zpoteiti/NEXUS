@@ -2,6 +2,7 @@ mod config;
 mod connection;
 mod env;
 mod heartbeat;
+mod tools;
 
 use connection::{recv_message, send_message, WsSink};
 use heartbeat::{ack_heartbeat, spawn_heartbeat};
