@@ -81,13 +81,12 @@ pub async fn list_devices(
     };
 
     // 2. Read live devices from in-memory state
-    let live_devices = state.devices.read().await;
-
-    // Build a lookup: device_name -> &DeviceState for this user's online devices
-    let mut live_lookup = std::collections::HashMap::new();
-    for (_, dev) in live_devices.iter() {
+    // Extract needed fields from DashMap refs (can't hold Ref guards across collection)
+    let mut live_lookup: std::collections::HashMap<String, (u64, usize)> = std::collections::HashMap::new();
+    for entry in state.devices.iter() {
+        let dev = entry.value();
         if dev.user_id == claims.sub {
-            live_lookup.insert(dev.device_name.as_str(), dev);
+            live_lookup.insert(dev.device_name.clone(), (dev.last_seen.elapsed().as_secs(), dev.tools.len()));
         }
     }
 
@@ -95,12 +94,12 @@ pub async fn list_devices(
     let merged: Vec<serde_json::Value> = registered
         .iter()
         .map(|reg| {
-            if let Some(live) = live_lookup.get(reg.device_name.as_str()) {
+            if let Some(&(last_seen_secs, tools_count)) = live_lookup.get(&reg.device_name) {
                 serde_json::json!({
                     "device_name": reg.device_name,
                     "status": "online",
-                    "last_seen_secs_ago": live.last_seen.elapsed().as_secs(),
-                    "tools_count": live.tools.len(),
+                    "last_seen_secs_ago": last_seen_secs,
+                    "tools_count": tools_count,
                     "fs_policy": reg.fs_policy,
                 })
             } else {

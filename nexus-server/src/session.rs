@@ -34,7 +34,7 @@ impl SessionManager {
         }
 
         // Create new session
-        let (inbox_tx, inbox_rx) = mpsc::channel(64);
+        let (inbox_tx, inbox_rx) = mpsc::channel(256);
         let handle = SessionHandle {
             lock: Arc::new(tokio::sync::Mutex::new(())),
         };

@@ -156,19 +156,13 @@ impl ServerTool for DownloadToDeviceTool {
         let size_kb = bytes.len() / 1024;
 
         // Find device
-        let device_key = {
-            let by_user = state.devices_by_user.read().await;
-            by_user.get(user_id)
-                .and_then(|devices| devices.get(&device_name).cloned())
-                .ok_or_else(|| NexusError::new(ErrorCode::DeviceNotFound, format!("device '{}' not found", device_name)))?
-        };
+        let device_key = state.devices_by_user.get(user_id)
+            .and_then(|devices| devices.get(&device_name).cloned())
+            .ok_or_else(|| NexusError::new(ErrorCode::DeviceNotFound, format!("device '{}' not found", device_name)))?;
 
-        let ws_tx = {
-            let devices = state.devices.read().await;
-            devices.get(&device_key)
-                .map(|d| d.ws_tx.clone())
-                .ok_or_else(|| NexusError::new(ErrorCode::DeviceOffline, format!("device '{}' not connected", device_name)))?
-        };
+        let ws_tx = state.devices.get(&device_key)
+            .map(|d| d.ws_tx.clone())
+            .ok_or_else(|| NexusError::new(ErrorCode::DeviceOffline, format!("device '{}' not connected", device_name)))?;
 
         // 6. Send FileDownloadRequest via WebSocket
         let request_id = format!("{}:{}", device_key, uuid::Uuid::new_v4());

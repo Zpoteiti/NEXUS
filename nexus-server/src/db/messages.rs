@@ -53,7 +53,6 @@ pub async fn get_session_history(
         SELECT role, content, tool_call_id, tool_name, tool_arguments
         FROM messages
         WHERE session_id = $1
-          AND is_consolidated = FALSE
           AND (compressed IS NULL OR compressed = FALSE)
         ORDER BY created_at ASC
         "#,
@@ -120,7 +119,7 @@ pub async fn mark_messages_compressed(
     before_created_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
-        "UPDATE messages SET compressed = TRUE WHERE session_id = $1 AND created_at < $2 AND is_consolidated = FALSE AND (compressed IS NULL OR compressed = FALSE)"
+        "UPDATE messages SET compressed = TRUE WHERE session_id = $1 AND created_at < $2 AND (compressed IS NULL OR compressed = FALSE)"
     )
     .bind(session_id)
     .bind(before_created_at)

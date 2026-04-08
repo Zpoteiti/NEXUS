@@ -127,7 +127,7 @@ pub async fn update_device_policy(
 ) -> Response {
     match db::update_device_policy(&state.db, &claims.sub, &device_name, &payload.fs_policy).await {
         Ok(true) => {
-            state.mark_device_config_dirty(&claims.sub, &device_name).await;
+            state.mark_device_config_dirty(&claims.sub, &device_name);
             Json(DevicePolicyResponse {
                 device_name,
                 fs_policy: payload.fs_policy,
@@ -181,7 +181,7 @@ pub async fn update_device_mcp(
 ) -> Response {
     match db::update_device_mcp_config(&state.db, &claims.sub, &device_name, &payload.mcp_servers).await {
         Ok(true) => {
-            state.mark_device_config_dirty(&claims.sub, &device_name).await;
+            state.mark_device_config_dirty(&claims.sub, &device_name);
             Json(DeviceMcpResponse {
                 device_name,
                 mcp_servers: payload.mcp_servers,

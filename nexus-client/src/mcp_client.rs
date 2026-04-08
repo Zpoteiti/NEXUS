@@ -16,7 +16,7 @@ pub struct McpSession {
     server_name: String,
     client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
     /// Wrapped-name → original-name mapping. Interior-mutable so `list_tools` can take `&self`.
-    tool_name_map: tokio::sync::RwLock<HashMap<String, String>>,
+    pub(crate) tool_name_map: tokio::sync::RwLock<HashMap<String, String>>,
     tool_timeout: u64,
 }
 
@@ -205,21 +205,21 @@ impl McpClientManager {
         Ok(())
     }
 
-    /// Call an MCP tool. Finds the session owning the tool by wrapped_name.
+    /// Call an MCP tool. Uses the reverse index for O(1) server lookup.
     pub async fn call_tool(
         &self,
         wrapped_name: &str,
         arguments: Value,
     ) -> Result<String, ToolError> {
-        let mut found = None;
-        for (name, session) in &self.sessions {
-            if session.tool_name_map.read().await.contains_key(wrapped_name) {
-                found = Some((name, session));
-                break;
-            }
-        }
-        let (server_name, session) = found
-            .ok_or_else(|| ToolError::NotFound(format!("no MCP server has tool: {}", wrapped_name)))?;
+        // O(1) lookup via reverse index
+        let index = crate::discovery::get_mcp_tool_index().await;
+        let server_name = index.get(wrapped_name)
+            .ok_or_else(|| ToolError::NotFound(format!("no MCP server has tool: {}", wrapped_name)))?
+            .clone();
+        drop(index);
+
+        let session = self.sessions.get(server_name.as_str())
+            .ok_or_else(|| ToolError::NotFound(format!("MCP server '{}' not found", server_name)))?;
         tracing::debug!("routing MCP tool '{}' to server '{}'", wrapped_name, server_name);
         session.call_tool(wrapped_name, arguments).await
     }

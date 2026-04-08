@@ -352,7 +352,6 @@ async fn handle_message(
         chat_id: msg.channel_id,
         content,
         session_id,
-        timestamp: Some(chrono::Utc::now()),
         media: media_paths,
         metadata,
     };

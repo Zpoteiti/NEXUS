@@ -72,10 +72,8 @@ async fn resolve_upload_file_id(file_id: &str) -> Option<String> {
 }
 
 /// Convert a media file path to a `/api/files/uuid` download URL.
-/// Supports both bare paths and legacy `__FILE__:` prefixed paths.
 fn file_path_to_download_url(path: &str) -> Option<String> {
-    let clean = path.strip_prefix("__FILE__:").unwrap_or(path);
-    crate::file_store::path_to_download_url(clean)
+    crate::file_store::path_to_download_url(path)
 }
 
 // ============================================================================
@@ -142,7 +140,6 @@ impl GatewayChannel {
             chat_id,
             content,
             session_id,
-            timestamp: Some(chrono::Utc::now()),
             media: resolved_media,
             metadata: HashMap::new(),
         };
@@ -386,12 +383,6 @@ mod tests {
         let json = r#"{"type":"message","chat_id":"c1","sender_id":"u1","content":"hi","media":["abc-123:test.png"]}"#;
         let msg: GatewayToNexus = serde_json::from_str(json).unwrap();
         assert!(matches!(msg, GatewayToNexus::Message { media: Some(m), .. } if m.len() == 1));
-    }
-
-    #[test]
-    fn file_path_to_download_url_valid() {
-        let url = file_path_to_download_url("__FILE__:/tmp/nexus-media/550e8400-e29b-41d4-a716-446655440000_photo.png");
-        assert_eq!(url, Some("/api/files/550e8400-e29b-41d4-a716-446655440000".to_string()));
     }
 
     #[test]

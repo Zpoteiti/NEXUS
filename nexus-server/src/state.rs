@@ -23,7 +23,7 @@ use axum::extract::ws::Message;
 use dashmap::DashMap;
 use nexus_common::protocol::{FileDownloadResponse, FileUploadResponse, FsPolicy, McpServerEntry, ToolExecutionResult};
 use sqlx::PgPool;
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::bus::MessageBus;
 use crate::channels::ChannelManagerHandle;
@@ -46,9 +46,9 @@ pub struct AppState {
     pub config: ServerConfig,
     pub db: PgPool,
     /// Online device routing table: device_key -> DeviceState
-    pub devices: Arc<RwLock<HashMap<String, DeviceState>>>,
+    pub devices: Arc<DashMap<String, DeviceState>>,
     /// Device name index: user_id -> { device_name -> device_key }
-    pub devices_by_user: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
+    pub devices_by_user: Arc<DashMap<String, HashMap<String, String>>>,
     /// Pending tool call table: request_id -> oneshot::Sender
     pub pending: Arc<DashMap<String, oneshot::Sender<ToolExecutionResult>>>,
     /// Pending file upload table: request_id -> oneshot::Sender
@@ -74,8 +74,8 @@ impl AppState {
         Self {
             config,
             db,
-            devices: Arc::new(RwLock::new(HashMap::new())),
-            devices_by_user: Arc::new(RwLock::new(HashMap::new())),
+            devices: Arc::new(DashMap::new()),
+            devices_by_user: Arc::new(DashMap::new()),
             pending: Arc::new(DashMap::new()),
             file_upload_pending: Arc::new(DashMap::new()),
             file_download_pending: Arc::new(DashMap::new()),
@@ -111,9 +111,8 @@ impl AppState {
 
     /// Mark a device's config as dirty so the next heartbeat re-queries DB.
     /// Called after API updates to policy or MCP config.
-    pub async fn mark_device_config_dirty(&self, user_id: &str, device_name: &str) {
-        let devices_by_user = self.devices_by_user.read().await;
-        if let Some(user_devices) = devices_by_user.get(user_id) {
+    pub fn mark_device_config_dirty(&self, user_id: &str, device_name: &str) {
+        if let Some(user_devices) = self.devices_by_user.get(user_id) {
             if let Some(device_key) = user_devices.get(device_name) {
                 self.config_dirty.insert(device_key.clone(), true);
             }

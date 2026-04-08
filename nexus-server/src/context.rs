@@ -9,6 +9,7 @@ use crate::tools_registry::merge_device_tool_schemas;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 struct CachedSkill {
@@ -18,6 +19,28 @@ struct CachedSkill {
 
 static SKILL_CONTENT_CACHE: LazyLock<RwLock<HashMap<String, CachedSkill>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Cache for default_soul to avoid repeated DB queries.
+static DEFAULT_SOUL_CACHE: LazyLock<RwLock<Option<(String, Instant)>>> =
+    LazyLock::new(|| RwLock::new(None));
+const DEFAULT_SOUL_TTL: Duration = Duration::from_secs(300); // 5 min TTL
+
+async fn get_default_soul_cached(db: &sqlx::PgPool) -> Option<String> {
+    // Check cache
+    {
+        let cache = DEFAULT_SOUL_CACHE.read().await;
+        if let Some((ref soul, ts)) = *cache {
+            if ts.elapsed() < DEFAULT_SOUL_TTL {
+                return Some(soul.clone());
+            }
+        }
+    }
+    // Cache miss or expired
+    let soul = crate::db::get_system_config(db, "default_soul").await.ok().flatten();
+    let mut cache = DEFAULT_SOUL_CACHE.write().await;
+    *cache = soul.as_ref().map(|s| (s.clone(), Instant::now()));
+    soul
+}
 
 /// Read a skill file with mtime-based caching.
 async fn read_skill_cached(path: &std::path::Path) -> Option<String> {
@@ -76,14 +99,14 @@ pub async fn build_system_prompt(
     // a cache-miss on user_soul doesn't add another round-trip.
     let (user_soul, default_soul, device_section, memory, skill_section) = tokio::join!(
         crate::db::get_user_soul(&state.db, user_id),
-        crate::db::get_system_config(&state.db, "default_soul"),
+        get_default_soul_cached(&state.db),
         build_device_section(state, user_id),
         crate::db::get_user_memory(&state.db, user_id),
         build_skills_section(state, user_id),
     );
 
     // Section 2 -- Soul (prefer user-specific, fall back to default)
-    let soul = user_soul.ok().flatten().or_else(|| default_soul.ok().flatten());
+    let soul = user_soul.ok().flatten().or(default_soul);
     if let Some(soul_text) = soul {
         sections.push(soul_text);
     }
@@ -216,38 +239,26 @@ fn build_sender_identity_section(
 /// Filters devices belonging to user_id from AppState.devices,
 /// listing each device's name, status (online/offline), and registered tools.
 async fn build_device_section(state: &AppState, user_id: &str) -> String {
-    let devices = state.devices.read().await;
-    let devices_by_user = state.devices_by_user.read().await;
-
-    // Get all device names for this user
-    let user_device_names: std::collections::HashSet<&str> = devices_by_user
-        .get(user_id)
-        .map(|d| d.keys().map(|s| s.as_str()).collect())
-        .unwrap_or_default();
-
     let mut lines = vec![
         "You can execute tools on the following devices:".to_string(),
     ];
 
-    for device_state in devices.values() {
-        if device_state.user_id != user_id {
-            continue;
+    // O(user's devices) via devices_by_user index instead of iterating all devices
+    if let Some(user_devices) = state.devices_by_user.get(user_id) {
+        for (device_name, device_key) in user_devices.iter() {
+            if let Some(device_state) = state.devices.get(device_key) {
+                let status = if device_state.last_seen.elapsed().as_secs() > 60 {
+                    "offline"
+                } else {
+                    "online"
+                };
+                let tool_count = device_state.tools.len();
+                lines.push(format!(
+                    "- {} | status: {} | {} tool(s)",
+                    device_name, status, tool_count
+                ));
+            }
         }
-        if !user_device_names.contains(device_state.device_name.as_str()) {
-            continue;
-        }
-
-        let status = if device_state.last_seen.elapsed().as_secs() > 60 {
-            "offline"
-        } else {
-            "online"
-        };
-
-        let tool_count = device_state.tools.len();
-        lines.push(format!(
-            "- {} | status: {} | {} tool(s)",
-            device_state.device_name, status, tool_count
-        ));
     }
 
     lines.join("\n")
@@ -271,16 +282,14 @@ pub async fn get_all_tools_schema(
     }
 
     // Cache miss — rebuild from scratch
-    let devices = state.devices.read().await;
     let mut all_schemas: Vec<serde_json::Value> = Vec::new();
 
     // Collect (device_name, tools) pairs for all devices belonging to this user
-    let device_tools: Vec<(String, Vec<serde_json::Value>)> = devices
-        .values()
-        .filter(|ds| ds.user_id == user_id && !ds.tools.is_empty())
-        .map(|ds| (ds.device_name.clone(), ds.tools.clone()))
+    let device_tools: Vec<(String, Vec<serde_json::Value>)> = state.devices
+        .iter()
+        .filter(|entry| entry.value().user_id == user_id && !entry.value().tools.is_empty())
+        .map(|entry| (entry.value().device_name.clone(), entry.value().tools.clone()))
         .collect();
-    drop(devices);
 
     // Merge same-named tools across devices into unified schemas
     let merged = merge_device_tool_schemas(&device_tools);

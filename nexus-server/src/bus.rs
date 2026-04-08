@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use dashmap::DashMap;
-use chrono::{DateTime, Utc};
 use tracing::warn;
 
 /// User message event (from any channel).
@@ -13,8 +12,6 @@ pub struct InboundEvent {
     pub chat_id: String,                                      // conversation ID
     pub content: String,                                       // message content
     pub session_id: String,                                    // Nexus internal session identifier
-    #[allow(dead_code)]
-    pub timestamp: Option<DateTime<Utc>>,                    // message timestamp
     pub media: Vec<String>,                                    // media URL list
     pub metadata: HashMap<String, serde_json::Value>,         // runtime control fields
 }
@@ -46,7 +43,7 @@ pub struct MessageBus {
 impl MessageBus {
     /// Create a new MessageBus.
     pub fn new() -> Self {
-        let (outbound_tx, outbound_rx) = mpsc::channel(256);
+        let (outbound_tx, outbound_rx) = mpsc::channel(4096);
         let (shutdown_tx, _) = broadcast::channel(1);
         Self {
             inbound_routes: Arc::new(DashMap::new()),

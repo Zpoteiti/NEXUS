@@ -43,7 +43,7 @@ async fn main() {
     let config = config::load_config();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(50)
+        .max_connections(200)
         .connect(&config.database_url)
         .await
         .unwrap_or_else(|e| panic!("Failed to connect PostgreSQL: {e}"));
@@ -114,7 +114,6 @@ async fn main() {
                     chat_id: cp.chat_id,
                     content: "[System] Resuming interrupted task...".to_string(),
                     session_id: cp.session_id,
-                    timestamp: Some(chrono::Utc::now()),
                     media: vec![],
                     metadata,
                 };

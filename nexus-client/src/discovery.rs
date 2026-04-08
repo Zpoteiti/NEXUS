@@ -90,6 +90,20 @@ async fn discover_mcp_tools_internal(mcp_servers: &[McpServerConfig]) -> Vec<Val
             }
         }
     }
+    // Rebuild reverse index for O(1) tool routing in call_tool
+    {
+        let mut index = MCP_TOOL_INDEX.write().await;
+        index.clear();
+        for name in &server_names {
+            if let Some(session) = manager.get_session(name) {
+                let map = session.tool_name_map.read().await;
+                for wrapped_name in map.keys() {
+                    index.insert(wrapped_name.clone(), name.clone());
+                }
+            }
+        }
+    }
+
     all_schemas
 }
 
@@ -112,6 +126,15 @@ pub fn compute_hash<T: serde::Serialize>(value: &T) -> String {
     let mut hasher = DefaultHasher::new();
     serialized.hash(&mut hasher);
     format!("{:x}", hasher.finish())
+}
+
+/// Reverse index: wrapped MCP tool name -> server name for O(1) routing.
+static MCP_TOOL_INDEX: LazyLock<RwLock<std::collections::HashMap<String, String>>> =
+    LazyLock::new(|| RwLock::new(std::collections::HashMap::new()));
+
+/// Get a read guard on the MCP tool reverse index.
+pub async fn get_mcp_tool_index() -> tokio::sync::RwLockReadGuard<'static, std::collections::HashMap<String, String>> {
+    MCP_TOOL_INDEX.read().await
 }
 
 /// Get the MCP manager (for use when executor calls tools).

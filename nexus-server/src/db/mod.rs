@@ -65,8 +65,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
         CREATE TABLE IF NOT EXISTS sessions (
             session_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES users(user_id),
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            last_consolidated TEXT
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         "#,
     )
@@ -83,7 +82,6 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             tool_call_id TEXT,
             tool_name TEXT,
             tool_arguments TEXT,
-            is_consolidated BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
         "#,
@@ -129,7 +127,6 @@ pub async fn init_db(pool: &PgPool) -> Result<(), sqlx::Error> {
             enabled BOOLEAN DEFAULT TRUE,
             cron_expr TEXT,
             every_seconds INTEGER,
-            run_at TIMESTAMPTZ,
             timezone TEXT DEFAULT 'UTC',
             message TEXT NOT NULL,
             channel TEXT NOT NULL,

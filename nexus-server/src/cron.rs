@@ -34,7 +34,6 @@ pub async fn run_cron_scheduler(state: Arc<AppState>) {
                         chat_id: job.chat_id.clone(),
                         content: reminder,
                         session_id,
-                        timestamp: Some(chrono::Utc::now()),
                         media: vec![],
                         metadata: {
                             let mut m = std::collections::HashMap::new();

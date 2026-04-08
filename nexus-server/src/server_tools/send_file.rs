@@ -57,19 +57,13 @@ impl ServerTool for SendFileTool {
             .to_string();
 
         // Find the device
-        let device_key = {
-            let by_user = state.devices_by_user.read().await;
-            by_user.get(user_id)
-                .and_then(|devices| devices.get(&device_name).cloned())
-                .ok_or_else(|| NexusError::new(ErrorCode::DeviceNotFound, format!("device '{}' not found", device_name)))?
-        };
+        let device_key = state.devices_by_user.get(user_id)
+            .and_then(|devices| devices.get(&device_name).cloned())
+            .ok_or_else(|| NexusError::new(ErrorCode::DeviceNotFound, format!("device '{}' not found", device_name)))?;
 
-        let ws_tx = {
-            let devices = state.devices.read().await;
-            devices.get(&device_key)
-                .map(|d| d.ws_tx.clone())
-                .ok_or_else(|| NexusError::new(ErrorCode::DeviceOffline, format!("device '{}' not connected", device_name)))?
-        };
+        let ws_tx = state.devices.get(&device_key)
+            .map(|d| d.ws_tx.clone())
+            .ok_or_else(|| NexusError::new(ErrorCode::DeviceOffline, format!("device '{}' not connected", device_name)))?;
 
         // Create oneshot channel for file upload response
         let request_id = format!("{}:{}", device_key, uuid::Uuid::new_v4());

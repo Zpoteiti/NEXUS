@@ -6,7 +6,6 @@ pub type SharedState = Arc<AppState>;
 
 pub struct BrowserConnection {
     pub tx: mpsc::Sender<String>,
-    #[allow(dead_code)] // Stored for session ID construction; read from local var in browser.rs
     pub user_id: String,
     pub session_id: String,
 }

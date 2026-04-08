@@ -14,7 +14,6 @@ pub const EXIT_CODE_SUCCESS: i32 = 0;
 pub const EXIT_CODE_ERROR: i32 = 1;
 pub const EXIT_CODE_TIMEOUT: i32 = -1;
 pub const EXIT_CODE_CANCELLED: i32 = -2;
-pub const EXIT_CODE_VALIDATION_FAILED: i32 = -3;
 
 pub const DEVICE_TOKEN_PREFIX: &str = "nexus_dev_";
 pub const DEVICE_TOKEN_RANDOM_LEN: usize = 32;

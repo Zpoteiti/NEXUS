@@ -12,13 +12,12 @@ use crate::state::AppState;
 /// Returns:
 ///   Some(device_id) -- found
 ///   None            -- device does not exist or does not belong to this user
-pub async fn find_device_by_name(
+pub fn find_device_by_name(
     state: &AppState,
     user_id: &str,
     device_name: &str,
 ) -> Option<String> {
-    let devices = state.devices_by_user.read().await;
-    devices
+    state.devices_by_user
         .get(user_id)?
         .get(device_name)
         .cloned()
@@ -181,13 +180,11 @@ pub async fn route_tool(
 
     // 2. Find the target device
     let device_id = find_device_by_name(state, user_id, &device_name)
-        .await
         .ok_or_else(|| NexusError::new(ErrorCode::DeviceNotFound, format!("device '{}' not found or does not belong to this user", device_name)))?;
 
     // 3. Verify device is online
     let ws_tx = {
-        let devices = state.devices.read().await;
-        let device_state = devices
+        let device_state = state.devices
             .get(&device_id)
             .ok_or_else(|| NexusError::new(ErrorCode::DeviceNotFound, format!("device '{}' not found", device_name)))?;
 

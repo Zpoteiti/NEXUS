@@ -103,27 +103,23 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
         .unwrap_or_default();
 
     // Step 4: Register device in routing tables
-    let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(256);
-    {
-        let mut devices = state.devices.write().await;
-        devices.insert(
-            device_key.clone(),
-            DeviceState {
-                user_id: user_id.clone(),
-                device_name: device_name.clone(),
-                ws_tx: ws_tx.clone(),
-                tools: Vec::new(),
-                fs_policy: fs_policy.clone(),
-                mcp_servers: mcp_servers.clone(),
-                last_seen: Instant::now(),
-            },
-        );
-        let mut devices_by_user = state.devices_by_user.write().await;
-        devices_by_user
-            .entry(user_id.clone())
-            .or_default()
-            .insert(device_name.clone(), device_key.clone());
-    }
+    let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(1024);
+    state.devices.insert(
+        device_key.clone(),
+        DeviceState {
+            user_id: user_id.clone(),
+            device_name: device_name.clone(),
+            ws_tx: ws_tx.clone(),
+            tools: Vec::new(),
+            fs_policy: fs_policy.clone(),
+            mcp_servers: mcp_servers.clone(),
+            last_seen: Instant::now(),
+        },
+    );
+    state.devices_by_user
+        .entry(user_id.clone())
+        .or_default()
+        .insert(device_name.clone(), device_key.clone());
     state.config_dirty.insert(device_key.clone(), false);
 
     // Spawn writer task
@@ -192,24 +188,20 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                     let fresh_policy = fresh_policy.unwrap_or_default();
                     let fresh_mcp = fresh_mcp.unwrap_or_default();
 
-                    let mut devices = state.devices.write().await;
-                    if let Some(device) = devices.get_mut(&device_key) {
+                    if let Some(mut device) = state.devices.get_mut(&device_key) {
                         device.last_seen = Instant::now();
                         device.fs_policy = fresh_policy.clone();
                         device.mcp_servers = fresh_mcp.clone();
                     }
-                    drop(devices);
 
                     (fresh_policy, fresh_mcp)
                 } else {
-                    let mut devices = state.devices.write().await;
-                    let cached = if let Some(device) = devices.get_mut(&device_key) {
+                    let cached = if let Some(mut device) = state.devices.get_mut(&device_key) {
                         device.last_seen = Instant::now();
                         (device.fs_policy.clone(), device.mcp_servers.clone())
                     } else {
                         (Default::default(), Vec::new())
                     };
-                    drop(devices);
                     cached
                 };
 
@@ -218,11 +210,9 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 let _ = ws_tx.send(Message::Text(ack_text.into())).await;
             }
             ClientToServer::RegisterTools { schemas } => {
-                let mut devices = state.devices.write().await;
-                if let Some(device) = devices.get_mut(&device_key) {
+                if let Some(mut device) = state.devices.get_mut(&device_key) {
                     device.tools = schemas;
                 }
-                drop(devices);
                 state.bump_tool_schema_generation();
             }
             ClientToServer::ToolExecutionResult(result) => {
@@ -259,15 +249,12 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
 }
 
 async fn cleanup_device(state: &AppState, device_key: &str, user_id: &str) {
-    {
-        let mut devices = state.devices.write().await;
-        if devices.remove(device_key).is_some() {
-            let mut devices_by_user = state.devices_by_user.write().await;
-            if let Some(user_devices) = devices_by_user.get_mut(user_id) {
-                user_devices.retain(|_, v| v != device_key);
-                if user_devices.is_empty() {
-                    devices_by_user.remove(user_id);
-                }
+    if state.devices.remove(device_key).is_some() {
+        if let Some(mut user_devices) = state.devices_by_user.get_mut(user_id) {
+            user_devices.retain(|_, v| v != device_key);
+            if user_devices.is_empty() {
+                drop(user_devices);
+                state.devices_by_user.remove(user_id);
             }
         }
     }
