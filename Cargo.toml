@@ -1,8 +1,0 @@
-[workspace]
-members = [
-    "nexus-common",
-    "nexus-server",
-    "nexus-client",
-    "nexus-gateway",
-]
-resolver = "2"
