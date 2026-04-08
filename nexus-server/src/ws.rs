@@ -114,6 +114,7 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 ws_tx: ws_tx.clone(),
                 tools: Vec::new(),
                 fs_policy: fs_policy.clone(),
+                mcp_servers: mcp_servers.clone(),
                 last_seen: Instant::now(),
             },
         );
@@ -179,22 +180,39 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
 
         match incoming {
             ClientToServer::Heartbeat { hash: _, status: _ } => {
-                // Refresh policy and MCP config from DB
-                let fresh_policy = db::get_device_policy(&state.db, &user_id, &device_name)
-                    .await
-                    .unwrap_or_default();
-                let fresh_mcp = db::get_device_mcp_config(&state.db, &user_id, &device_name)
-                    .await
-                    .unwrap_or_default();
+                // Only re-query DB when config has been changed via the API
+                let dirty = state.config_dirty.remove(&device_key).map(|(_, v)| v).unwrap_or(true);
 
-                let mut devices = state.devices.write().await;
-                if let Some(device) = devices.get_mut(&device_key) {
-                    device.last_seen = Instant::now();
-                    device.fs_policy = fresh_policy.clone();
-                }
-                drop(devices);
+                let (policy, mcp) = if dirty {
+                    let fresh_policy = db::get_device_policy(&state.db, &user_id, &device_name)
+                        .await
+                        .unwrap_or_default();
+                    let fresh_mcp = db::get_device_mcp_config(&state.db, &user_id, &device_name)
+                        .await
+                        .unwrap_or_default();
 
-                let ack = ServerToClient::HeartbeatAck { fs_policy: fresh_policy, mcp_servers: fresh_mcp };
+                    let mut devices = state.devices.write().await;
+                    if let Some(device) = devices.get_mut(&device_key) {
+                        device.last_seen = Instant::now();
+                        device.fs_policy = fresh_policy.clone();
+                        device.mcp_servers = fresh_mcp.clone();
+                    }
+                    drop(devices);
+
+                    (fresh_policy, fresh_mcp)
+                } else {
+                    let mut devices = state.devices.write().await;
+                    let cached = if let Some(device) = devices.get_mut(&device_key) {
+                        device.last_seen = Instant::now();
+                        (device.fs_policy.clone(), device.mcp_servers.clone())
+                    } else {
+                        (Default::default(), Vec::new())
+                    };
+                    drop(devices);
+                    cached
+                };
+
+                let ack = ServerToClient::HeartbeatAck { fs_policy: policy, mcp_servers: mcp };
                 let ack_text = serde_json::to_string(&ack).unwrap_or_default();
                 let _ = ws_tx.send(Message::Text(ack_text.into())).await;
             }
@@ -203,6 +221,8 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
                 if let Some(device) = devices.get_mut(&device_key) {
                     device.tools = schemas;
                 }
+                drop(devices);
+                state.bump_tool_schema_generation();
             }
             ClientToServer::ToolExecutionResult(result) => {
                 if let Some((_, tx)) = state.pending.remove(&result.request_id) {
@@ -251,4 +271,5 @@ async fn cleanup_device(state: &AppState, device_key: &str, user_id: &str) {
         }
     }
     cancel_pending_requests_for_device(device_key, &state.pending, &state.file_upload_pending, &state.file_download_pending);
+    state.bump_tool_schema_generation();
 }

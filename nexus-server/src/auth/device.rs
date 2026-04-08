@@ -126,11 +126,14 @@ pub async fn update_device_policy(
     Json(payload): Json<UpdateDevicePolicyRequest>,
 ) -> Response {
     match db::update_device_policy(&state.db, &claims.sub, &device_name, &payload.fs_policy).await {
-        Ok(true) => Json(DevicePolicyResponse {
-            device_name,
-            fs_policy: payload.fs_policy,
-        })
-        .into_response(),
+        Ok(true) => {
+            state.mark_device_config_dirty(&claims.sub, &device_name).await;
+            Json(DevicePolicyResponse {
+                device_name,
+                fs_policy: payload.fs_policy,
+            })
+            .into_response()
+        }
         Ok(false) => ApiError::new(ErrorCode::NotFound, "device not found").into_response(),
         Err(e) => {
             tracing::error!("update_device_policy error: {e}");
@@ -177,10 +180,13 @@ pub async fn update_device_mcp(
     Json(payload): Json<UpdateDeviceMcpRequest>,
 ) -> Response {
     match db::update_device_mcp_config(&state.db, &claims.sub, &device_name, &payload.mcp_servers).await {
-        Ok(true) => Json(DeviceMcpResponse {
-            device_name,
-            mcp_servers: payload.mcp_servers,
-        }).into_response(),
+        Ok(true) => {
+            state.mark_device_config_dirty(&claims.sub, &device_name).await;
+            Json(DeviceMcpResponse {
+                device_name,
+                mcp_servers: payload.mcp_servers,
+            }).into_response()
+        }
         Ok(false) => ApiError::new(ErrorCode::NotFound, "device not found").into_response(),
         Err(e) => {
             tracing::error!("update_device_mcp error: {e}");

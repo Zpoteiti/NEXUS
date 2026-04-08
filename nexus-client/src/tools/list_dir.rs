@@ -3,9 +3,7 @@ use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
-use tokio::time::{timeout, Duration};
-
-use super::fs_helpers::{FS_TOOL_TIMEOUT_SEC, resolve_path_for_read};
+use super::fs_helpers::{execute_with_timeout, resolve_path_for_read};
 use super::{LocalTool, ToolError};
 
 /// list_dir default max entries
@@ -78,16 +76,14 @@ impl LocalTool for ListDirTool {
 
 impl ListDirTool {
     pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+        execute_with_timeout(|| async {
             let path = args
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
             let dp = resolve_path_for_read(path, policy).await?;
             Self::list_dir_core(&args, dp).await
-        })
-        .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        }).await
     }
 
     async fn list_dir_core(args: &Value, dp: PathBuf) -> Result<String, ToolError> {
@@ -103,13 +99,6 @@ impl ListDirTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(LIST_DIR_DEFAULT_MAX as u64) as usize;
 
-        if !dp.exists() {
-            return Err(ToolError::NotFound(format!("directory not found: {}", path_display)));
-        }
-        if !dp.is_dir() {
-            return Err(ToolError::InvalidParams(format!("not a directory: {}", path_display)));
-        }
-
         let cap = max_entries.max(1);
         let mut items: Vec<String> = Vec::new();
         let mut total: usize = 0;
@@ -117,6 +106,18 @@ impl ListDirTool {
         if recursive {
             let mut entries = Vec::new();
             let mut dir_queue: Vec<PathBuf> = vec![dp.clone()];
+
+            // Open the root directory first to get a proper error
+            let root_read_dir = fs::read_dir(&dp).await.map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    ToolError::NotFound(format!("directory not found: {}", path_display))
+                }
+                std::io::ErrorKind::PermissionDenied => {
+                    ToolError::ExecutionFailed(format!("permission denied: {}", path_display))
+                }
+                _ => ToolError::ExecutionFailed(format!("failed to read directory: {}", e)),
+            })?;
+            drop(root_read_dir);
 
             while let Some(current) = dir_queue.pop() {
                 let read_dir = match fs::read_dir(&current).await {
@@ -150,9 +151,15 @@ impl ListDirTool {
                 }
             }
         } else {
-            let read_dir = fs::read_dir(&dp)
-                .await
-                .map_err(|e| ToolError::ExecutionFailed(format!("failed to read directory: {}", e)))?;
+            let read_dir = fs::read_dir(&dp).await.map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    ToolError::NotFound(format!("directory not found: {}", path_display))
+                }
+                std::io::ErrorKind::PermissionDenied => {
+                    ToolError::ExecutionFailed(format!("permission denied: {}", path_display))
+                }
+                _ => ToolError::ExecutionFailed(format!("failed to read directory: {}", e)),
+            })?;
             let mut stream = tokio_stream::wrappers::ReadDirStream::new(read_dir);
             use tokio_stream::StreamExt;
             while let Some(item) = stream.next().await {

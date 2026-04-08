@@ -5,6 +5,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Device status reported in heartbeat messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeviceStatus {
+    #[serde(rename = "online")]
+    Online,
+    #[serde(rename = "offline")]
+    Offline,
+}
+
 /// Per-device filesystem access policy.
 /// - Sandbox: only workspace (default)
 /// - Whitelist: workspace (read+write) + listed paths (read-only)
@@ -109,7 +118,7 @@ pub enum ClientToServer {
 
     Heartbeat {
         hash: String,
-        status: String,
+        status: DeviceStatus,
     },
     FileDownloadResponse(FileDownloadResponse),
 }

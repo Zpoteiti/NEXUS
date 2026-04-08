@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use nexus_common::consts::{HEARTBEAT_INTERVAL_SEC, PROTOCOL_VERSION};
-use nexus_common::protocol::{ClientToServer, FsPolicy, McpServerEntry, ServerToClient};
+use nexus_common::protocol::{ClientToServer, DeviceStatus, FsPolicy, McpServerEntry, ServerToClient};
 use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
@@ -110,28 +110,40 @@ async fn run_single_connection(
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SEC));
     let mut last_hash = hash;
+    let mut last_config_hash = crate::discovery::compute_hash(&initial_mcp);
 
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
                 let current_mcp = mcp_config_lock.read().await.clone();
-                let current_mcp_configs = crate::config::mcp_entries_to_configs(&current_mcp);
-                let (current_schemas, current_hash) =
-                    crate::discovery::discover_all(&current_mcp_configs).await;
+                let current_config_hash = crate::discovery::compute_hash(&current_mcp);
+
+                // Only run full discovery if the MCP config actually changed.
+                // When config is unchanged, reuse the last tool hash and skip
+                // the expensive discover_all() call (which contacts each MCP server).
+                let current_hash = if current_config_hash != last_config_hash {
+                    let current_mcp_configs = crate::config::mcp_entries_to_configs(&current_mcp);
+                    let (current_schemas, new_hash) =
+                        crate::discovery::discover_all(&current_mcp_configs).await;
+                    last_config_hash = current_config_hash;
+
+                    if new_hash != last_hash {
+                        let register = ClientToServer::RegisterTools {
+                            schemas: current_schemas,
+                        };
+                        send_client_message(ws_stream, &register).await?;
+                        last_hash = new_hash.clone();
+                    }
+                    new_hash
+                } else {
+                    last_hash.clone()
+                };
 
                 let heartbeat_event = ClientToServer::Heartbeat {
-                    hash: current_hash.clone(),
-                    status: "online".to_string(),
+                    hash: current_hash,
+                    status: DeviceStatus::Online,
                 };
                 send_client_message(ws_stream, &heartbeat_event).await?;
-
-                if current_hash != last_hash {
-                    let register = ClientToServer::RegisterTools {
-                        schemas: current_schemas,
-                    };
-                    send_client_message(ws_stream, &register).await?;
-                    last_hash = current_hash;
-                }
             }
             outbound = outbound_rx.recv() => {
                 match outbound {

@@ -72,12 +72,13 @@ async fn discover_mcp_tools_internal(mcp_servers: &[McpServerConfig]) -> Vec<Val
         }
     }
 
-    // Collect tool schemas from all connected MCP sessions
-    let mut manager = MCP_MANAGER.write().await;
+    // Collect tool schemas from all connected MCP sessions.
+    // Only a read lock is needed: `list_tools` takes `&self` via interior mutability.
+    let manager = MCP_MANAGER.read().await;
     let server_names: Vec<String> = manager.server_names().iter().map(|s| s.to_string()).collect();
     let mut all_schemas = Vec::new();
     for name in &server_names {
-        if let Some(session) = manager.get_session_mut(name) {
+        if let Some(session) = manager.get_session(name) {
             match session.list_tools().await {
                 Ok(schemas) => {
                     tracing::debug!("MCP server '{}': collected {} tool schemas", name, schemas.len());
@@ -104,7 +105,7 @@ fn discover_builtin_tools() -> &'static [Value] {
 }
 
 /// Compute a hash of any serializable object.
-fn compute_hash<T: serde::Serialize>(value: &T) -> String {
+pub fn compute_hash<T: serde::Serialize>(value: &T) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let serialized = serde_json::to_string(value).unwrap_or_default();

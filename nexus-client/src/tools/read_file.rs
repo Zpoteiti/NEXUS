@@ -4,9 +4,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
-use tokio::time::{timeout, Duration};
-
-use super::fs_helpers::{FS_TOOL_TIMEOUT_SEC, resolve_path_for_read};
+use super::fs_helpers::{execute_with_timeout, resolve_path_for_read};
 use super::{LocalTool, ToolError};
 
 /// Maximum read characters (ref nanobot _MAX_CHARS = 128_000)
@@ -14,25 +12,7 @@ const MAX_CHARS: usize = 128_000;
 /// Default lines per page
 const DEFAULT_LIMIT: usize = 2000;
 
-/// Detect image MIME type via magic bytes.
-fn detect_image_mime(data: &[u8]) -> Option<&'static str> {
-    if data.len() >= 8 && data[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
-        return Some("image/png");
-    }
-    if data.len() >= 3 && data[0..3] == [0xFF, 0xD8, 0xFF] {
-        return Some("image/jpeg");
-    }
-    if data.len() >= 6 {
-        match &data[0..6] {
-            b"GIF87a" | b"GIF89a" => return Some("image/gif"),
-            _ => {}
-        }
-    }
-    if data.len() >= 12 && data[0..4] == *b"RIFF" && &data[8..12] == *b"WEBP" {
-        return Some("image/webp");
-    }
-    None
-}
+use nexus_common::mime::detect_mime_from_bytes;
 
 pub struct ReadFileTool;
 
@@ -85,31 +65,28 @@ impl LocalTool for ReadFileTool {
 
 impl ReadFileTool {
     pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+        execute_with_timeout(|| async {
             let path = args
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
             let fp = resolve_path_for_read(path, policy).await?;
             self.read_file_core(&args, fp).await
-        })
-        .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        }).await
     }
 
     async fn read_file_core(&self, args: &Value, fp: PathBuf) -> Result<String, ToolError> {
         let path_display = fp.display().to_string();
 
-        if !fp.exists() {
-            return Err(ToolError::NotFound(format!("file not found: {}", path_display)));
-        }
-        if !fp.is_file() {
-            return Err(ToolError::InvalidParams(format!("not a file: {}", path_display)));
-        }
-
-        let mut file = fs::File::open(&fp)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to open file: {}", e)))?;
+        let mut file = fs::File::open(&fp).await.map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                ToolError::NotFound(format!("file not found: {}", path_display))
+            }
+            std::io::ErrorKind::PermissionDenied => {
+                ToolError::ExecutionFailed(format!("permission denied: {}", path_display))
+            }
+            _ => ToolError::ExecutionFailed(format!("failed to open file: {}", e)),
+        })?;
         let mut raw = Vec::new();
         file.read_to_end(&mut raw)
             .await
@@ -119,7 +96,7 @@ impl ReadFileTool {
             return Ok(format!("(Empty file: {})", path_display));
         }
 
-        if let Some(_mime) = detect_image_mime(&raw) {
+        if let Some(_mime) = detect_mime_from_bytes(&raw) {
             let size_kb = raw.len() / 1024;
             return Ok(format!("[Image: {}, {}KB]", fp.display(), size_kb));
         }
@@ -198,30 +175,30 @@ mod tests {
     #[tokio::test]
     async fn test_detect_image_png() {
         let png_header = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
-        assert_eq!(detect_image_mime(&png_header), Some("image/png"));
+        assert_eq!(detect_mime_from_bytes(&png_header), Some("image/png"));
     }
 
     #[tokio::test]
     async fn test_detect_image_jpeg() {
         let jpeg_header = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
-        assert_eq!(detect_image_mime(&jpeg_header), Some("image/jpeg"));
+        assert_eq!(detect_mime_from_bytes(&jpeg_header), Some("image/jpeg"));
     }
 
     #[tokio::test]
     async fn test_detect_image_gif() {
         let gif_header = b"GIF89a".to_vec();
-        assert_eq!(detect_image_mime(&gif_header), Some("image/gif"));
+        assert_eq!(detect_mime_from_bytes(&gif_header), Some("image/gif"));
     }
 
     #[tokio::test]
     async fn test_detect_image_webp() {
         let webp_header = b"RIFF\x00\x00\x00\x00WEBP".to_vec();
-        assert_eq!(detect_image_mime(&webp_header), Some("image/webp"));
+        assert_eq!(detect_mime_from_bytes(&webp_header), Some("image/webp"));
     }
 
     #[tokio::test]
     async fn test_detect_non_image() {
         let text = b"hello world".to_vec();
-        assert_eq!(detect_image_mime(&text), None);
+        assert_eq!(detect_mime_from_bytes(&text), None);
     }
 }

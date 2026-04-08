@@ -1,3 +1,12 @@
+function handleUnauthorized(res: Response): Response {
+  if (res.status === 401) {
+    localStorage.removeItem('jwt')
+    window.location.href = '/login'
+    throw new Error('Unauthorized')
+  }
+  return res
+}
+
 export async function apiRequest(path: string, options?: RequestInit) {
   const token = localStorage.getItem('jwt')
   const res = await fetch(path, {
@@ -8,12 +17,7 @@ export async function apiRequest(path: string, options?: RequestInit) {
       ...options?.headers,
     },
   })
-  if (res.status === 401) {
-    localStorage.removeItem('jwt')
-    window.location.href = '/login'
-    throw new Error('Unauthorized')
-  }
-  return res
+  return handleUnauthorized(res)
 }
 
 export async function login(email: string, password: string) {
@@ -48,16 +52,11 @@ export async function uploadFile(file: File) {
   const token = localStorage.getItem('jwt')
   const formData = new FormData()
   formData.append('file', file)
-  const res = await fetch('/api/files', {
+  const res = handleUnauthorized(await fetch('/api/files', {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: formData,
-  })
-  if (res.status === 401) {
-    localStorage.removeItem('jwt')
-    window.location.href = '/login'
-    throw new Error('Unauthorized')
-  }
+  }))
   if (!res.ok) throw new Error('File upload failed')
   return res.json()
 }

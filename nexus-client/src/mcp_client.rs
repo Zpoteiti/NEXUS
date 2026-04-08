@@ -15,7 +15,8 @@ use crate::tools::ToolError;
 pub struct McpSession {
     server_name: String,
     client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
-    tool_name_map: HashMap<String, String>,
+    /// Wrapped-name → original-name mapping. Interior-mutable so `list_tools` can take `&self`.
+    tool_name_map: tokio::sync::RwLock<HashMap<String, String>>,
     tool_timeout: u64,
 }
 
@@ -44,22 +45,26 @@ impl McpSession {
         Ok(Self {
             server_name: config.name.clone(),
             client,
-            tool_name_map: HashMap::new(),
+            tool_name_map: tokio::sync::RwLock::new(HashMap::new()),
             tool_timeout,
         })
     }
 
     /// List all available tools.
-    pub async fn list_tools(&mut self) -> Result<Vec<Value>, ToolError> {
+    ///
+    /// Takes `&self` (not `&mut self`) so callers only need a read lock on the manager.
+    /// The internal `tool_name_map` is updated via interior mutability.
+    pub async fn list_tools(&self) -> Result<Vec<Value>, ToolError> {
         let tools = self.client.list_all_tools()
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("MCP server '{}': list_tools failed: {}", self.server_name, e)))?;
 
+        let mut new_map = HashMap::new();
         let mut schemas = Vec::new();
         for tool in tools {
             let original_name = tool.name.to_string();
             let wrapped_name = format!("mcp_{}_{}", self.server_name, original_name);
-            self.tool_name_map.insert(wrapped_name.clone(), original_name);
+            new_map.insert(wrapped_name.clone(), original_name);
 
             let description = tool.description
                 .map(|d| d.to_string())
@@ -82,6 +87,9 @@ impl McpSession {
             schemas.push(schema);
         }
 
+        // Atomically replace the name map
+        *self.tool_name_map.write().await = new_map;
+
         Ok(schemas)
     }
 
@@ -93,6 +101,8 @@ impl McpSession {
     ) -> Result<String, ToolError> {
         let original_name = self
             .tool_name_map
+            .read()
+            .await
             .get(wrapped_name)
             .ok_or_else(|| ToolError::NotFound(format!("MCP tool not found: {}", wrapped_name)))?
             .clone();
@@ -172,7 +182,7 @@ impl McpClientManager {
             }
 
             match McpSession::connect(server).await {
-                Ok(mut session) => {
+                Ok(session) => {
                     match session.list_tools().await {
                         Ok(schemas) => {
                             tracing::info!(
@@ -201,8 +211,14 @@ impl McpClientManager {
         wrapped_name: &str,
         arguments: Value,
     ) -> Result<String, ToolError> {
-        let (server_name, session) = self.sessions.iter()
-            .find(|(_, session)| session.tool_name_map.contains_key(wrapped_name))
+        let mut found = None;
+        for (name, session) in &self.sessions {
+            if session.tool_name_map.read().await.contains_key(wrapped_name) {
+                found = Some((name, session));
+                break;
+            }
+        }
+        let (server_name, session) = found
             .ok_or_else(|| ToolError::NotFound(format!("no MCP server has tool: {}", wrapped_name)))?;
         tracing::debug!("routing MCP tool '{}' to server '{}'", wrapped_name, server_name);
         session.call_tool(wrapped_name, arguments).await
@@ -213,9 +229,9 @@ impl McpClientManager {
         self.sessions.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Get a mutable reference to the session for a specific server.
-    pub fn get_session_mut(&mut self, server_name: &str) -> Option<&mut McpSession> {
-        self.sessions.get_mut(server_name)
+    /// Get a shared reference to the session for a specific server.
+    pub fn get_session(&self, server_name: &str) -> Option<&McpSession> {
+        self.sessions.get(server_name)
     }
 }
 

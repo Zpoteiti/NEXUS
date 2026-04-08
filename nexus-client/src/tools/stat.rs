@@ -3,9 +3,7 @@ use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
-use tokio::time::{timeout, Duration};
-
-use super::fs_helpers::{FS_TOOL_TIMEOUT_SEC, resolve_path_for_read};
+use super::fs_helpers::{execute_with_timeout, resolve_path_for_read};
 use super::{LocalTool, ToolError};
 
 pub struct StatTool;
@@ -49,26 +47,26 @@ impl LocalTool for StatTool {
 
 impl StatTool {
     pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+        execute_with_timeout(|| async {
             let path = args
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::InvalidParams("missing required field: path".to_string()))?;
             let fp = resolve_path_for_read(path, policy).await?;
             Self::stat_core(fp).await
-        })
-        .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        }).await
     }
 
     async fn stat_core(fp: PathBuf) -> Result<String, ToolError> {
-        if !fp.exists() {
-            return Err(ToolError::NotFound(format!("path not found: {}", fp.display())));
-        }
-
-        let metadata = fs::metadata(&fp)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to stat: {}", e)))?;
+        let metadata = fs::metadata(&fp).await.map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                ToolError::NotFound(format!("path not found: {}", fp.display()))
+            }
+            std::io::ErrorKind::PermissionDenied => {
+                ToolError::ExecutionFailed(format!("permission denied: {}", fp.display()))
+            }
+            _ => ToolError::ExecutionFailed(format!("failed to stat: {}", e)),
+        })?;
 
         let file_type = if metadata.is_dir() {
             "directory"

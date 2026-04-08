@@ -136,11 +136,6 @@ async fn handle_file_upload_request(
         error: Some(error),
     };
 
-    // Check file exists
-    if !resolved_path.exists() {
-        return make_error(format!("File not found: {}", resolved_path.display()));
-    }
-
     // Check file size (max 25MB for Discord)
     match tokio::fs::metadata(&resolved_path).await {
         Ok(meta) if meta.len() > 25 * 1024 * 1024 => {
@@ -150,7 +145,12 @@ async fn handle_file_upload_request(
             ));
         }
         Err(e) => {
-            return make_error(format!("Failed to read file metadata: {}", e));
+            let msg = match e.kind() {
+                std::io::ErrorKind::NotFound => format!("File not found: {}", resolved_path.display()),
+                std::io::ErrorKind::PermissionDenied => format!("Permission denied: {}", resolved_path.display()),
+                _ => format!("Failed to read file metadata: {}", e),
+            };
+            return make_error(msg);
         }
         _ => {}
     }
@@ -164,7 +164,7 @@ async fn handle_file_upload_request(
     };
 
     let content_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    let mime_type = detect_mime_type(&file_name);
+    let mime_type = nexus_common::mime::detect_mime_from_extension(&file_name).map(|s| s.to_string());
 
     FileUploadResponse {
         request_id: req.request_id.clone(),
@@ -242,34 +242,3 @@ async fn handle_file_download_request(
     }
 }
 
-fn detect_mime_type(filename: &str) -> Option<String> {
-    let lower = filename.to_lowercase();
-    let mime = if lower.ends_with(".png") {
-        "image/png"
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if lower.ends_with(".gif") {
-        "image/gif"
-    } else if lower.ends_with(".webp") {
-        "image/webp"
-    } else if lower.ends_with(".pdf") {
-        "application/pdf"
-    } else if lower.ends_with(".txt") {
-        "text/plain"
-    } else if lower.ends_with(".json") {
-        "application/json"
-    } else if lower.ends_with(".csv") {
-        "text/csv"
-    } else if lower.ends_with(".zip") {
-        "application/zip"
-    } else if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
-        "application/gzip"
-    } else if lower.ends_with(".mp3") {
-        "audio/mpeg"
-    } else if lower.ends_with(".mp4") {
-        "video/mp4"
-    } else {
-        return None;
-    };
-    Some(mime.to_string())
-}

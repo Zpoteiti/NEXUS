@@ -101,6 +101,36 @@ impl ErrorCode {
             ErrorCode::ChannelError => 500,
         }
     }
+
+    /// Parse an error code string (e.g. "AUTH_FAILED") back into an `ErrorCode`.
+    pub fn from_str(s: &str) -> Option<ErrorCode> {
+        match s {
+            "AUTH_FAILED" => Some(ErrorCode::AuthFailed),
+            "AUTH_TOKEN_EXPIRED" => Some(ErrorCode::AuthTokenExpired),
+            "UNAUTHORIZED" => Some(ErrorCode::Unauthorized),
+            "FORBIDDEN" => Some(ErrorCode::Forbidden),
+            "NOT_FOUND" => Some(ErrorCode::NotFound),
+            "CONFLICT" => Some(ErrorCode::Conflict),
+            "VALIDATION_FAILED" => Some(ErrorCode::ValidationFailed),
+            "INVALID_PARAMS" => Some(ErrorCode::InvalidParams),
+            "EXECUTION_FAILED" => Some(ErrorCode::ExecutionFailed),
+            "EXECUTION_TIMEOUT" => Some(ErrorCode::ExecutionTimeout),
+            "DEVICE_NOT_FOUND" => Some(ErrorCode::DeviceNotFound),
+            "DEVICE_OFFLINE" => Some(ErrorCode::DeviceOffline),
+            "PROTOCOL_MISMATCH" => Some(ErrorCode::ProtocolMismatch),
+            "INTERNAL_ERROR" => Some(ErrorCode::InternalError),
+            "TOOL_BLOCKED" => Some(ErrorCode::ToolBlocked),
+            "TOOL_TIMEOUT" => Some(ErrorCode::ToolTimeout),
+            "TOOL_NOT_FOUND" => Some(ErrorCode::ToolNotFound),
+            "TOOL_INVALID_PARAMS" => Some(ErrorCode::ToolInvalidParams),
+            "MCP_CONNECTION_FAILED" => Some(ErrorCode::McpConnectionFailed),
+            "MCP_CALL_FAILED" => Some(ErrorCode::McpCallFailed),
+            "CONNECTION_FAILED" => Some(ErrorCode::ConnectionFailed),
+            "HANDSHAKE_FAILED" => Some(ErrorCode::HandshakeFailed),
+            "CHANNEL_ERROR" => Some(ErrorCode::ChannelError),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,18 +148,11 @@ impl ApiError {
     }
 
     /// Derive the HTTP status code from the error code string.
+    /// Delegates to `ErrorCode::http_status()` so the mapping is defined in one place.
     pub fn http_status_code(&self) -> u16 {
-        match self.code.as_str() {
-            "AUTH_FAILED" | "AUTH_TOKEN_EXPIRED" | "UNAUTHORIZED" => 401,
-            "FORBIDDEN" | "TOOL_BLOCKED" => 403,
-            "NOT_FOUND" | "DEVICE_NOT_FOUND" | "TOOL_NOT_FOUND" => 404,
-            "CONFLICT" => 409,
-            "VALIDATION_FAILED" | "INVALID_PARAMS" | "TOOL_INVALID_PARAMS" | "PROTOCOL_MISMATCH" => 400,
-            "EXECUTION_TIMEOUT" | "TOOL_TIMEOUT" => 504,
-            "DEVICE_OFFLINE" => 503,
-            "MCP_CONNECTION_FAILED" | "MCP_CALL_FAILED" | "CONNECTION_FAILED" | "HANDSHAKE_FAILED" => 502,
-            _ => 500,
-        }
+        ErrorCode::from_str(&self.code)
+            .map(|ec| ec.http_status())
+            .unwrap_or(500)
     }
 }
 

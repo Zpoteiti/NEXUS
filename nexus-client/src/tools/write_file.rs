@@ -3,9 +3,7 @@ use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
-use tokio::time::{timeout, Duration};
-
-use super::fs_helpers::{FS_TOOL_TIMEOUT_SEC, resolve_path_for_write};
+use super::fs_helpers::{execute_with_timeout, resolve_path_for_write};
 use super::{LocalTool, ToolError};
 
 pub struct WriteFileTool;
@@ -53,7 +51,7 @@ impl LocalTool for WriteFileTool {
 
 impl WriteFileTool {
     pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+        execute_with_timeout(|| async {
             let path = args
                 .get("path")
                 .and_then(|v| v.as_str())
@@ -65,9 +63,7 @@ impl WriteFileTool {
                 .to_string();
             let fp = resolve_path_for_write(path, policy).await?;
             Self::write_file_core(fp, content).await
-        })
-        .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        }).await
     }
 
     async fn write_file_core(fp: PathBuf, content: String) -> Result<String, ToolError> {

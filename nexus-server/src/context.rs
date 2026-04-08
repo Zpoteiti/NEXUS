@@ -6,10 +6,55 @@
 use crate::state::AppState;
 use crate::tools_registry::merge_device_tool_schemas;
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use std::sync::atomic::Ordering;
+use tokio::sync::RwLock;
+
+struct CachedSkill {
+    content: String,
+    mtime: std::time::SystemTime,
+}
+
+static SKILL_CONTENT_CACHE: LazyLock<RwLock<HashMap<String, CachedSkill>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Read a skill file with mtime-based caching.
+async fn read_skill_cached(path: &std::path::Path) -> Option<String> {
+    let path_str = path.to_string_lossy().to_string();
+
+    // Get current mtime
+    let meta = tokio::fs::metadata(path).await.ok()?;
+    let mtime = meta.modified().ok()?;
+
+    // Check cache with read lock
+    {
+        let cache = SKILL_CONTENT_CACHE.read().await;
+        if let Some(cached) = cache.get(&path_str) {
+            if cached.mtime == mtime {
+                return Some(cached.content.clone());
+            }
+        }
+    }
+
+    // Cache miss or stale — read file and update cache
+    let content = tokio::fs::read_to_string(path).await.ok()?;
+    {
+        let mut cache = SKILL_CONTENT_CACHE.write().await;
+        cache.insert(
+            path_str,
+            CachedSkill {
+                content: content.clone(),
+                mtime,
+            },
+        );
+    }
+    Some(content)
+}
+
 /// Separator between system prompt sections.
 const SECTION_SEPARATOR: &str = "\n\n---\n\n";
 
-use nexus_common::consts::MAX_HISTORY_MESSAGES;
 
 /// Build the full System Prompt.
 ///
@@ -33,15 +78,19 @@ pub async fn build_system_prompt(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
     sections.push(format!("Current time: {}", now));
 
-    // Section 2 -- Soul
-    let user_soul = crate::db::get_user_soul(&state.db, user_id).await.ok().flatten();
-    let soul = match user_soul {
-        Some(s) => Some(s),
-        None => crate::db::get_system_config(&state.db, "default_soul")
-            .await
-            .ok()
-            .flatten(),
-    };
+    // Fire all independent async work concurrently.
+    // We speculatively fetch default_soul alongside user_soul so that
+    // a cache-miss on user_soul doesn't add another round-trip.
+    let (user_soul, default_soul, device_section, memory, skill_section) = tokio::join!(
+        crate::db::get_user_soul(&state.db, user_id),
+        crate::db::get_system_config(&state.db, "default_soul"),
+        build_device_section(state, user_id),
+        crate::db::get_user_memory(&state.db, user_id),
+        build_skills_section(state, user_id),
+    );
+
+    // Section 2 -- Soul (prefer user-specific, fall back to default)
+    let soul = user_soul.ok().flatten().or_else(|| default_soul.ok().flatten());
     if let Some(soul_text) = soul {
         sections.push(soul_text);
     }
@@ -52,17 +101,15 @@ pub async fn build_system_prompt(
     }
 
     // Section 3 -- Online devices and available tools (required)
-    let device_section = build_device_section(state, user_id).await;
     sections.push(device_section);
 
     // Section 4 -- Persistent memory (simple string, always injected if non-empty, 4K cap)
-    let memory = crate::db::get_user_memory(&state.db, user_id).await.unwrap_or_default();
+    let memory = memory.unwrap_or_default();
     if !memory.is_empty() {
         sections.push(format!("## Memory\n{}", memory));
     }
 
     // Section 5 -- Skills (progressive disclosure: DB-based)
-    let skill_section = build_skills_section(state, user_id).await;
     if !skill_section.is_empty() {
         sections.push(skill_section);
     }
@@ -105,15 +152,15 @@ async fn build_skills_section(state: &AppState, user_id: &str) -> String {
         section.push_str("\n### Active Skills (always-on)\n");
         for skill in &always_on_skills {
             let skill_md_path = std::path::Path::new(&skill.skill_path).join("SKILL.md");
-            match tokio::fs::read_to_string(&skill_md_path).await {
-                Ok(content) => {
+            match read_skill_cached(&skill_md_path).await {
+                Some(content) => {
                     let body = crate::server_tools::skills::strip_frontmatter(&content);
                     section.push_str(&format!("#### {}\n{}\n\n", skill.name, body));
                 }
-                Err(e) => {
+                None => {
                     tracing::warn!(
-                        "build_skills_section: failed to read SKILL.md for '{}': {}",
-                        skill.name, e
+                        "build_skills_section: failed to read SKILL.md for '{}'",
+                        skill.name,
                     );
                 }
             }
@@ -214,10 +261,23 @@ async fn build_device_section(state: &AppState, user_id: &str) -> String {
 }
 
 /// Get all tool schemas for devices belonging to this user (with device_name enum injected by server).
+/// Results are cached per-user and invalidated when the global tool schema generation changes
+/// (i.e., when devices register/unregister tools or connect/disconnect).
 pub async fn get_all_tools_schema(
     state: &AppState,
     user_id: &str,
 ) -> Vec<serde_json::Value> {
+    let current_gen = state.tool_schema_generation.load(Ordering::Acquire);
+
+    // Check cache: if generation matches, return cached schemas
+    if let Some(entry) = state.tool_schema_cache.get(user_id) {
+        let (cached_gen, ref cached_schemas) = *entry;
+        if cached_gen == current_gen {
+            return cached_schemas.clone();
+        }
+    }
+
+    // Cache miss — rebuild from scratch
     let devices = state.devices.read().await;
     let mut all_schemas: Vec<serde_json::Value> = Vec::new();
 
@@ -246,71 +306,27 @@ pub async fn get_all_tools_schema(
         }
     }
 
+    // Store in cache with current generation
+    state.tool_schema_cache.insert(user_id.to_string(), (current_gen, all_schemas.clone()));
+
     all_schemas
 }
 
-/// Build the message history window for LLM context.
+/// Build the message history for LLM context.
 ///
-/// Pulls the latest message window from db::get_session_history,
-/// truncates to MAX_HISTORY_MESSAGES, and fixes orphaned tool results.
-/// Context budget enforcement is handled by consolidation (memory.rs).
+/// Pulls all non-compressed messages from db::get_session_history.
+/// Context budget enforcement is handled by consolidation (memory.rs),
+/// which compresses old messages when remaining tokens drop below 16K.
 pub async fn build_message_history(
     state: &AppState,
     session_id: &str,
 ) -> Vec<serde_json::Value> {
     match crate::db::get_session_history(&state.db, session_id).await {
-        Ok(messages) => truncate_and_fix_orphans(messages, MAX_HISTORY_MESSAGES),
+        Ok(messages) => messages,
         Err(e) => {
             tracing::warn!("get_session_history failed: {}", e);
             Vec::new()
         }
     }
-}
-
-/// Truncate history to MAX_HISTORY_MESSAGES and fix orphaned tool results.
-///
-/// Orphan tool result fix (find_legal_start):
-/// If the window starts with a tool result whose corresponding tool_calls have been truncated away,
-/// advance the start to skip orphaned tool results until reaching a role=user message.
-fn truncate_and_fix_orphans(
-    messages: Vec<serde_json::Value>,
-    max_messages: usize,
-) -> Vec<serde_json::Value> {
-    if messages.len() <= max_messages {
-        return messages;
-    }
-    // Take max_messages from the end
-    let window: Vec<_> = messages.into_iter().rev().take(max_messages).rev().collect();
-
-    // Fix orphaned tool results: ensure start is not an orphaned tool result
-    let start = find_legal_start(&window);
-    window[start..].to_vec()
-}
-
-// Token budget enforcement is handled by consolidation in memory.rs
-// (trigger: context_window - total_messages < 16K)
-
-/// Find the first legal start position: must be a `user` or standalone `assistant` message
-/// (not a tool result or assistant with tool_calls whose results are outside the window).
-/// This aligns to user turn boundaries to preserve conversation coherence.
-fn find_legal_start(messages: &[serde_json::Value]) -> usize {
-    for i in 0..messages.len() {
-        let role = messages[i].get("role").and_then(|v| v.as_str()).unwrap_or("");
-        match role {
-            "user" => return i,
-            "assistant" => {
-                // Standalone assistant (no tool_calls) is a valid start
-                if messages[i].get("tool_calls").is_none() {
-                    return i;
-                }
-                // Assistant with tool_calls: valid only if all tool results follow
-                // (they should since we're looking at a contiguous window)
-                return i;
-            }
-            // "tool" role = orphan tool result, skip it
-            _ => continue,
-        }
-    }
-    0
 }
 

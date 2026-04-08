@@ -68,16 +68,23 @@ export function useWebSocket(): UseWebSocketReturn {
           break
         case 'progress':
           setProgress(data.content)
-          setMessages((prev) => [
-            ...prev,
-            {
+          setMessages((prev) => {
+            const msg: ChatMessage = {
               type: 'progress',
               content: data.content,
               session_id: data.session_id || '',
               sender: 'agent',
               timestamp: Date.now(),
-            },
-          ])
+            }
+            // Replace the last progress message instead of appending indefinitely
+            const lastIdx = prev.findLastIndex((m) => m.type === 'progress')
+            if (lastIdx !== -1) {
+              const updated = [...prev]
+              updated[lastIdx] = msg
+              return updated
+            }
+            return [...prev, msg]
+          })
           break
         case 'session_created':
         case 'session_switched':

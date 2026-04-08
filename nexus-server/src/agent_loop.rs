@@ -7,6 +7,7 @@ use crate::providers::{call_with_retry, ChatCompletionRequest};
 use crate::state::AppState;
 use crate::tools_registry::route_tool;
 use base64::Engine;
+use nexus_common::consts::SERVER_DEVICE_NAME;
 use nexus_common::error::{ErrorCode, NexusError};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -29,38 +30,7 @@ fn finalize_content(content: &str) -> String {
     cleaned.trim().to_string()
 }
 
-/// Detect image MIME type from file path (extension first, then magic bytes).
-fn detect_image_mime(path: &str) -> Option<&'static str> {
-    let lower = path.to_lowercase();
-    if lower.ends_with(".png") {
-        Some("image/png")
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        Some("image/jpeg")
-    } else if lower.ends_with(".gif") {
-        Some("image/gif")
-    } else if lower.ends_with(".webp") {
-        Some("image/webp")
-    } else if lower.ends_with(".bmp") {
-        Some("image/bmp")
-    } else {
-        // Try magic bytes
-        if let Ok(bytes) = std::fs::read(path) {
-            if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-                Some("image/png")
-            } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-                Some("image/jpeg")
-            } else if bytes.starts_with(b"GIF8") {
-                Some("image/gif")
-            } else if bytes.len() >= 12 && &bytes[8..12] == b"WEBP" {
-                Some("image/webp")
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-}
+use nexus_common::mime::{detect_mime_from_bytes, detect_mime_from_extension};
 
 async fn emit_progress(state: &AppState, channel: &str, chat_id: &str, hint: &str) {
     let mut metadata = HashMap::new();
@@ -267,7 +237,8 @@ async fn run_single_turn(
         let mut parts: Vec<Value> = Vec::new();
         for path in &event.media {
             if let Ok(bytes) = tokio::fs::read(path).await {
-                let mime = detect_image_mime(path);
+                let mime = detect_mime_from_extension(path)
+                    .or_else(|| detect_mime_from_bytes(&bytes));
                 if let Some(mime) = mime {
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                     parts.push(json!({
@@ -562,8 +533,8 @@ async fn execute_single_tool(
     // 1. Determine tool location for progress hint
     let location = if state.server_tools.get(&tc.name).is_some() {
         "server".to_string()
-    } else if tc.arguments.get("device_name").and_then(|v| v.as_str()) == Some("server") && tc.name.starts_with("mcp_") {
-        "server".to_string()
+    } else if tc.arguments.get("device_name").and_then(|v| v.as_str()) == Some(SERVER_DEVICE_NAME) && tc.name.starts_with("mcp_") {
+        SERVER_DEVICE_NAME.to_string()
     } else {
         tc.arguments.get("device_name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string()
     };
@@ -585,8 +556,8 @@ async fn execute_single_tool(
         .to_string();
     info!("execute_single_tool: resolved device_name={}", device_name);
 
-    // Server MCP tools (device_name="server")
-    if device_name == "server" && tc.name.starts_with("mcp_") {
+    // Server MCP tools (device_name=SERVER_DEVICE_NAME)
+    if device_name == SERVER_DEVICE_NAME && tc.name.starts_with("mcp_") {
         let manager = state.server_mcp.read().await;
         let output = manager.call_tool(&tc.name, tc.arguments.clone()).await?;
         return Ok((output, vec![]));

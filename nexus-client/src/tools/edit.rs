@@ -8,9 +8,7 @@ use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::fs;
-use tokio::time::{timeout, Duration};
-
-use super::fs_helpers::{FS_TOOL_TIMEOUT_SEC, resolve_path_for_write};
+use super::fs_helpers::{execute_with_timeout, resolve_path_for_write};
 use super::{LocalTool, ToolError};
 
 pub struct EditFileTool;
@@ -66,7 +64,7 @@ impl EditFileTool {
         args: Value,
         policy: &FsPolicy,
     ) -> Result<String, ToolError> {
-        timeout(Duration::from_secs(FS_TOOL_TIMEOUT_SEC), async {
+        execute_with_timeout(|| async {
             let file_path = args
                 .get("file_path")
                 .and_then(|v| v.as_str())
@@ -88,9 +86,7 @@ impl EditFileTool {
 
             let fp = resolve_path_for_write(file_path, policy).await?;
             Self::edit_file_core(fp, old_string, new_string).await
-        })
-        .await
-        .unwrap_or_else(|_| Err(ToolError::Timeout(FS_TOOL_TIMEOUT_SEC)))
+        }).await
     }
 
     async fn edit_file_core(
@@ -100,24 +96,16 @@ impl EditFileTool {
     ) -> Result<String, ToolError> {
         let path_display = fp.display().to_string();
 
-        // File must exist
-        if !fp.exists() {
-            return Err(ToolError::NotFound(format!(
-                "file not found: {}",
-                path_display
-            )));
-        }
-        if !fp.is_file() {
-            return Err(ToolError::InvalidParams(format!(
-                "not a file: {}",
-                path_display
-            )));
-        }
-
-        // Read current content
-        let content = fs::read_to_string(&fp)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to read file: {}", e)))?;
+        // Read current content — let the OS report not-found / is-a-directory / permission errors
+        let content = fs::read_to_string(&fp).await.map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                ToolError::NotFound(format!("file not found: {}", path_display))
+            }
+            std::io::ErrorKind::PermissionDenied => {
+                ToolError::ExecutionFailed(format!("permission denied: {}", path_display))
+            }
+            _ => ToolError::ExecutionFailed(format!("failed to read file: {}", e)),
+        })?;
 
         // Validate old_string is non-empty
         if old_string.is_empty() {

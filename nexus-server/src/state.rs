@@ -16,11 +16,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use axum::extract::ws::Message;
 use dashmap::DashMap;
-use nexus_common::protocol::{FileDownloadResponse, FileUploadResponse, FsPolicy, ToolExecutionResult};
+use nexus_common::protocol::{FileDownloadResponse, FileUploadResponse, FsPolicy, McpServerEntry, ToolExecutionResult};
 use sqlx::PgPool;
 use tokio::sync::{RwLock, mpsc, oneshot};
 
@@ -36,6 +37,7 @@ pub struct DeviceState {
     pub ws_tx: mpsc::Sender<Message>,
     pub tools: Vec<serde_json::Value>,
     pub fs_policy: FsPolicy,
+    pub mcp_servers: Vec<McpServerEntry>,
     pub last_seen: Instant,
 }
 
@@ -59,6 +61,12 @@ pub struct AppState {
     pub channel_manager_handle: Arc<RwLock<Option<ChannelManagerHandle>>>,
     pub server_tools: Arc<ServerToolRegistry>,
     pub server_mcp: Arc<tokio::sync::RwLock<crate::server_mcp::ServerMcpManager>>,
+    /// Per-device dirty flag: when true, heartbeat re-queries DB for policy/MCP config.
+    pub config_dirty: Arc<DashMap<String, bool>>,
+    /// Per-user tool schema cache: user_id -> (generation, cached_schemas)
+    pub tool_schema_cache: Arc<DashMap<String, (u64, Vec<serde_json::Value>)>>,
+    /// Global generation counter for tool schema changes (bumped on tool register/device disconnect)
+    pub tool_schema_generation: Arc<AtomicU64>,
 }
 
 impl AppState {
@@ -75,6 +83,9 @@ impl AppState {
             session_manager,
             channel_manager_handle: Arc::new(RwLock::new(None)),
             server_mcp: Arc::new(tokio::sync::RwLock::new(crate::server_mcp::ServerMcpManager::new())),
+            config_dirty: Arc::new(DashMap::new()),
+            tool_schema_cache: Arc::new(DashMap::new()),
+            tool_schema_generation: Arc::new(AtomicU64::new(0)),
             server_tools: Arc::new({
                 let mut reg = ServerToolRegistry::new();
                 reg.register(Box::new(crate::server_tools::memory::SaveMemoryTool));
@@ -89,6 +100,23 @@ impl AppState {
                 reg.register(Box::new(crate::server_tools::web_fetch::WebFetchTool));
                 reg
             }),
+        }
+    }
+
+    /// Bump the tool schema generation counter, invalidating all cached tool schemas.
+    /// Called when devices register/unregister tools or connect/disconnect.
+    pub fn bump_tool_schema_generation(&self) {
+        self.tool_schema_generation.fetch_add(1, Ordering::Release);
+    }
+
+    /// Mark a device's config as dirty so the next heartbeat re-queries DB.
+    /// Called after API updates to policy or MCP config.
+    pub async fn mark_device_config_dirty(&self, user_id: &str, device_name: &str) {
+        let devices_by_user = self.devices_by_user.read().await;
+        if let Some(user_devices) = devices_by_user.get(user_id) {
+            if let Some(device_key) = user_devices.get(device_name) {
+                self.config_dirty.insert(device_key.clone(), true);
+            }
         }
     }
 }
