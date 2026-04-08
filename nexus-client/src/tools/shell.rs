@@ -33,15 +33,18 @@ impl ShellTool {
     }
 
     /// Execute a shell command (after guardrails checks).
-    async fn run(&self, cmd: &str, timeout_sec: Option<u64>, working_dir: Option<&std::path::Path>) -> Result<String, ToolError> {
-        // 1. Security validation (guardrails) - async SSRF DNS resolution
-        guardrails::check_shell_command(cmd).await?;
+    async fn run(&self, cmd: &str, timeout_sec: Option<u64>, working_dir: Option<&std::path::Path>, policy: &FsPolicy) -> Result<String, ToolError> {
+        // 1. Security validation (guardrails) - skip for Unrestricted mode
+        match policy {
+            FsPolicy::Unrestricted => {},  // env isolation still applies
+            _ => guardrails::check_shell_command(cmd).await?,
+        }
 
         // 2. Timeout control
         let timeout_sec = timeout_sec.unwrap_or(DEFAULT_TIMEOUT_SEC).min(MAX_TIMEOUT_SEC);
 
         // 3. Execute command
-        let output = run_shell_command(cmd, timeout_sec, working_dir).await?;
+        let output = run_shell_command(cmd, timeout_sec, working_dir, policy).await?;
 
         // 4. Truncate output
         let truncated = truncate_output(&output);
@@ -92,6 +95,13 @@ impl LocalTool for ShellTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        self.execute_with_policy(args, &FsPolicy::Sandbox).await
+    }
+}
+
+impl ShellTool {
+    /// Execute a shell command with an explicit filesystem policy.
+    pub async fn execute_with_policy(&self, args: Value, policy: &FsPolicy) -> Result<String, ToolError> {
         let command = args
             .get("command")
             .and_then(|v| v.as_str())
@@ -114,28 +124,39 @@ impl LocalTool for ShellTool {
             None
         };
 
-        self.run(&command, timeout_sec, resolved_dir.as_deref()).await
+        self.run(&command, timeout_sec, resolved_dir.as_deref(), policy).await
     }
 }
 
 /// Actually execute a shell command, with timeout control.
-async fn run_shell_command(cmd: &str, timeout_sec: u64, working_dir: Option<&std::path::Path>) -> Result<String, ToolError> {
+async fn run_shell_command(cmd: &str, timeout_sec: u64, working_dir: Option<&std::path::Path>, policy: &FsPolicy) -> Result<String, ToolError> {
     let workspace = working_dir.map(|p| p.to_path_buf()).unwrap_or_else(env::get_workspace_root);
+
+    // Bwrap sandbox: wrap command if Sandbox policy + Linux + bwrap available
+    let effective_cmd = if matches!(policy, FsPolicy::Sandbox) && crate::sandbox::is_available() {
+        tracing::info!("shell: executing in bwrap sandbox");
+        crate::sandbox::wrap_command(cmd, &workspace)
+    } else {
+        cmd.to_string()
+    };
+
     let mut child = if cfg!(windows) {
         Command::new("cmd")
-            .args(["/C", cmd])
+            .args(["/C", &effective_cmd])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(&workspace)
+            .env_clear()
             .envs(env::min_env())
             .spawn()
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to spawn cmd: {}", e)))?
     } else {
         Command::new("sh")
-            .args(["-c", cmd])
+            .args(["-c", &effective_cmd])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(&workspace)
+            .env_clear()
             .envs(env::min_env())
             .spawn()
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to spawn sh: {}", e)))?

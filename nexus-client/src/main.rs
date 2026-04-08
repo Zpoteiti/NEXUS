@@ -27,6 +27,7 @@ mod env;
 mod executor;
 mod guardrails;
 mod mcp_client;
+mod sandbox;
 mod session;
 pub mod tools;
 

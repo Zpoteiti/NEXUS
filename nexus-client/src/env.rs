@@ -192,27 +192,25 @@ fn is_subpath(path: &Path, base: &Path) -> bool {
     path.starts_with(base)
 }
 
-/// Return a minimized set of environment variables, keeping only the essentials for command execution.
+/// Return a minimized set of environment variables for isolated command execution.
 ///
-/// Kept: PATH, HOME, USER, TEMP, TMP
+/// Uses a hardcoded safe PATH instead of inheriting from the parent process.
+/// Kept: PATH (safe default), HOME, LANG, TERM
 pub fn min_env() -> HashMap<String, String> {
     let mut env = HashMap::new();
 
-    if let Ok(path) = env::var("PATH") {
-        env.insert("PATH".to_string(), path);
+    // Use safe default PATH instead of inheriting from parent
+    if cfg!(windows) {
+        env.insert("PATH".to_string(), r"C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem".to_string());
+    } else {
+        env.insert("PATH".to_string(), "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string());
     }
+
     if let Ok(home) = env::var("HOME").or_else(|_| env::var("USERPROFILE")) {
         env.insert("HOME".to_string(), home);
     }
-    if let Ok(user) = env::var("USER") {
-        env.insert("USER".to_string(), user);
-    }
-    if let Ok(temp) = env::var("TEMP") {
-        env.insert("TEMP".to_string(), temp);
-    }
-    if let Ok(tmp) = env::var("TMP") {
-        env.insert("TMP".to_string(), tmp);
-    }
+    env.insert("LANG".to_string(), "en_US.UTF-8".to_string());
+    env.insert("TERM".to_string(), "xterm-256color".to_string());
 
     env
 }

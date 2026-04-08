@@ -68,26 +68,26 @@ async fn execute_tool_inner(
     let tool_name = req.tool_name.clone();
     let arguments = req.arguments;
 
-    // Shell policy guard: enforce FsPolicy on shell commands before execution
-    if tool_name == "shell" {
-        let cmd = arguments
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let policy = fs_policy.read().await;
-        if let Err(e) = crate::tools::shell::guard_command_policy(cmd, &*policy) {
-            return ToolExecutionResult {
-                request_id,
-                exit_code: e.exit_code(),
-                output: e.to_string(),
-            };
-        }
-    }
-
     // Route to the corresponding tool
-    let result = if FS_TOOLS.contains(&tool_name.as_str()) {
+    let result = if FS_TOOLS.contains(&tool_name.as_str()) || tool_name == "shell" {
         let policy = fs_policy.read().await.clone();
-        execute_fs_tool(&tool_name, arguments, &policy).await
+        if tool_name == "shell" {
+            // Shell policy guard: enforce FsPolicy on shell commands before execution
+            let cmd = arguments
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if let Err(e) = crate::tools::shell::guard_command_policy(cmd, &policy) {
+                return ToolExecutionResult {
+                    request_id,
+                    exit_code: e.exit_code(),
+                    output: e.to_string(),
+                };
+            }
+            ShellTool::new().execute_with_policy(arguments, &policy).await
+        } else {
+            execute_fs_tool(&tool_name, arguments, &policy).await
+        }
     } else if let Some(tool) = LOCAL_TOOL_REGISTRY.get(tool_name.as_str()) {
         tool.execute(arguments).await
     } else if tool_name.starts_with("mcp_") {
