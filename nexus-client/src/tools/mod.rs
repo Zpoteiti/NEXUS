@@ -4,6 +4,7 @@ pub mod grep;
 pub mod helpers;
 pub mod list_dir;
 pub mod read_file;
+pub mod shell;
 pub mod write_file;
 
 use crate::config::ClientConfig;

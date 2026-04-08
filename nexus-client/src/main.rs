@@ -1,7 +1,9 @@
 mod config;
 mod connection;
 mod env;
+mod guardrails;
 mod heartbeat;
+mod sandbox;
 mod tools;
 
 use connection::{recv_message, send_message, WsSink};
