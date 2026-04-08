@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::Message;
 use dashmap::DashMap;
@@ -67,6 +67,10 @@ pub struct AppState {
     pub tool_schema_cache: Arc<DashMap<String, (u64, Vec<serde_json::Value>)>>,
     /// Global generation counter for tool schema changes (bumped on tool register/device disconnect)
     pub tool_schema_generation: Arc<AtomicU64>,
+    /// Per-user rate limiter: user_id -> (remaining_tokens, last_refill_time)
+    pub rate_limiter: Arc<DashMap<String, (u32, Instant)>>,
+    /// Cached rate limit per minute (from system_config). 0 = unlimited. (value, last_check)
+    pub rate_limit_cache: Arc<tokio::sync::RwLock<(u32, Instant)>>,
 }
 
 impl AppState {
@@ -86,6 +90,8 @@ impl AppState {
             config_dirty: Arc::new(DashMap::new()),
             tool_schema_cache: Arc::new(DashMap::new()),
             tool_schema_generation: Arc::new(AtomicU64::new(0)),
+            rate_limiter: Arc::new(DashMap::new()),
+            rate_limit_cache: Arc::new(tokio::sync::RwLock::new((0, Instant::now()))),
             server_tools: Arc::new({
                 let mut reg = ServerToolRegistry::new();
                 reg.register(Box::new(crate::server_tools::memory::SaveMemoryTool));
@@ -100,6 +106,51 @@ impl AppState {
                 reg.register(Box::new(crate::server_tools::web_fetch::WebFetchTool));
                 reg
             }),
+        }
+    }
+
+    /// Read rate_limit_per_min from DB, cached for 60 seconds. Returns 0 if not configured (unlimited).
+    pub async fn get_rate_limit(&self) -> u32 {
+        {
+            let cache = self.rate_limit_cache.read().await;
+            let (limit, last_check) = *cache;
+            if last_check.elapsed() < Duration::from_secs(60) {
+                return limit;
+            }
+        }
+        let limit = match crate::db::get_system_config(&self.db, "rate_limit_per_min").await {
+            Ok(Some(v)) => v.parse::<u32>().unwrap_or(0),
+            _ => 0,
+        };
+        *self.rate_limit_cache.write().await = (limit, Instant::now());
+        limit
+    }
+
+    /// Check rate limit for a user. Returns Ok(()) if allowed, Err(retry_after_secs) if rate-limited.
+    pub async fn check_rate_limit(&self, user_id: &str) -> Result<(), u64> {
+        let limit = self.get_rate_limit().await;
+        if limit == 0 {
+            return Ok(());
+        }
+
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+
+        let mut entry = self.rate_limiter.entry(user_id.to_string()).or_insert((limit, now));
+        let (ref mut remaining, ref mut last_refill) = *entry;
+
+        // Refill tokens if window has passed
+        if now.duration_since(*last_refill) >= window {
+            *remaining = limit;
+            *last_refill = now;
+        }
+
+        if *remaining > 0 {
+            *remaining -= 1;
+            Ok(())
+        } else {
+            let elapsed = now.duration_since(*last_refill).as_secs();
+            Err(60u64.saturating_sub(elapsed))
         }
     }
 

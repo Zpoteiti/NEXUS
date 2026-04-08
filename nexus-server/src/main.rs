@@ -100,6 +100,10 @@ async fn main() {
     let state_for_cron = state_arc.clone();
     tokio::spawn(cron::run_cron_scheduler(state_for_cron));
 
+    // Start heartbeat reaper (disconnect stale devices)
+    let state_for_reaper = (*state_arc).clone();
+    tokio::spawn(ws::heartbeat_reaper(state_for_reaper));
+
     // Resume in-flight agent loops from checkpoints
     if let Ok(checkpoints) = db::list_all_checkpoints(&state_arc.db).await {
         if !checkpoints.is_empty() {
@@ -165,6 +169,8 @@ async fn main() {
         .route("/api/files/{file_id}", axum::routing::get(api::download_file))
         // Admin: server MCP config
         .route("/api/server-mcp", axum::routing::get(auth::get_server_mcp).put(auth::update_server_mcp))
+        // Admin: rate limit config
+        .route("/api/admin/rate-limit", axum::routing::get(auth::get_rate_limit).put(auth::set_rate_limit))
         .layer(axum::middleware::from_fn_with_state(app_state.clone(), auth::jwt_middleware));
 
     let app = Router::new()

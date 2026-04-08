@@ -3,10 +3,10 @@ import { Link } from 'react-router-dom'
 import { apiRequest } from '../lib/api'
 import { useAuthStore } from '../lib/store'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Cpu, Server, Heart } from 'lucide-react'
+import { ArrowLeft, Cpu, Server, Heart, Gauge } from 'lucide-react'
 import { SaveButton, inputStyle, cardStyle } from '../components/shared'
 
-type Tab = 'llm' | 'server-mcp' | 'default-soul'
+type Tab = 'llm' | 'server-mcp' | 'default-soul' | 'rate-limit'
 
 export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('llm')
@@ -21,6 +21,7 @@ export default function AdminPage() {
     { id: 'llm', label: 'LLM Config', icon: <Cpu className="w-4 h-4" /> },
     { id: 'server-mcp', label: 'Server MCP', icon: <Server className="w-4 h-4" /> },
     { id: 'default-soul', label: 'Default Soul', icon: <Heart className="w-4 h-4" /> },
+    { id: 'rate-limit', label: 'Rate Limit', icon: <Gauge className="w-4 h-4" /> },
   ]
 
   return (
@@ -56,6 +57,7 @@ export default function AdminPage() {
             {tab === 'llm' && <LlmConfigTab />}
             {tab === 'server-mcp' && <ServerMcpTab />}
             {tab === 'default-soul' && <DefaultSoulTab />}
+            {tab === 'rate-limit' && <RateLimitTab />}
           </div>
         </div>
       </div>
@@ -196,6 +198,56 @@ function DefaultSoulTab() {
         className="w-full px-3 py-2 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
         style={inputStyle}
       />
+      <SaveButton onClick={save} saved={saved} />
+    </div>
+  )
+}
+
+function RateLimitTab() {
+  const [limit, setLimit] = useState('')
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    apiRequest('/api/admin/rate-limit').then(r => r.json()).then(d => {
+      setLimit(d.rate_limit_per_min?.toString() || '0')
+    }).catch(() => {})
+  }, [])
+
+  async function save() {
+    setError('')
+    const val = parseInt(limit) || 0
+    const res = await apiRequest('/api/admin/rate-limit', {
+      method: 'PUT',
+      body: JSON.stringify({ rate_limit_per_min: val }),
+    })
+    if (res.ok) { setSaved(true); setTimeout(() => setSaved(false), 2000) }
+    else { const data = await res.json().catch(() => ({})); setError(data.message || 'Failed to save') }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm" style={{ color: '#64748b' }}>
+        Maximum messages per user per minute (across all channels). Set to 0 for unlimited.
+        Cron-triggered messages are always exempt from rate limiting.
+      </p>
+      <div>
+        <label className="block text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: '#64748b' }}>Messages per minute</label>
+        <input
+          value={limit}
+          onChange={e => setLimit(e.target.value)}
+          type="number"
+          min="0"
+          className="w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          style={inputStyle}
+          placeholder="0 (unlimited)"
+        />
+      </div>
+      {error && (
+        <div className="text-sm p-3 rounded-xl" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: '#fca5a5' }}>
+          {error}
+        </div>
+      )}
       <SaveButton onClick={save} saved={saved} />
     </div>
   )

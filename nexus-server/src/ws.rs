@@ -248,6 +248,32 @@ pub async fn socket_receive_loop(socket: WebSocket, state: AppState) {
     info!("device offline: device_name={}, user_id={}", device_name, user_id);
 }
 
+/// Background task: periodically check for stale device connections and clean them up.
+pub async fn heartbeat_reaper(state: AppState) {
+    let check_interval = std::time::Duration::from_secs(30);
+    let timeout_dur = std::time::Duration::from_secs(state.config.heartbeat_timeout_sec);
+
+    loop {
+        tokio::time::sleep(check_interval).await;
+
+        // Collect stale device keys
+        let stale: Vec<(String, String)> = state.devices
+            .iter()
+            .filter(|entry| entry.value().last_seen.elapsed() > timeout_dur)
+            .map(|entry| (entry.key().clone(), entry.value().user_id.clone()))
+            .collect();
+
+        for (device_key, user_id) in &stale {
+            warn!("heartbeat reaper: device timed out, cleaning up (user_id={})", user_id);
+            cleanup_device(&state, device_key, user_id).await;
+        }
+
+        if !stale.is_empty() {
+            info!("heartbeat reaper: cleaned up {} stale device(s)", stale.len());
+        }
+    }
+}
+
 async fn cleanup_device(state: &AppState, device_key: &str, user_id: &str) {
     if state.devices.remove(device_key).is_some() {
         if let Some(mut user_devices) = state.devices_by_user.get_mut(user_id) {

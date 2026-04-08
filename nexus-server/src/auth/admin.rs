@@ -1,4 +1,4 @@
-/// Admin-only handlers: LLM config, server MCP.
+/// Admin-only handlers: LLM config, server MCP, rate limit.
 
 use axum::{
     extract::{Json, State},
@@ -144,4 +144,56 @@ pub async fn update_server_mcp(
     manager.initialize(&payload.mcp_servers).await;
 
     Json(serde_json::json!({"mcp_servers": payload.mcp_servers})).into_response()
+}
+
+// ============================================================================
+// Rate limit config (admin only)
+// ============================================================================
+
+/// GET /api/admin/rate-limit
+pub async fn get_rate_limit(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+) -> Response {
+    if !claims.is_admin {
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
+    }
+    match crate::db::get_system_config(&state.db, "rate_limit_per_min").await {
+        Ok(val) => {
+            let limit = val.and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            Json(json!({ "rate_limit_per_min": limit })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("get_rate_limit error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to get rate limit").into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetRateLimitRequest {
+    pub rate_limit_per_min: u32,
+}
+
+/// PUT /api/admin/rate-limit
+pub async fn set_rate_limit(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Json(payload): Json<SetRateLimitRequest>,
+) -> Response {
+    if !claims.is_admin {
+        return ApiError::new(ErrorCode::Forbidden, "admin access required").into_response();
+    }
+    let value = payload.rate_limit_per_min.to_string();
+    match crate::db::set_system_config(&state.db, "rate_limit_per_min", &value).await {
+        Ok(()) => {
+            // Invalidate the in-memory cache so the new value takes effect immediately
+            *state.rate_limit_cache.write().await = (payload.rate_limit_per_min, std::time::Instant::now());
+            Json(json!({ "message": "Rate limit updated", "rate_limit_per_min": payload.rate_limit_per_min })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("set_rate_limit error: {e}");
+            ApiError::new(ErrorCode::InternalError, "failed to set rate limit").into_response()
+        }
+    }
 }

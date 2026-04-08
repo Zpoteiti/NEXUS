@@ -57,12 +57,33 @@ impl SessionManager {
 
 }
 
+const MAX_INLINE_CHARS: usize = 4096;
+
 /// Ensure a session exists and publish the inbound event.
 /// Channels just construct an InboundEvent and call this function -- session creation logic is centralized here.
 pub async fn ensure_session_and_publish(
     state: &Arc<AppState>,
     event: InboundEvent,
 ) {
+    // Exempt cron-triggered events from rate limiting
+    let is_cron = event.metadata.contains_key("cron_job_id");
+    if !is_cron {
+        if let Err(retry_after) = state.check_rate_limit(&event.sender_id).await {
+            let outbound = crate::bus::OutboundEvent {
+                channel: event.channel.clone(),
+                chat_id: event.chat_id.clone(),
+                content: format!(
+                    "Rate limit exceeded. Please wait {} seconds before sending another message.",
+                    retry_after
+                ),
+                media: Vec::new(),
+                metadata: std::collections::HashMap::new(),
+            };
+            state.bus.publish_outbound(outbound).await;
+            return;
+        }
+    }
+
     let session_id = event.session_id.clone();
     let (is_new, channels) = state.session_manager.get_or_create_session(&session_id).await;
     if is_new {
@@ -75,5 +96,30 @@ pub async fn ensure_session_and_publish(
             });
         }
     }
+
+    // Convert large messages to file references
+    let event = if event.content.len() > MAX_INLINE_CHARS && !event.metadata.contains_key("cron_job_id") {
+        let filename = format!("message_{}.txt", chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+        match crate::file_store::save_upload(&event.sender_id, &filename, event.content.as_bytes()).await {
+            Ok((file_id, _path)) => {
+                let truncated = event.content.chars().take(MAX_INLINE_CHARS).collect::<String>();
+                let total_chars = event.content.len();
+                InboundEvent {
+                    content: format!(
+                        "{}\n\n[Message truncated: showing first {} of {} characters. Full message saved as file: /api/files/{}]",
+                        truncated, MAX_INLINE_CHARS, total_chars, file_id
+                    ),
+                    ..event
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to save large message as file: {}", e);
+                event
+            }
+        }
+    } else {
+        event
+    };
+
     state.bus.publish_inbound(event).await;
 }
