@@ -32,12 +32,10 @@ pub fn load_config() -> ServerConfig {
     let admin_token = std::env::var("ADMIN_TOKEN")
         .unwrap_or_else(|_| panic!("ADMIN_TOKEN env var is not set. Server cannot start.\n  Used for: /admin/register endpoint authentication"));
 
-    let server_port = match std::env::var("SERVER_PORT") {
-        Ok(val) => val.parse::<u16>().unwrap_or_else(|_| {
-            panic!("SERVER_PORT env var has invalid format: '{}'. Must be an integer between 1-65535", val)
-        }),
-        Err(_) => 8080,
-    };
+    let server_port = std::env::var("SERVER_PORT")
+        .unwrap_or_else(|_| panic!("SERVER_PORT env var is not set. Server cannot start.\n  Example: SERVER_PORT=8080"))
+        .parse::<u16>()
+        .unwrap_or_else(|e| panic!("SERVER_PORT env var has invalid format: {e}. Must be an integer between 1-65535"));
 
     let heartbeat_timeout_sec = std::env::var("HEARTBEAT_TIMEOUT_SEC")
         .ok()
@@ -45,14 +43,10 @@ pub fn load_config() -> ServerConfig {
         .unwrap_or(60);
 
     let gateway_ws_url = std::env::var("NEXUS_GATEWAY_WS_URL")
-        .unwrap_or_else(|_| "ws://localhost:9090/ws/nexus".to_string());
+        .unwrap_or_else(|_| panic!("NEXUS_GATEWAY_WS_URL env var is not set. Server cannot start.\n  Example: NEXUS_GATEWAY_WS_URL=ws://localhost:9090/ws/nexus"));
 
     let gateway_token = std::env::var("NEXUS_GATEWAY_TOKEN")
-        .unwrap_or_else(|_| "dev-token".to_string());
-
-    if gateway_token == "dev-token" {
-        tracing::warn!("NEXUS_GATEWAY_TOKEN is using the insecure default 'dev-token'. Set this env var in production.");
-    }
+        .unwrap_or_else(|_| panic!("NEXUS_GATEWAY_TOKEN env var is not set. Server cannot start.\n  Used for: authenticating the server's WebSocket connection to the gateway"));
 
     let jwt_secret = std::env::var("JWT_SECRET")
         .unwrap_or_else(|_| panic!("JWT_SECRET env var is not set. Server cannot start.\n  Used for: JWT signing key, recommend at least 32 characters"));

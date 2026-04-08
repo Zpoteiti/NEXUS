@@ -18,9 +18,9 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let port: u16 = std::env::var("GATEWAY_PORT")
-        .unwrap_or_else(|_| "9090".to_string())
+        .unwrap_or_else(|_| panic!("GATEWAY_PORT env var is not set. Gateway cannot start.\n  Example: GATEWAY_PORT=9090"))
         .parse()
-        .unwrap_or(9090);
+        .unwrap_or_else(|e| panic!("GATEWAY_PORT has invalid format: {e}"));
 
     let gateway_token = std::env::var("NEXUS_GATEWAY_TOKEN")
         .expect("NEXUS_GATEWAY_TOKEN env var required");
@@ -29,7 +29,7 @@ async fn main() {
         .expect("JWT_SECRET env var required");
 
     let server_api_url = std::env::var("NEXUS_SERVER_API_URL")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+        .unwrap_or_else(|_| panic!("NEXUS_SERVER_API_URL env var is not set. Gateway cannot start.\n  Example: NEXUS_SERVER_API_URL=http://localhost:8080"));
 
     let frontend_dir = std::env::var("NEXUS_FRONTEND_DIR")
         .unwrap_or_else(|_| "../nexus-frontend/dist".to_string());
