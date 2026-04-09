@@ -105,6 +105,10 @@ pub async fn install_skill(state: &Arc<AppState>, user_id: &str, args: &Value) -
     }
 }
 
+pub fn parse_skill_frontmatter_pub(content: &str) -> Result<(String, String, bool), String> {
+    parse_skill_frontmatter(content)
+}
+
 /// Parse YAML frontmatter from SKILL.md content.
 /// Expected format:
 /// ---

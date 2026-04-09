@@ -1,6 +1,9 @@
 //! Authentication: JWT sign/verify, register/login handlers.
 
+pub mod admin;
+pub mod cron_api;
 pub mod device;
+pub mod skills_api;
 
 use crate::state::AppState;
 use axum::extract::State;

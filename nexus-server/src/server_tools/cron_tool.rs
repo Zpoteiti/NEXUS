@@ -186,6 +186,13 @@ async fn remove_job(state: &Arc<AppState>, user_id: &str, args: &Value) -> (i32,
     }
 }
 
+pub fn compute_next_cron_pub(
+    expr: &str,
+    timezone: &str,
+) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    compute_next_cron(expr, timezone)
+}
+
 fn compute_next_cron(expr: &str, timezone: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
     use cron::Schedule;
     use std::str::FromStr;

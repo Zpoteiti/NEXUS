@@ -63,9 +63,27 @@ async fn main() {
     bus::spawn_rate_limit_refresh(Arc::clone(&state));
     cron::spawn_cron_poller(Arc::clone(&state));
 
+    // Load cached configs from DB
+    if let Ok(Some(soul)) = crate::db::system_config::get(&state.db, "default_soul").await {
+        *state.default_soul.write().await = Some(soul);
+    }
+    if let Ok(Some(llm_json)) = crate::db::system_config::get(&state.db, "llm_config").await {
+        if let Ok(config) = serde_json::from_str::<crate::config::LlmConfig>(&llm_json) {
+            *state.llm_config.write().await = Some(config);
+        }
+    }
+    if let Ok(Some(rl)) = crate::db::system_config::get(&state.db, "rate_limit_per_min").await {
+        if let Ok(limit) = rl.parse::<u32>() {
+            *state.rate_limit_config.write().await = limit;
+        }
+    }
+
     let app = axum::Router::new()
         .merge(auth::auth_routes())
         .merge(auth::device::device_routes())
+        .merge(auth::admin::admin_routes())
+        .merge(auth::cron_api::cron_api_routes())
+        .merge(auth::skills_api::skills_api_routes())
         .merge(api::api_routes())
         .route("/ws", get(ws::ws_handler))
         .with_state(Arc::clone(&state));
