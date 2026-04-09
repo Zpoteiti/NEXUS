@@ -68,10 +68,7 @@ pub async fn list_paginated(
     .await
 }
 
-pub async fn mark_compressed(
-    pool: &PgPool,
-    message_ids: &[String],
-) -> Result<(), sqlx::Error> {
+pub async fn mark_compressed(pool: &PgPool, message_ids: &[String]) -> Result<(), sqlx::Error> {
     if message_ids.is_empty() {
         return Ok(());
     }

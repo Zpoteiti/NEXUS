@@ -2,7 +2,7 @@
 
 use crate::bus::InboundEvent;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 pub struct SessionHandle {
     pub user_id: String,

@@ -8,7 +8,7 @@ use axum::http::HeaderMap;
 use axum::routing::post;
 use axum::{Json, Router};
 use chrono::Utc;
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use nexus_common::consts::{BCRYPT_COST, JWT_EXPIRY_DAYS};
 use nexus_common::error::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};

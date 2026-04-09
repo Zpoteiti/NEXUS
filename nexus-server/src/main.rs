@@ -1,14 +1,18 @@
+mod api;
 mod auth;
 mod bus;
 mod config;
 mod db;
+mod file_store;
 mod session;
 mod state;
+mod ws;
 
 use crate::state::AppState;
+use axum::routing::get;
 use config::ServerConfig;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock, Semaphore};
+use tokio::sync::{RwLock, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -45,8 +49,15 @@ async fn main() {
         shutdown: CancellationToken::new(),
     });
 
+    // Background tasks
+    file_store::spawn_cleanup_task();
+    ws::spawn_heartbeat_reaper(Arc::clone(&state));
+
     let app = axum::Router::new()
         .merge(auth::auth_routes())
+        .merge(auth::device::device_routes())
+        .merge(api::api_routes())
+        .route("/ws", get(ws::ws_handler))
         .with_state(Arc::clone(&state));
 
     let addr = format!("0.0.0.0:{}", config.server_port);

@@ -7,8 +7,8 @@ pub mod sessions;
 pub mod system_config;
 pub mod users;
 
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use tracing::info;
 
 pub async fn init_db(database_url: &str) -> PgPool {

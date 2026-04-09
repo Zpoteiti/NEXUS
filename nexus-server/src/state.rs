@@ -9,10 +9,10 @@ use futures_util::stream::SplitSink;
 use nexus_common::protocol::ToolExecutionResult;
 use serde_json::Value;
 use sqlx::PgPool;
-use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
 use std::time::Instant;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 pub type WsSink = SplitSink<axum::extract::ws::WebSocket, Message>;

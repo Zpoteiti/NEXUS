@@ -58,11 +58,7 @@ pub async fn update_soul(
     Ok(())
 }
 
-pub async fn update_memory(
-    pool: &PgPool,
-    user_id: &str,
-    memory: &str,
-) -> Result<(), sqlx::Error> {
+pub async fn update_memory(pool: &PgPool, user_id: &str, memory: &str) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET memory_text = $1 WHERE user_id = $2")
         .bind(memory)
         .bind(user_id)

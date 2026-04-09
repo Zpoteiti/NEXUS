@@ -1,11 +1,10 @@
 use sqlx::PgPool;
 
 pub async fn get(pool: &PgPool, key: &str) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM system_config WHERE key = $1")
-            .bind(key)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = $1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.map(|r| r.0))
 }
 
