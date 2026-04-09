@@ -4,8 +4,10 @@ mod auth;
 mod bus;
 mod config;
 mod context;
+mod cron;
 mod db;
 mod file_store;
+mod memory;
 mod providers;
 mod server_tools;
 mod session;
@@ -59,6 +61,7 @@ async fn main() {
     file_store::spawn_cleanup_task();
     ws::spawn_heartbeat_reaper(Arc::clone(&state));
     bus::spawn_rate_limit_refresh(Arc::clone(&state));
+    cron::spawn_cron_poller(Arc::clone(&state));
 
     let app = axum::Router::new()
         .merge(auth::auth_routes())
