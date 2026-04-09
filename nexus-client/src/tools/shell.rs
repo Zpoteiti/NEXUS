@@ -4,7 +4,6 @@ use crate::guardrails;
 use crate::sandbox;
 use crate::tools::helpers::{tool_error, truncate_output};
 use crate::tools::{Tool, ToolResult};
-use nexus_common::consts::DEFAULT_SHELL_TIMEOUT_SEC;
 use nexus_common::protocol::FsPolicy;
 use serde_json::Value;
 use std::future::Future;
@@ -44,7 +43,7 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
     let timeout_sec = args
         .get("timeout_sec")
         .and_then(Value::as_u64)
-        .unwrap_or(config.shell_timeout.max(DEFAULT_SHELL_TIMEOUT_SEC));
+        .unwrap_or(config.shell_timeout);
     let wd = args
         .get("working_dir")
         .and_then(Value::as_str)
@@ -53,27 +52,26 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
 
     // Guardrails check (Sandbox mode only)
     if config.fs_policy == FsPolicy::Sandbox
-        && let Some(reason) = guardrails::check_all(command, &config.ssrf_whitelist)
+        && let Some(reason) = guardrails::check_all(command, &config.ssrf_whitelist).await
     {
         return ToolResult::blocked(reason);
     }
 
     // Build command
-    let mut cmd =
-        if config.fs_policy == FsPolicy::Sandbox && *sandbox::BWRAP_AVAILABLE {
-            let a = sandbox::wrap_command(command, &config.workspace);
-            let mut c = Command::new(&a[0]);
-            c.args(&a[1..]);
-            c
-        } else if cfg!(windows) {
-            let mut c = Command::new("cmd");
-            c.args(["/C", command]);
-            c
-        } else {
-            let mut c = Command::new("bash");
-            c.args(["-l", "-c", command]);
-            c
-        };
+    let mut cmd = if config.fs_policy == FsPolicy::Sandbox && *sandbox::BWRAP_AVAILABLE {
+        let a = sandbox::wrap_command(command, &config.workspace);
+        let mut c = Command::new(&a[0]);
+        c.args(&a[1..]);
+        c
+    } else if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/C", command]);
+        c
+    } else {
+        let mut c = Command::new("bash");
+        c.args(["-l", "-c", command]);
+        c
+    };
 
     // Environment isolation (always active)
     cmd.env_clear();
@@ -83,12 +81,7 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
     cmd.current_dir(&wd);
 
     // Execute with timeout
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_sec),
-        cmd.output(),
-    )
-    .await
-    {
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_sec), cmd.output()).await {
         Ok(Ok(out)) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -108,9 +101,7 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
             }
         }
         Ok(Err(e)) => ToolResult::error(tool_error(&format!("exec failed: {e}"))),
-        Err(_) => {
-            ToolResult::timeout(format!("Timed out after {timeout_sec}s: {command}"))
-        }
+        Err(_) => ToolResult::timeout(format!("Timed out after {timeout_sec}s: {command}")),
     }
 }
 
@@ -152,11 +143,7 @@ mod tests {
     #[tokio::test]
     async fn test_exit_code() {
         let d = tempfile::tempdir().unwrap();
-        let r = exec(
-            serde_json::json!({"command": "exit 42"}),
-            &ucfg(d.path()),
-        )
-        .await;
+        let r = exec(serde_json::json!({"command": "exit 42"}), &ucfg(d.path())).await;
         assert_eq!(r.exit_code, 42);
     }
 
@@ -185,11 +172,7 @@ mod tests {
     #[tokio::test]
     async fn test_sandbox_blocks_rm() {
         let d = tempfile::tempdir().unwrap();
-        let r = exec(
-            serde_json::json!({"command": "rm -rf /"}),
-            &scfg(d.path()),
-        )
-        .await;
+        let r = exec(serde_json::json!({"command": "rm -rf /"}), &scfg(d.path())).await;
         assert_eq!(r.exit_code, nexus_common::consts::EXIT_CODE_CANCELLED);
     }
 

@@ -1,5 +1,5 @@
 use crate::config::ClientConfig;
-use crate::tools::helpers::{sanitize_path, tool_error, IGNORED_DIRS};
+use crate::tools::helpers::{IGNORED_DIRS, sanitize_path, tool_error};
 use crate::tools::{Tool, ToolResult};
 use serde_json::Value;
 use std::future::Future;
@@ -45,29 +45,35 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
     };
 
     let full = base.join(pat).to_string_lossy().to_string();
-    let paths = match glob::glob(&full) {
-        Ok(p) => p,
-        Err(e) => return ToolResult::error(tool_error(&format!("bad pattern: {e}"))),
-    };
-
-    let mut entries: Vec<(std::time::SystemTime, String)> = Vec::new();
-    for entry in paths.flatten() {
-        if entry.components().any(|c| {
-            IGNORED_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref())
-        }) {
-            continue;
+    let entries = match tokio::task::spawn_blocking(move || {
+        let paths = glob::glob(&full).map_err(|e| format!("bad pattern: {e}"))?;
+        let mut entries: Vec<(std::time::SystemTime, String)> = Vec::new();
+        for entry in paths.flatten() {
+            if entry
+                .components()
+                .any(|c| IGNORED_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
+            {
+                continue;
+            }
+            let mt = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let rel = entry
+                .strip_prefix(&base)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| entry.to_string_lossy().to_string());
+            entries.push((mt, rel));
         }
-        let mt = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let rel = entry
-            .strip_prefix(&base)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| entry.to_string_lossy().to_string());
-        entries.push((mt, rel));
-    }
-    entries.sort_by(|a, b| b.0.cmp(&a.0));
+        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        Ok::<_, String>(entries)
+    })
+    .await
+    {
+        Ok(Ok(e)) => e,
+        Ok(Err(e)) => return ToolResult::error(tool_error(&e)),
+        Err(e) => return ToolResult::error(tool_error(&format!("glob task failed: {e}"))),
+    };
 
     if entries.is_empty() {
         return ToolResult::success("No files matched.");
@@ -108,11 +114,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_matches() {
         let d = tempfile::tempdir().unwrap();
-        let r = exec(
-            serde_json::json!({"pattern": "*.xyz"}),
-            &cfg(d.path()),
-        )
-        .await;
+        let r = exec(serde_json::json!({"pattern": "*.xyz"}), &cfg(d.path())).await;
         assert!(r.output.contains("No files"));
     }
 }

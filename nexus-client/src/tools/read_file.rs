@@ -56,19 +56,14 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
     let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,
         Err(e) => {
-            return ToolResult::error(tool_error(&format!(
-                "file not found: {path_str}\n{e}"
-            )))
+            return ToolResult::error(tool_error(&format!("file not found: {path_str}\n{e}")));
         }
     };
 
     if let Some(mime) = detect_mime_from_bytes(&bytes)
         && mime.starts_with("image/")
     {
-        return ToolResult::success(format!(
-            "[Image: {path_str}, {}KB]",
-            bytes.len() / 1024
-        ));
+        return ToolResult::success(format!("[Image: {path_str}, {}KB]", bytes.len() / 1024));
     }
 
     let content = match String::from_utf8(bytes) {
@@ -134,9 +129,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(
             d.path().join("b.txt"),
-            (1..=100)
-                .map(|i| format!("line{i}\n"))
-                .collect::<String>(),
+            (1..=100).map(|i| format!("line{i}\n")).collect::<String>(),
         )
         .unwrap();
         let r = exec(
@@ -164,11 +157,7 @@ mod tests {
     #[tokio::test]
     async fn test_not_found() {
         let d = tempfile::tempdir().unwrap();
-        let r = exec(
-            serde_json::json!({"path": "/no/such/file"}),
-            &cfg(d.path()),
-        )
-        .await;
+        let r = exec(serde_json::json!({"path": "/no/such/file"}), &cfg(d.path())).await;
         assert_eq!(r.exit_code, 1);
     }
 }

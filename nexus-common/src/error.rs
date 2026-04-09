@@ -63,13 +63,19 @@ impl ErrorCode {
             Self::Forbidden => 403,
             Self::NotFound | Self::DeviceNotFound | Self::ToolNotFound => 404,
             Self::Conflict => 409,
-            Self::ValidationFailed | Self::InvalidParams | Self::ToolInvalidParams
+            Self::ValidationFailed
+            | Self::InvalidParams
+            | Self::ToolInvalidParams
             | Self::ProtocolMismatch => 400,
             Self::ExecutionTimeout | Self::ToolTimeout => 504,
             Self::DeviceOffline => 503,
-            Self::McpConnectionFailed | Self::McpCallFailed | Self::ConnectionFailed
+            Self::McpConnectionFailed
+            | Self::McpCallFailed
+            | Self::ConnectionFailed
             | Self::HandshakeFailed => 502,
-            Self::ExecutionFailed | Self::InternalError | Self::ToolBlocked
+            Self::ExecutionFailed
+            | Self::InternalError
+            | Self::ToolBlocked
             | Self::ChannelError => 500,
         }
     }

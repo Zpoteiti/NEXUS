@@ -44,11 +44,7 @@ pub fn truncate_output(output: &str) -> String {
 /// 3. Canonicalize (resolve symlinks) — for new files, canonicalize parent
 /// 4. Sandbox mode: path must start with workspace. Exceptions: /dev/null, /tmp/nexus*
 /// 5. Unrestricted: all paths allowed
-pub fn sanitize_path(
-    path: &str,
-    config: &ClientConfig,
-    write: bool,
-) -> Result<PathBuf, String> {
+pub fn sanitize_path(path: &str, config: &ClientConfig, write: bool) -> Result<PathBuf, String> {
     let expanded = if path.starts_with("~/") || path == "~" {
         let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
         path.replacen('~', &home, 1)
@@ -136,9 +132,11 @@ mod tests {
     #[test]
     fn test_sanitize_relative() {
         let c = sandbox("/tmp");
-        assert!(sanitize_path("test.txt", &c, true)
-            .unwrap()
-            .starts_with("/tmp"));
+        assert!(
+            sanitize_path("test.txt", &c, true)
+                .unwrap()
+                .starts_with("/tmp")
+        );
     }
 
     #[test]

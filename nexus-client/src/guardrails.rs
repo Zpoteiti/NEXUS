@@ -2,7 +2,7 @@
 //! Only active in Sandbox mode — Unrestricted mode skips all checks.
 
 use regex::Regex;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::IpAddr;
 use std::sync::LazyLock;
 
 /// Compiled regex patterns for dangerous commands.
@@ -48,8 +48,7 @@ static BLOCKED_RANGES: LazyLock<Vec<ipnet::IpNet>> = LazyLock::new(|| {
 });
 
 /// URL extraction regex.
-static URL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"https?://[^\s'""]+"#).unwrap());
+static URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https?://[^\s'""]+"#).unwrap());
 
 /// Check command against dangerous pattern deny-list.
 pub fn check_deny_list(cmd: &str) -> Option<String> {
@@ -76,7 +75,8 @@ fn is_blocked(ip: &IpAddr, whitelist: &[ipnet::IpNet]) -> bool {
 }
 
 /// Check command for URLs targeting internal/private addresses (SSRF).
-pub fn check_ssrf(cmd: &str, whitelist: &[String]) -> Option<String> {
+/// Uses async DNS resolution to avoid blocking the tokio executor.
+pub async fn check_ssrf(cmd: &str, whitelist: &[String]) -> Option<String> {
     let wl: Vec<ipnet::IpNet> = whitelist.iter().filter_map(|s| s.parse().ok()).collect();
     for m in URL_RE.find_iter(cmd) {
         let url = m.as_str();
@@ -98,13 +98,11 @@ pub fn check_ssrf(cmd: &str, whitelist: &[String]) -> Option<String> {
             }
             continue;
         }
-        match format!("{host}:80").to_socket_addrs() {
+        match tokio::net::lookup_host(format!("{host}:80")).await {
             Ok(addrs) => {
                 for a in addrs {
                     if is_blocked(&a.ip(), &wl) {
-                        return Some(format!(
-                            "Blocked: SSRF — {host} resolves to private IP"
-                        ));
+                        return Some(format!("Blocked: SSRF — {host} resolves to private IP"));
                     }
                 }
             }
@@ -117,10 +115,14 @@ pub fn check_ssrf(cmd: &str, whitelist: &[String]) -> Option<String> {
 }
 
 /// Run all guardrail checks. Returns Some(reason) if any check fails.
-pub fn check_all(cmd: &str, ssrf_whitelist: &[String]) -> Option<String> {
-    check_deny_list(cmd)
-        .or_else(|| check_path_traversal(cmd))
-        .or_else(|| check_ssrf(cmd, ssrf_whitelist))
+pub async fn check_all(cmd: &str, ssrf_whitelist: &[String]) -> Option<String> {
+    if let Some(reason) = check_deny_list(cmd) {
+        return Some(reason);
+    }
+    if let Some(reason) = check_path_traversal(cmd) {
+        return Some(reason);
+    }
+    check_ssrf(cmd, ssrf_whitelist).await
 }
 
 #[cfg(test)]
@@ -151,28 +153,40 @@ mod tests {
     fn traversal_safe() {
         assert!(check_path_traversal("cat file.txt").is_none());
     }
-    #[test]
-    fn ssrf_blocks_localhost() {
-        assert!(check_ssrf("curl http://127.0.0.1/", &[]).is_some());
+    #[tokio::test]
+    async fn ssrf_blocks_localhost() {
+        assert!(check_ssrf("curl http://127.0.0.1/", &[]).await.is_some());
     }
-    #[test]
-    fn ssrf_blocks_private() {
-        assert!(check_ssrf("curl http://10.0.0.1/", &[]).is_some());
+    #[tokio::test]
+    async fn ssrf_blocks_private() {
+        assert!(check_ssrf("curl http://10.0.0.1/", &[]).await.is_some());
     }
-    #[test]
-    fn ssrf_allows_public() {
-        assert!(check_ssrf("curl https://api.github.com/", &[]).is_none());
+    #[tokio::test]
+    async fn ssrf_allows_public() {
+        assert!(
+            check_ssrf("curl https://api.github.com/", &[])
+                .await
+                .is_none()
+        );
     }
-    #[test]
-    fn ssrf_whitelist_overrides() {
-        assert!(check_ssrf("curl http://10.0.0.1/", &["10.0.0.0/8".into()]).is_none());
+    #[tokio::test]
+    async fn ssrf_whitelist_overrides() {
+        assert!(
+            check_ssrf("curl http://10.0.0.1/", &["10.0.0.0/8".into()])
+                .await
+                .is_none()
+        );
     }
-    #[test]
-    fn ssrf_blocks_metadata() {
-        assert!(check_ssrf("curl http://169.254.169.254/", &[]).is_some());
+    #[tokio::test]
+    async fn ssrf_blocks_metadata() {
+        assert!(
+            check_ssrf("curl http://169.254.169.254/", &[])
+                .await
+                .is_some()
+        );
     }
-    #[test]
-    fn check_all_safe() {
-        assert!(check_all("ls -la", &[]).is_none());
+    #[tokio::test]
+    async fn check_all_safe() {
+        assert!(check_all("ls -la", &[]).await.is_none());
     }
 }

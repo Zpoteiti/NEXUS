@@ -1,5 +1,5 @@
 use crate::config::ClientConfig;
-use crate::tools::helpers::{sanitize_path, tool_error, IGNORED_DIRS};
+use crate::tools::helpers::{IGNORED_DIRS, sanitize_path, tool_error};
 use crate::tools::{Tool, ToolResult};
 use nexus_common::consts::DEFAULT_LIST_DIR_MAX;
 use serde_json::Value;
@@ -54,13 +54,21 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
         return ToolResult::error(tool_error(&format!("not a directory: {p}")));
     }
 
-    let mut entries = Vec::new();
-    if recursive {
-        collect_rec(&path, &path, &mut entries, max * 2);
-    } else {
-        collect_flat(&path, &mut entries, max * 2);
-    }
-    entries.sort();
+    let entries = match tokio::task::spawn_blocking(move || {
+        let mut entries = Vec::new();
+        if recursive {
+            collect_rec(&path, &path, &mut entries, max * 2);
+        } else {
+            collect_flat(&path, &mut entries, max * 2);
+        }
+        entries.sort();
+        entries
+    })
+    .await
+    {
+        Ok(e) => e,
+        Err(e) => return ToolResult::error(tool_error(&format!("list_dir task failed: {e}"))),
+    };
 
     let mut out: String = entries
         .iter()
@@ -69,10 +77,7 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
         .collect::<Vec<_>>()
         .join("\n");
     if entries.len() > max {
-        out.push_str(&format!(
-            "\n... ({} total, showing {max})",
-            entries.len()
-        ));
+        out.push_str(&format!("\n... ({} total, showing {max})", entries.len()));
     }
     ToolResult::success(out)
 }
@@ -89,13 +94,11 @@ fn collect_flat(dir: &Path, entries: &mut Vec<String>, max: usize) {
         if IGNORED_DIRS.contains(&n.as_str()) {
             continue;
         }
-        entries.push(
-            if e.file_type().map(|f| f.is_dir()).unwrap_or(false) {
-                format!("[DIR]  {n}")
-            } else {
-                format!("[FILE] {n}")
-            },
-        );
+        entries.push(if e.file_type().map(|f| f.is_dir()).unwrap_or(false) {
+            format!("[DIR]  {n}")
+        } else {
+            format!("[FILE] {n}")
+        });
     }
 }
 

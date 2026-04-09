@@ -66,6 +66,56 @@ fn find_match(content: &str, old_text: &str) -> (Option<String>, usize) {
     }
 }
 
+/// Find the closest matching chunk in content to show as a diff hint.
+/// Uses a simple line-by-line similarity score (matching lines / total lines).
+fn find_closest_match(content: &str, old_text: &str) -> String {
+    let old_lines: Vec<&str> = old_text.lines().collect();
+    if old_lines.is_empty() {
+        return String::new();
+    }
+    let content_lines: Vec<&str> = content.lines().collect();
+    if content_lines.is_empty() {
+        return String::new();
+    }
+
+    let window = old_lines.len();
+    let mut best_score = 0usize;
+    let mut best_window: Option<Vec<&str>> = None;
+
+    for i in 0..=content_lines.len().saturating_sub(window) {
+        let candidate = &content_lines[i..i + window];
+        let score: usize = candidate
+            .iter()
+            .zip(old_lines.iter())
+            .filter(|(a, b)| a.trim() == b.trim())
+            .count();
+        if score > best_score {
+            best_score = score;
+            best_window = Some(candidate.to_vec());
+        }
+    }
+
+    // Only show if at least 30% of lines match
+    if best_score * 10 < window * 3 {
+        return String::new();
+    }
+
+    if let Some(win) = best_window {
+        let mut diff = String::from("\n\nClosest match found:\n");
+        for (actual, expected) in win.iter().zip(old_lines.iter()) {
+            if actual.trim() == expected.trim() {
+                diff.push_str(&format!("  {actual}\n"));
+            } else {
+                diff.push_str(&format!("- {expected}\n"));
+                diff.push_str(&format!("+ {actual}\n"));
+            }
+        }
+        diff
+    } else {
+        String::new()
+    }
+}
+
 async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
     let p = match args.get("file_path").and_then(Value::as_str) {
         Some(p) => p,
@@ -92,7 +142,10 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
     let (matched, count) = find_match(&content, old);
 
     match count {
-        0 => ToolResult::error(tool_error(&format!("old_string not found in {p}"))),
+        0 => {
+            let hint = find_closest_match(&content, old);
+            ToolResult::error(tool_error(&format!("old_string not found in {p}{hint}")))
+        }
         1 => {
             let new_content = content.replacen(&matched.unwrap(), new, 1);
             match tokio::fs::write(&path, &new_content).await {
@@ -135,8 +188,7 @@ mod tests {
 
     #[test]
     fn test_find_fuzzy() {
-        let (m, c) =
-            find_match("    fn f() {\n        x();\n    }", "fn f() {\n    x();\n}");
+        let (m, c) = find_match("    fn f() {\n        x();\n    }", "fn f() {\n    x();\n}");
         assert_eq!(c, 1);
         assert!(m.unwrap().contains("        x();"));
     }

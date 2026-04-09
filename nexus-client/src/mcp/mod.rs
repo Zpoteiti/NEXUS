@@ -36,8 +36,7 @@ impl McpManager {
     /// Apply config update: diff against current, start/stop/restart as needed.
     pub async fn apply_config(&mut self, new: &[McpServerEntry]) {
         let current: Vec<String> = self.sessions.keys().cloned().collect();
-        let new_names: Vec<&str> =
-            new.iter().map(|s| s.name.as_str()).collect();
+        let new_names: Vec<&str> = new.iter().map(|s| s.name.as_str()).collect();
 
         // Remove servers no longer in config
         for name in &current {
@@ -74,11 +73,7 @@ impl McpManager {
 
     /// Route a tool call to the correct MCP session.
     /// Tool name format: mcp_{server_name}_{tool_name}
-    pub async fn call_tool(
-        &self,
-        prefixed: &str,
-        args: Value,
-    ) -> Result<String, String> {
+    pub async fn call_tool(&self, prefixed: &str, args: Value) -> Result<String, String> {
         let rest = prefixed
             .strip_prefix("mcp_")
             .ok_or_else(|| format!("not MCP: {prefixed}"))?;

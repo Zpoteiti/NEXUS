@@ -64,13 +64,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> ClientConfig {
-        ClientConfig::from_login(
-            "/home/u/ws".into(),
-            FsPolicy::Sandbox,
-            60,
-            vec![],
-            vec![],
-        )
+        ClientConfig::from_login("/home/u/ws".into(), FsPolicy::Sandbox, 60, vec![], vec![])
     }
 
     #[test]

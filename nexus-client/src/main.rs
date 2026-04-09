@@ -7,13 +7,15 @@ mod mcp;
 mod sandbox;
 mod tools;
 
-use connection::{recv_message, send_message, WsSink};
+use connection::{WsSink, recv_message, send_message};
 use heartbeat::{ack_heartbeat, spawn_heartbeat};
 use nexus_common::consts::DEVICE_TOKEN_PREFIX;
+use nexus_common::error::{ErrorCode, NexusError};
 use nexus_common::protocol::{ClientToServer, ServerToClient, ToolExecutionResult};
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 #[tokio::main]
@@ -60,12 +62,12 @@ async fn reconnect_loop(ws_url: &str, token: &str) {
     }
 }
 
-async fn run_session(ws_url: &str, token: &str) -> Result<(), String> {
-    let (sink, mut stream, initial_config) =
-        connection::connect_and_auth(ws_url, token).await?;
+async fn run_session(ws_url: &str, token: &str) -> Result<(), NexusError> {
+    let (sink, mut stream, initial_config) = connection::connect_and_auth(ws_url, token).await?;
     let config = Arc::new(RwLock::new(initial_config));
     let sink = Arc::new(Mutex::new(sink));
     let missed_acks = Arc::new(AtomicU32::new(0));
+    let dead_signal = CancellationToken::new();
 
     // Initialize MCP servers
     let mcp_manager = Arc::new(Mutex::new(mcp::McpManager::new()));
@@ -93,7 +95,11 @@ async fn run_session(ws_url: &str, token: &str) -> Result<(), String> {
         );
     }
 
-    let hb = spawn_heartbeat(Arc::clone(&sink), Arc::clone(&missed_acks));
+    let hb = spawn_heartbeat(
+        Arc::clone(&sink),
+        Arc::clone(&missed_acks),
+        dead_signal.clone(),
+    );
     let result = message_loop(
         &mut stream,
         &sink,
@@ -101,6 +107,7 @@ async fn run_session(ws_url: &str, token: &str) -> Result<(), String> {
         &missed_acks,
         &registry,
         &mcp_manager,
+        &dead_signal,
     )
     .await;
     hb.cancel();
@@ -114,9 +121,15 @@ async fn message_loop(
     missed_acks: &Arc<AtomicU32>,
     registry: &Arc<tools::ToolRegistry>,
     mcp_manager: &Arc<Mutex<mcp::McpManager>>,
-) -> Result<(), String> {
+    dead_signal: &CancellationToken,
+) -> Result<(), NexusError> {
     loop {
-        let msg = recv_message(stream).await?;
+        let msg = tokio::select! {
+            _ = dead_signal.cancelled() => {
+                return Err(NexusError::new(ErrorCode::ConnectionFailed, "heartbeat: connection dead"));
+            }
+            msg = recv_message(stream) => msg?,
+        };
         match msg {
             ServerToClient::HeartbeatAck => {
                 ack_heartbeat(missed_acks);
@@ -129,38 +142,27 @@ async fn message_loop(
 
                 // Spawn tool execution in background so message loop continues
                 tokio::spawn(async move {
-                    let result =
-                        if mcp::McpManager::is_mcp_tool(&req.tool_name) {
-                            match mcp_mgr
-                                .lock()
-                                .await
-                                .call_tool(&req.tool_name, req.arguments)
-                                .await
-                            {
-                                Ok(out) => tools::ToolResult::success(out),
-                                Err(e) => tools::ToolResult::error(e),
-                            }
-                        } else {
-                            let cfg = config.read().await;
-                            registry
-                                .dispatch(
-                                    &req.tool_name,
-                                    req.arguments,
-                                    &cfg,
-                                )
-                                .await
-                        };
+                    let result = if mcp::McpManager::is_mcp_tool(&req.tool_name) {
+                        match mcp_mgr
+                            .lock()
+                            .await
+                            .call_tool(&req.tool_name, req.arguments)
+                            .await
+                        {
+                            Ok(out) => tools::ToolResult::success(out),
+                            Err(e) => tools::ToolResult::error(e),
+                        }
+                    } else {
+                        let cfg = config.read().await;
+                        registry.dispatch(&req.tool_name, req.arguments, &cfg).await
+                    };
 
-                    let msg = ClientToServer::ToolExecutionResult(
-                        ToolExecutionResult {
-                            request_id: req.request_id,
-                            exit_code: result.exit_code,
-                            output: result.output,
-                        },
-                    );
-                    if let Err(e) =
-                        send_message(&mut *sink.lock().await, &msg).await
-                    {
+                    let msg = ClientToServer::ToolExecutionResult(ToolExecutionResult {
+                        request_id: req.request_id,
+                        exit_code: result.exit_code,
+                        output: result.output,
+                    });
+                    if let Err(e) = send_message(&mut *sink.lock().await, &msg).await {
                         warn!("send result failed: {e}");
                     }
                 });
@@ -180,17 +182,14 @@ async fn message_loop(
                     shell_timeout,
                     ssrf_whitelist,
                 );
-                if mcp_changed
-                    && let Some(new_servers) = mcp_servers
-                {
+                if mcp_changed && let Some(new_servers) = mcp_servers {
                     let mut mgr = mcp_manager.lock().await;
                     mgr.apply_config(&new_servers).await;
                     // Re-register tools with updated MCP schemas
                     let mut schemas = registry.schemas();
                     schemas.extend(mgr.all_tool_schemas());
                     let msg = ClientToServer::RegisterTools { schemas };
-                    let _ =
-                        send_message(&mut *sink.lock().await, &msg).await;
+                    let _ = send_message(&mut *sink.lock().await, &msg).await;
                 }
             }
             other => {

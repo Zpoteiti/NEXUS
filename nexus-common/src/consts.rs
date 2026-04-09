@@ -35,7 +35,10 @@ mod tests {
     fn test_constants_values() {
         assert_eq!(PROTOCOL_VERSION, "1.0");
         assert_eq!(HEARTBEAT_INTERVAL_SEC, 15);
-        assert_eq!(MAX_TOOL_OUTPUT_CHARS, TOOL_OUTPUT_HEAD_CHARS + TOOL_OUTPUT_TAIL_CHARS);
+        assert_eq!(
+            MAX_TOOL_OUTPUT_CHARS,
+            TOOL_OUTPUT_HEAD_CHARS + TOOL_OUTPUT_TAIL_CHARS
+        );
         assert_eq!(EXIT_CODE_SUCCESS, 0);
         assert_eq!(DEVICE_TOKEN_PREFIX, "nexus_dev_");
         assert_eq!(DEVICE_TOKEN_RANDOM_LEN, 32);

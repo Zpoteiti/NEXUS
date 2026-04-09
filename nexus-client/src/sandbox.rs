@@ -15,10 +15,7 @@ pub static BWRAP_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
         .output()
     {
         Ok(o) if o.status.success() => {
-            tracing::info!(
-                "bwrap: {}",
-                String::from_utf8_lossy(&o.stdout).trim()
-            );
+            tracing::info!("bwrap: {}", String::from_utf8_lossy(&o.stdout).trim());
             true
         }
         _ => {
@@ -93,10 +90,7 @@ mod tests {
     fn test_structure() {
         let c = wrap_command("echo hi", &PathBuf::from("/home/u/ws"));
         assert_eq!(c[0], "bwrap");
-        assert!(
-            c.contains(&"--new-session".into())
-                && c.contains(&"--die-with-parent".into())
-        );
+        assert!(c.contains(&"--new-session".into()) && c.contains(&"--die-with-parent".into()));
     }
 
     #[test]

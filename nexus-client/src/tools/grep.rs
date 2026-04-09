@@ -1,5 +1,5 @@
 use crate::config::ClientConfig;
-use crate::tools::helpers::{sanitize_path, tool_error, IGNORED_DIRS};
+use crate::tools::helpers::{IGNORED_DIRS, sanitize_path, tool_error};
 use crate::tools::{Tool, ToolResult};
 use regex::Regex;
 use serde_json::Value;
@@ -38,10 +38,7 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
         Some(p) => p,
         None => return ToolResult::error(tool_error("missing: pattern")),
     };
-    let ctx = args
-        .get("context")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
+    let ctx = args.get("context").and_then(Value::as_u64).unwrap_or(0) as usize;
     let include = args.get("include").and_then(Value::as_str);
     let re = match Regex::new(pat) {
         Ok(r) => r,
@@ -56,8 +53,16 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
         config.workspace.clone()
     };
     let incl = include.and_then(|p| glob::Pattern::new(p).ok());
-    let mut results = Vec::new();
-    search_dir(&base, &base, &re, &incl, ctx, &mut results);
+    let results = match tokio::task::spawn_blocking(move || {
+        let mut results = Vec::new();
+        search_dir(&base, &base, &re, &incl, ctx, &mut results);
+        results
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return ToolResult::error(tool_error(&format!("grep task failed: {e}"))),
+    };
     if results.is_empty() {
         ToolResult::success("No matches found.")
     } else {
@@ -95,21 +100,12 @@ fn search_dir(
     }
 }
 
-fn search_file(
-    base: &Path,
-    path: &Path,
-    re: &Regex,
-    ctx: usize,
-    res: &mut Vec<String>,
-) {
+fn search_file(base: &Path, path: &Path, re: &Regex, ctx: usize, res: &mut Vec<String>) {
     let Ok(content) = std::fs::read_to_string(path) else {
         return;
     };
     let lines: Vec<&str> = content.lines().collect();
-    let rel = path
-        .strip_prefix(base)
-        .unwrap_or(path)
-        .to_string_lossy();
+    let rel = path.strip_prefix(base).unwrap_or(path).to_string_lossy();
     for (i, line) in lines.iter().enumerate() {
         if re.is_match(line) {
             let s = i.saturating_sub(ctx);
@@ -144,11 +140,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic() {
         let d = tempfile::tempdir().unwrap();
-        std::fs::write(
-            d.path().join("h.txt"),
-            "hello\nbye\nhello again\n",
-        )
-        .unwrap();
+        std::fs::write(d.path().join("h.txt"), "hello\nbye\nhello again\n").unwrap();
         let r = exec(serde_json::json!({"pattern": "hello"}), &cfg(d.path())).await;
         assert!(r.output.contains("h.txt:1") && r.output.contains("h.txt:3"));
     }
@@ -169,11 +161,7 @@ mod tests {
     #[tokio::test]
     async fn test_bad_regex() {
         let d = tempfile::tempdir().unwrap();
-        let r = exec(
-            serde_json::json!({"pattern": "[invalid"}),
-            &cfg(d.path()),
-        )
-        .await;
+        let r = exec(serde_json::json!({"pattern": "[invalid"}), &cfg(d.path())).await;
         assert_eq!(r.exit_code, 1);
     }
 }

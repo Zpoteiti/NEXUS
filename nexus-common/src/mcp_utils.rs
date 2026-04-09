@@ -28,8 +28,7 @@ pub fn normalize_schema_for_openai(schema: &Value) -> Value {
     // Handle type: ["string", "null"] -> type: "string", nullable: true
     if let Some(type_val) = obj.get("type") {
         if let Some(arr) = type_val.as_array() {
-            let non_null: Vec<&Value> =
-                arr.iter().filter(|v| v.as_str() != Some("null")).collect();
+            let non_null: Vec<&Value> = arr.iter().filter(|v| v.as_str() != Some("null")).collect();
             let has_null = arr.iter().any(|v| v.as_str() == Some("null"));
             if non_null.len() == 1 {
                 result.insert("type".into(), non_null[0].clone());
@@ -132,8 +131,7 @@ mod tests {
 
     #[test]
     fn test_normalize_nested_properties() {
-        let s =
-            json!({"type": "object", "properties": {"name": {"type": ["string", "null"]}}});
+        let s = json!({"type": "object", "properties": {"name": {"type": ["string", "null"]}}});
         let r = normalize_schema_for_openai(&s);
         assert_eq!(r["properties"]["name"]["type"], "string");
         assert_eq!(r["properties"]["name"]["nullable"], true);

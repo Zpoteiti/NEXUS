@@ -80,12 +80,7 @@ impl ToolRegistry {
     }
 
     /// Dispatch a tool call by name.
-    pub async fn dispatch(
-        &self,
-        name: &str,
-        args: Value,
-        config: &ClientConfig,
-    ) -> ToolResult {
+    pub async fn dispatch(&self, name: &str, args: Value, config: &ClientConfig) -> ToolResult {
         match self.tools.get(name) {
             Some(tool) => tool.execute(args, config).await,
             None => ToolResult::error(helpers::tool_error(&format!("tool not found: {name}"))),

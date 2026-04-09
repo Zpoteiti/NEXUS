@@ -3,10 +3,10 @@
 use nexus_common::consts::DEFAULT_MCP_TOOL_TIMEOUT_SEC;
 use nexus_common::mcp_utils::normalize_schema_for_openai;
 use nexus_common::protocol::McpServerEntry;
+use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, RawContent, Tool as McpTool};
 use rmcp::service::RunningService;
 use rmcp::transport::child_process::TokioChildProcess;
-use rmcp::ServiceExt;
 use serde_json::Value;
 use tracing::{info, warn};
 
@@ -30,12 +30,10 @@ impl McpSession {
             }
         }
 
-        let child = TokioChildProcess::new(cmd)
-            .map_err(|e| format!("spawn '{}': {e}", entry.name))?;
+        let child =
+            TokioChildProcess::new(cmd).map_err(|e| format!("spawn '{}': {e}", entry.name))?;
 
-        let service = ().serve(child)
-            .await
-            .map_err(|e| format!("init '{}': {e}", entry.name))?;
+        let service = ().serve(child).await.map_err(|e| format!("init '{}': {e}", entry.name))?;
 
         let tools = service
             .list_all_tools()
@@ -46,9 +44,7 @@ impl McpSession {
 
         Ok(Self {
             server_name: entry.name.clone(),
-            tool_timeout: entry
-                .tool_timeout
-                .unwrap_or(DEFAULT_MCP_TOOL_TIMEOUT_SEC),
+            tool_timeout: entry.tool_timeout.unwrap_or(DEFAULT_MCP_TOOL_TIMEOUT_SEC),
             service,
             tools,
         })
@@ -60,13 +56,9 @@ impl McpSession {
             .iter()
             .map(|t| {
                 let name = format!("mcp_{}_{}", self.server_name, t.name);
-                let desc = t
-                    .description
-                    .as_deref()
-                    .unwrap_or("MCP tool");
+                let desc = t.description.as_deref().unwrap_or("MCP tool");
                 let params = {
-                    let v = serde_json::to_value(&*t.input_schema)
-                        .unwrap_or_default();
+                    let v = serde_json::to_value(&*t.input_schema).unwrap_or_default();
                     normalize_schema_for_openai(&v)
                 };
                 serde_json::json!({
@@ -82,19 +74,14 @@ impl McpSession {
     }
 
     /// Call an MCP tool by its original (unprefixed) name.
-    pub async fn call_tool(
-        &self,
-        tool_name: &str,
-        args: Value,
-    ) -> Result<String, String> {
+    pub async fn call_tool(&self, tool_name: &str, args: Value) -> Result<String, String> {
         let timeout = std::time::Duration::from_secs(self.tool_timeout);
         let args_map: serde_json::Map<String, Value> = match args {
             Value::Object(m) => m,
             _ => serde_json::Map::new(),
         };
 
-        let params = CallToolRequestParams::new(tool_name.to_string())
-            .with_arguments(args_map);
+        let params = CallToolRequestParams::new(tool_name.to_string()).with_arguments(args_map);
 
         let result = tokio::time::timeout(timeout, async {
             self.service
