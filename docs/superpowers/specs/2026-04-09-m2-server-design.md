@@ -533,11 +533,13 @@ run_session(state, session_id, inbox_rx)
 
 ### 9.2 Tool Call Routing
 
-1. Check tool name against server tool registry first (save_memory, web_fetch, etc.)
-2. If server tool: execute directly — no `device_name` argument needed (server tools always run locally)
-3. Check tool name against server MCP registry (prefixed `mcp_server_*`)
-4. If server MCP: dispatch to server MCP manager
-5. Else: parse `device_name` from tool call arguments (injected enum for client tools) → find device in `devices` DashMap → send `ExecuteToolRequest` via WebSocket → await oneshot response (120s timeout)
+1. Check tool name against server native tool registry (save_memory, web_fetch, etc.)
+2. If server native tool: execute directly — no `device_name` argument (always runs on server)
+3. For all other tools (client tools + MCP tools): parse `device_name` from arguments
+   - If `device_name == "server"`: dispatch to server MCP manager
+   - Else: find device in `devices` DashMap → send `ExecuteToolRequest` via WebSocket → await oneshot response (120s timeout)
+
+**Why MCP tools need device_name:** An admin may add `very_useful_mcp` as a server MCP, and a user may also configure the same MCP on their client device. Both register tools with the same name. The `device_name` enum lets the LLM choose where to run it.
 
 ### 9.3 Loop Guards
 
@@ -660,7 +662,20 @@ Built from `devices` and `devices_by_user` DashMaps. Only shows devices with act
 
 ### 10.3 Tool Schema Injection
 
-Merge device tool schemas + server tool schemas + server MCP tool schemas. Server tools have no `device_name` parameter. For multi-device users, inject `device_name` enum into each client tool so the LLM can choose which device to target.
+**Server native tools** (save_memory, edit_memory, message, file_transfer, cron, read_skill, install_skill, web_fetch): No `device_name` parameter. Always run on server.
+
+**Client tools + MCP tools** (from any source): Inject `device_name` enum with all available options. For client tools: list of online devices. For MCP tools: include `"server"` if admin configured that MCP, plus any client devices that also have it.
+
+Example — user has 2 devices + admin MCP with overlapping tool:
+```json
+{
+  "name": "mcp_github_search",
+  "parameters": {
+    "device_name": { "enum": ["server", "mac-mini"] },
+    "query": { "type": "string" }
+  }
+}
+```
 
 ---
 
