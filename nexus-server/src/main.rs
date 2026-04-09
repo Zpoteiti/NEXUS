@@ -1,3 +1,4 @@
+mod agent_loop;
 mod api;
 mod auth;
 mod bus;
@@ -54,6 +55,7 @@ async fn main() {
     // Background tasks
     file_store::spawn_cleanup_task();
     ws::spawn_heartbeat_reaper(Arc::clone(&state));
+    bus::spawn_rate_limit_refresh(Arc::clone(&state));
 
     let app = axum::Router::new()
         .merge(auth::auth_routes())
