@@ -1,5 +1,6 @@
 mod bus;
 mod config;
+mod db;
 mod session;
 mod state;
 
@@ -16,5 +17,6 @@ async fn main() {
         .init();
 
     let config = ServerConfig::from_env();
+    let _pool = db::init_db(&config.database_url).await;
     info!("NEXUS Server starting on port {}...", config.server_port);
 }
