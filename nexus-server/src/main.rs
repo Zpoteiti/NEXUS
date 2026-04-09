@@ -35,7 +35,19 @@ async fn main() {
     let config = ServerConfig::from_env();
     let pool = db::init_db(&config.database_url).await;
 
-    let (outbound_tx, _outbound_rx) = mpsc::channel(1000);
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<crate::bus::OutboundEvent>(1000);
+
+    // Drain outbound events (channel handlers in M2d will consume these)
+    tokio::spawn(async move {
+        while let Some(event) = outbound_rx.recv().await {
+            tracing::debug!(
+                "Outbound [{}]: {} chars to {:?}",
+                event.channel,
+                event.content.len(),
+                event.chat_id
+            );
+        }
+    });
 
     let state = Arc::new(AppState {
         db: pool,

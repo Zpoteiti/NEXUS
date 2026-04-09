@@ -64,29 +64,10 @@ async fn poll_and_execute(state: &Arc<AppState>) -> Result<(), String> {
 
 fn compute_next_run(job: &crate::db::cron::CronJob) -> Option<chrono::DateTime<chrono::Utc>> {
     if let Some(ref expr) = job.cron_expr {
-        // Use cron parser for next occurrence
-        use cron::Schedule;
-        use std::str::FromStr;
-
-        let parts: Vec<&str> = expr.split_whitespace().collect();
-        let full = match parts.len() {
-            5 => format!("0 {expr} *"),
-            6 => format!("{expr} *"),
-            7 => expr.clone(),
-            _ => return None,
-        };
-
-        let tz: chrono_tz::Tz = job.timezone.parse().unwrap_or(chrono_tz::UTC);
-        let schedule = Schedule::from_str(&full).ok()?;
-        let now = chrono::Utc::now().with_timezone(&tz);
-        schedule
-            .after(&now)
-            .next()
-            .map(|dt| dt.with_timezone(&chrono::Utc))
+        crate::server_tools::cron_tool::compute_next_cron_pub(expr, &job.timezone).ok()
     } else if let Some(secs) = job.every_seconds {
         Some(chrono::Utc::now() + chrono::Duration::seconds(secs as i64))
     } else {
-        // at-mode: no next run
         None
     }
 }

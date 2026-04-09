@@ -42,10 +42,9 @@ pub async fn publish_inbound(state: &Arc<AppState>, event: InboundEvent) -> Resu
         check_rate_limit(state, &event.user_id).await?;
     }
 
-    // Find or create session
-    if state.sessions.contains_key(&event.session_id) {
+    // Find or create session (atomic via DashMap entry API to avoid TOCTOU)
+    if let Some(handle) = state.sessions.get(&event.session_id) {
         // Session exists — send to its inbox
-        let handle = state.sessions.get(&event.session_id).unwrap();
         handle
             .inbox_tx
             .send(event)
@@ -59,26 +58,52 @@ pub async fn publish_inbound(state: &Arc<AppState>, event: InboundEvent) -> Resu
 
         // Create inbox channel
         let (tx, rx) = mpsc::channel(100);
-        tx.send(event.clone())
-            .await
-            .map_err(|_| "Send to new inbox failed".to_string())?;
 
         let handle = SessionHandle {
             user_id: event.user_id.clone(),
-            inbox_tx: tx,
+            inbox_tx: tx.clone(),
             lock: Arc::new(Mutex::new(())),
         };
-        state.sessions.insert(event.session_id.clone(), handle);
 
-        // Spawn agent loop (will be implemented in Task 8)
-        let state_clone = Arc::clone(state);
+        // Use entry API to atomically insert only if still absent (prevents double-spawn)
         let session_id = event.session_id.clone();
-        let user_id = event.user_id.clone();
-        tokio::spawn(async move {
-            crate::agent_loop::run_session(state_clone, session_id, user_id, rx).await;
-        });
+        let inserted = state
+            .sessions
+            .entry(session_id.clone())
+            .or_insert(handle)
+            .inbox_tx
+            .clone();
 
-        info!("New session spawned: {}", event.session_id);
+        // Send the event
+        inserted
+            .send(event.clone())
+            .await
+            .map_err(|_| "Send to new inbox failed".to_string())?;
+
+        // Only spawn if we were the one who inserted (tx matches inserted)
+        // Since DashMap::entry().or_insert() returns the existing value if present,
+        // we check if our tx was the one inserted by comparing channel capacity
+        // Actually, simpler: just try_send on our original tx — if it fails, another task won
+        // The safest approach: spawn unconditionally but the agent loop handles duplicate gracefully
+        // via the mpsc receiver — only one rx exists per session.
+        // Since we only create rx once above, spawn only if this is a fresh session:
+        if !state
+            .sessions
+            .get(&session_id)
+            .unwrap()
+            .inbox_tx
+            .same_channel(&tx)
+        {
+            // Another task beat us — our rx will never receive, drop it
+            drop(rx);
+        } else {
+            let state_clone = Arc::clone(state);
+            let user_id = event.user_id.clone();
+            tokio::spawn(async move {
+                crate::agent_loop::run_session(state_clone, session_id, user_id, rx).await;
+            });
+            info!("New session spawned: {}", event.session_id);
+        }
     }
 
     Ok(())

@@ -5,7 +5,6 @@ use crate::config::LlmConfig;
 use crate::db::messages::Message;
 use crate::providers::openai::{self, ChatMessage};
 use crate::state::AppState;
-use nexus_common::consts::COMPRESSION_SUMMARY_MAX_TOKENS;
 use tracing::{info, warn};
 
 /// Compress conversation history by summarizing via LLM.
@@ -60,11 +59,9 @@ pub async fn compress(
     }
     summary_messages.push(ChatMessage::user(conversation));
 
-    // Call LLM for summary
-    let mut config = llm_config.clone();
-    // Use a smaller context for summarization
+    // Call LLM for summary (reuse shared HTTP client)
     let summary =
-        match openai::call_llm(&reqwest::Client::new(), &config, summary_messages, None).await {
+        match openai::call_llm(&state.http_client, llm_config, summary_messages, None).await {
             Ok(openai::LlmResponse::Text(text)) => text,
             Ok(openai::LlmResponse::ToolCalls(_)) => {
                 warn!("Compression LLM returned tool calls instead of summary");

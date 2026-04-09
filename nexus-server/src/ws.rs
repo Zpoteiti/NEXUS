@@ -183,6 +183,10 @@ async fn handle_connection(socket: WebSocket, state: Arc<AppState>) {
     state.devices.remove(&device_key);
     if let Some(mut keys) = state.devices_by_user.get_mut(&user_id) {
         keys.retain(|k| k != &device_key);
+        if keys.is_empty() {
+            drop(keys);
+            state.devices_by_user.remove(&user_id);
+        }
     }
     state.pending.remove(&device_key);
     state.tool_schema_cache.remove(&user_id);
@@ -238,6 +242,10 @@ pub fn spawn_heartbeat_reaper(state: Arc<AppState>) {
                 if let Some((_, conn)) = state.devices.remove(&key) {
                     if let Some(mut keys) = state.devices_by_user.get_mut(&conn.user_id) {
                         keys.retain(|k| k != &key);
+                        if keys.is_empty() {
+                            drop(keys);
+                            state.devices_by_user.remove(&conn.user_id);
+                        }
                     }
                     state.pending.remove(&key);
                     state.tool_schema_cache.remove(&conn.user_id);

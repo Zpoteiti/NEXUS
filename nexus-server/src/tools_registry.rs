@@ -93,10 +93,6 @@ pub fn build_tool_schemas(state: &AppState, user_id: &str) -> Vec<Value> {
 
 /// Inject device_name enum into a tool schema's parameters.
 fn inject_device_name_enum(schema: &mut Value, devices: &[String]) {
-    if devices.len() <= 1 && !devices.is_empty() {
-        // Single device — still add device_name so routing works, but as a const
-    }
-
     if let Some(function) = schema.get_mut("function") {
         if let Some(parameters) = function.get_mut("parameters") {
             if let Some(properties) = parameters.get_mut("properties") {

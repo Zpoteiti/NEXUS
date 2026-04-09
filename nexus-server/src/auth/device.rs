@@ -233,14 +233,13 @@ async fn push_config_update(
     build: impl FnOnce(&mut ServerToClient),
 ) {
     let key = AppState::device_key(user_id, device_name);
-    if let Some(conn) = state.devices.get(&key) {
+    let sink = state.devices.get(&key).map(|conn| Arc::clone(&conn.sink));
+    if let Some(sink) = sink {
         let mut msg = ServerToClient::HeartbeatAck; // placeholder
         build(&mut msg);
         let json = serde_json::to_string(&msg).unwrap();
-        let mut sink = conn.sink.lock().await;
-        let _ = sink
-            .send(axum::extract::ws::Message::Text(json.into()))
-            .await;
+        let mut s = sink.lock().await;
+        let _ = s.send(axum::extract::ws::Message::Text(json.into())).await;
     }
 }
 

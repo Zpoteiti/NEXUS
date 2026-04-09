@@ -90,7 +90,7 @@ async fn read_server_file(
 }
 
 /// Request a file from a client device via FileRequest protocol.
-async fn request_file_from_device(
+pub async fn request_file_from_device(
     state: &AppState,
     user_id: &str,
     device_name: &str,
