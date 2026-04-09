@@ -13,6 +13,27 @@ pub struct ClientConfig {
     pub mcp_servers: Vec<McpServerEntry>,
 }
 
+/// Expand ~ to home directory and ensure the workspace directory exists.
+fn resolve_workspace(path: &str) -> PathBuf {
+    let expanded = if path.starts_with("~/") || path == "~" {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".into());
+        path.replacen('~', &home, 1)
+    } else if path.is_empty() {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".into());
+        format!("{home}/.nexus/workspace")
+    } else {
+        path.to_string()
+    };
+    let pb = PathBuf::from(&expanded);
+    // Best-effort create directory
+    let _ = std::fs::create_dir_all(&pb);
+    pb
+}
+
 impl ClientConfig {
     pub fn from_login(
         workspace_path: String,
@@ -22,7 +43,7 @@ impl ClientConfig {
         mcp_servers: Vec<McpServerEntry>,
     ) -> Self {
         Self {
-            workspace: PathBuf::from(workspace_path),
+            workspace: resolve_workspace(&workspace_path),
             fs_policy,
             shell_timeout,
             ssrf_whitelist,
@@ -43,7 +64,7 @@ impl ClientConfig {
             self.fs_policy = v;
         }
         if let Some(v) = workspace_path {
-            self.workspace = PathBuf::from(v);
+            self.workspace = resolve_workspace(&v);
         }
         if let Some(v) = shell_timeout {
             self.shell_timeout = v;
