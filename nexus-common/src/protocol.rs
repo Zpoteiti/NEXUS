@@ -76,6 +76,16 @@ pub enum ServerToClient {
         shell_timeout: Option<u64>,
         ssrf_whitelist: Option<Vec<String>>,
     },
+    FileRequest {
+        request_id: String,
+        path: String,
+    },
+    FileSend {
+        request_id: String,
+        filename: String,
+        content_base64: String,
+        destination: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +109,16 @@ pub enum ClientToServer {
     },
     Heartbeat {
         status: DeviceStatus,
+    },
+    FileResponse {
+        request_id: String,
+        content_base64: String,
+        mime_type: Option<String>,
+        error: Option<String>,
+    },
+    FileSendAck {
+        request_id: String,
+        error: Option<String>,
     },
 }
 

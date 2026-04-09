@@ -27,6 +27,27 @@ pub const DEFAULT_LIST_DIR_MAX: usize = 200;
 // Shell timeout
 pub const DEFAULT_SHELL_TIMEOUT_SEC: u64 = 60;
 
+// Server constants
+pub const TOOL_EXECUTION_TIMEOUT_SEC: u64 = 120;
+pub const MEMORY_TEXT_MAX_CHARS: usize = 4096;
+pub const USER_MESSAGE_MAX_CHARS: usize = 4000;
+pub const CONTEXT_COMPRESSION_THRESHOLD: usize = 16_000;
+pub const FILE_UPLOAD_MAX_BYTES: usize = 25 * 1024 * 1024;
+pub const FILE_CLEANUP_AGE_HOURS: u64 = 24;
+pub const WEB_FETCH_MAX_BODY_BYTES: usize = 1_048_576;
+pub const WEB_FETCH_MAX_OUTPUT_CHARS: usize = 50_000;
+pub const WEB_FETCH_TIMEOUT_SEC: u64 = 15;
+pub const WEB_FETCH_CONNECT_TIMEOUT_SEC: u64 = 10;
+pub const WEB_FETCH_MAX_REDIRECTS: usize = 5;
+pub const WEB_FETCH_CONCURRENT_MAX: usize = 50;
+pub const DB_POOL_MAX_CONNECTIONS: u32 = 200;
+pub const RATE_LIMIT_CACHE_TTL_SEC: u64 = 60;
+pub const JWT_EXPIRY_DAYS: i64 = 7;
+pub const BCRYPT_COST: u32 = 12;
+pub const HEARTBEAT_REAPER_INTERVAL_SEC: u64 = 30;
+pub const CRON_POLL_INTERVAL_SEC: u64 = 10;
+pub const COMPRESSION_SUMMARY_MAX_TOKENS: u32 = 12_000;
+
 #[cfg(test)]
 mod tests {
     use super::*;
