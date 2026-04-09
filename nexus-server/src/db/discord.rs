@@ -58,3 +58,16 @@ pub async fn list_enabled(pool: &PgPool) -> Result<Vec<DiscordConfig>, sqlx::Err
         .fetch_all(pool)
         .await
 }
+
+pub async fn set_bot_user_id(
+    pool: &PgPool,
+    user_id: &str,
+    bot_user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE discord_configs SET bot_user_id = $1 WHERE user_id = $2")
+        .bind(bot_user_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
