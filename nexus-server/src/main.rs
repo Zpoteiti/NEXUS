@@ -4,6 +4,7 @@ mod bus;
 mod config;
 mod db;
 mod file_store;
+mod providers;
 mod session;
 mod state;
 mod ws;
@@ -45,6 +46,7 @@ async fn main() {
         web_fetch_semaphore: Arc::new(Semaphore::new(
             nexus_common::consts::WEB_FETCH_CONCURRENT_MAX,
         )),
+        http_client: reqwest::Client::new(),
         outbound_tx,
         shutdown: CancellationToken::new(),
     });

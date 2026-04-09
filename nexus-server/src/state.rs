@@ -59,6 +59,9 @@ pub struct AppState {
     // Outbound event channel (agent loop -> channel handlers)
     pub outbound_tx: mpsc::Sender<OutboundEvent>,
 
+    // Shared HTTP client (connection pooling for LLM + web_fetch)
+    pub http_client: reqwest::Client,
+
     // Shutdown signal
     pub shutdown: CancellationToken,
 }
