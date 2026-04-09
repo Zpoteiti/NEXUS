@@ -1,9 +1,11 @@
 //! Database initialization and CRUD modules.
 //! All queries via sqlx::query / sqlx::query_as (runtime unchecked).
 
+pub mod cron;
 pub mod devices;
 pub mod messages;
 pub mod sessions;
+pub mod skills;
 pub mod system_config;
 pub mod users;
 

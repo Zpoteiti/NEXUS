@@ -3,11 +3,14 @@ mod api;
 mod auth;
 mod bus;
 mod config;
+mod context;
 mod db;
 mod file_store;
 mod providers;
+mod server_tools;
 mod session;
 mod state;
+mod tools_registry;
 mod ws;
 
 use crate::state::AppState;
