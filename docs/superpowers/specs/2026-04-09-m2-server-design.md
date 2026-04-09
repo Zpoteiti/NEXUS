@@ -790,9 +790,18 @@ Background task every 30s: iterate `devices`, check `last_seen`. If `now - last_
 
 **Params:** `from_device` (string, required), `to_device` (string, required), `file_path` (string, required)
 **Action:**
-1. Send `FileRequest { path }` to `from_device` → await `FileResponse` with base64 content
-2. Send `FileSend { filename, content_base64, destination }` to `to_device` → await `FileSendAck`
+1. If `from_device` is a client: send `FileRequest { path }` → await `FileResponse` with base64 content
+2. If `from_device == "server"`: read file directly from server filesystem (see path restrictions below)
+3. If `to_device` is a client: send `FileSend { filename, content_base64, destination }` → await `FileSendAck`
+4. If `to_device == "server"`: save to `/tmp/nexus-uploads/{user_id}/`
 **Returns:** Success or error.
+
+**Server-side path restrictions (per-user isolation):**
+When `from_device == "server"`, the file path must resolve to one of:
+- `/tmp/nexus-uploads/{user_id}/` — user's own uploaded files
+- `{NEXUS_SKILLS_DIR}/{user_id}/` — user's own skill files
+
+Path is canonicalized and validated against these prefixes. Reject `../`, symlink escapes, and any path outside the user's allowed directories. This prevents users from reading arbitrary server files or other users' data.
 
 ### 13.5 cron
 
@@ -806,7 +815,7 @@ See Section 15 for full cron design. Summary:
 
 **Params:** `skill_name` (string, required)
 **Action:** Load SKILL.md content from `{skills_dir}/{user_id}/{skill_name}/SKILL.md`
-**Returns:** Full skill content (instructions).
+**Returns:** Full skill content (instructions). If the skill directory contains additional files (scripts, templates, resources), appends hint: `"[This skill has additional files at {skill_path}. To use scripts or resources, use file_transfer(from_device='server', file_path='{skill_path}/filename') to copy them to your target device.]"`
 
 ### 13.7 install_skill
 
