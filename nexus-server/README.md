@@ -1,75 +1,181 @@
 # nexus-server
 
-## 1. 一句话定位
-nexus-server 是 NEXUS 的中枢编排层，负责连接 WebUI 与 Client 设备，驱动 Agent Loop 并维护全局状态。
+Orchestration hub -- runs the ReAct agent loop, manages users/sessions/devices, and routes tool calls to connected clients.
 
-## 2. 职责边界
-### 负责什么
-- 对外提供两类接口：`/api/*`（REST）与 `/ws`、`/ws/chat`（WebSocket）。
-- 维护在线设备路由表、工具挂起等待表、会话与记忆数据。
-- 运行 ReAct 主循环：调模型、下发工具、收集结果、产出回复。
-- 执行设备鉴权、设备上线/下线生命周期管理。
+## Module Map
 
-### 不负责什么
-- 不在服务端本机执行工具命令。
-- 不定义跨端协议结构本体（协议由 `nexus-common` 提供且冻结）。
-- 不承担 WebUI 页面渲染职责。
+| Module | What it does |
+|--------|-------------|
+| `agent_loop` | Per-session ReAct loop: calls the LLM, dispatches tool calls, loops until done |
+| `api` | REST endpoints for the WebUI (sessions, memory, devices, files, user profile) |
+| `auth` | Registration, login, JWT sign/verify, Axum middleware, plus sub-modules for admin/device/discord/cron/skills APIs |
+| `bus` | Internal message bus -- `InboundEvent` (user messages from any channel) and `OutboundEvent` routing via broadcast/mpsc |
+| `channels` | Channel abstraction (gateway, Discord); `ChannelManager` spawns each channel and runs the outbound dispatch loop |
+| `config` | Loads env vars into `ServerConfig`, defines `LlmConfig` struct |
+| `context` | Assembles the full prompt (system prompt + history + soul + memory + tool schemas) before each LLM call |
+| `cron` | Cron scheduler -- polls DB for due jobs every 10s and injects prompts into agent loop via bus |
+| `db` | All PostgreSQL interactions (SQLx). Pure async CRUD, no business logic. Sub-modules: users, sessions, messages, devices, discord, cron, skills, checkpoints |
+| `file_store` | Centralized file storage for uploads/media/temp files (25MB max, hourly cleanup of files >24h old) |
+| `memory` | Context compression -- when remaining context window drops below 16K tokens, compresses history into a summary |
+| `providers` | OpenAI-compatible LLM provider with retry logic |
+| `server_mcp` | Server-side MCP client manager -- admins configure shared MCP servers whose tools appear as `device_name="server"` |
+| `server_tools` | Server-native tools (memory, message, file_transfer, cron, skills, web_fetch) that execute on the server, not on clients |
+| `session` | Session handle management -- per-session locks and inbox queues |
+| `state` | Global `AppState`: online device routing table, device name index, tool schemas, DB pool, bus, config |
+| `tools_registry` | Resolves `device_name` from tool calls, injects `device_name` enum into schemas, routes `ExecuteToolRequest` to the right client |
+| `ws` | Client WebSocket handler: login handshake, message loop (heartbeat, tool registration, tool results), heartbeat reaper |
 
-## 3. 架构决策（What + Why）
-### 决策 A：工具调用采用 oneshot 挂起/唤醒
-- What：Agent 发起工具调用后，为每个 `request_id` 建立 `tokio::sync::oneshot` 通道并挂起等待回传。
-- Why：保证一次工具调用只会被一次结果唤醒，语义简单且并发下不串线。
+## Server-Native Tools
 
-### 决策 B：`request_id` 绑定设备归属
-- What：`request_id` 使用 `"{device_id}:{uuid_v4()}"` 格式。
-- Why：断线清理时可按前缀高效定位该设备的全部挂起请求。
+These tools run on the server, not on client devices. No `device_name` routing needed.
 
-### 决策 C：设备断线必须清理全部挂起 Sender
-- What：设备连接退出时，立刻从挂起表移除并 drop 对应 `oneshot::Sender`。
-- Why：若不清理，Agent 侧 Receiver 会永久等待，导致会话卡死。
+| Tool | Description |
+|------|-------------|
+| `save_memory` | Save text to the user's persistent memory |
+| `edit_memory` | Edit existing memory text |
+| `message` | Send a message to any channel, optionally with file attachments. Files are pulled from the specified `from_device` and delivered to the target channel. This is the only way to send files to users. |
+| `file_transfer` | Move files between devices. Server acts as relay: pulls from `from_device`, pushes to `to_device`. Supports server → client and client → client (via server relay). |
+| `cron` | Manage scheduled jobs: create, list, remove. Supports `cron_expr`, `every_seconds`, and one-shot `at` scheduling. |
+| `read_skill` | Read a skill's full SKILL.md instructions (per-user isolated, on-demand for progressive disclosure) |
+| `install_skill` | Install a skill from a GitHub repo for the current user. Per-user isolated — each user has their own skill set. |
+| `web_fetch` | Fetch a URL and extract readable content. SSRF-protected. Output flagged as untrusted. |
 
-### 决策 D：认证统一为 Device Token
-- What：设备与用户会话均使用数据库可查、可吊销的 Device Token。
-- Why：统一认证机制可降低实现复杂度并提升运维可控性，支持精确吊销单设备访问权限。
+## Environment Variables
 
-### 决策 E：消息分发采用 bus.rs 统一总线
-- What：系统内消息统一走 `InboundEvent / OutboundEvent`，由 ChannelManager 分发到具体渠道实现。
-- Why：将“渠道接入”和“Agent 推理”解耦，新增渠道时不改核心循环。
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | -- | PostgreSQL connection string (e.g. `postgres://user:pass@localhost/nexus`) |
+| `ADMIN_TOKEN` | Yes | -- | Secret token for admin operations |
+| `JWT_SECRET` | Yes | -- | JWT signing key (recommend 32+ characters) |
+| `SERVER_PORT` | Yes | -- | HTTP listen port (e.g. `8080`) |
+| `NEXUS_GATEWAY_WS_URL` | Yes | -- | WebSocket URL for the gateway connection (e.g. `ws://localhost:9090/ws/nexus`) |
+| `NEXUS_GATEWAY_TOKEN` | Yes | -- | Shared secret for gateway authentication |
+| `NEXUS_SKILLS_DIR` | No | `~/.nexus/skills` | Directory where skill scripts are stored |
 
-### 决策 F：模型错误响应不写入历史
-- What：当模型返回错误完成态时，不落库到会话消息。
-- Why：错误文本进入历史会污染后续上下文，容易形成持续失败闭环。
+LLM configuration (`api_base`, `api_key`, `model`, `context_window`) is managed via the `/api/llm-config` API and persisted in the `system_config` DB table -- not env vars.
 
-### 决策 G：工具声明统一为 `serde_json::Value`
-- What：服务端存储和分发工具声明时只处理 JSON 值，不定义额外工具 Schema 结构体。
-- Why：兼容内置、MCP、Skill 三类工具的异构字段并减少协议演进摩擦。
+## API Endpoints
 
-## 4. 与其他模块的关系
-### 依赖谁
-- 依赖 `nexus-common` 获取协议结构、共享常量与错误码语义。
-- 依赖 PostgreSQL 16+（启用 pgvector）进行会话、用户、记忆持久化。
+### Auth (public)
 
-### 被谁依赖
-- 被 `nexus-gateway` 通过 `/ws/nexus` 连接（GatewayChannel 主动拨入）。
-- 被 `nexus-client` 作为控制平面与消息调度中心依赖。
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/auth/register` | Register a new user |
+| POST | `/api/auth/login` | Login, returns JWT |
 
-### 通信方式
-- Gateway ↔ Server：WebSocket（`/ws/nexus`，GatewayChannel 主动连接）。
-- Client ↔ Server：WebSocket（`/ws`）。
+### WebSocket
 
-## 5. 环境要求与运行方式
-### 环境要求
-- 操作系统：仅 Linux
-- 部署方式：仅 Docker Compose
-- Rust 1.85+，edition 2024
-- PostgreSQL 16+，必须安装 pgvector
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/ws` | Client WebSocket connection (login handshake, tool execution, heartbeat) |
 
-### 关键环境变量清单
-- `DATABASE_URL`：数据库连接串
-- `ADMIN_TOKEN`：管理员注册校验令牌
-- `SERVER_PORT`：服务监听端口
-- `HEARTBEAT_TIMEOUT_SEC`：心跳超时剔除秒数
+### Devices (JWT required)
 
-### 运行方式
-- 在 Linux 主机准备 `.env` 与数据库后，通过 Docker Compose 启动服务。
-- 启动后由 WebUI 通过 `/api/*` 与 `/ws/chat` 访问，由 Client 通过 `/ws` 接入。
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/device-tokens` | Create a device token |
+| GET | `/api/device-tokens` | List device tokens |
+| DELETE | `/api/device-tokens/{token}` | Delete a device token |
+| GET | `/api/devices` | List connected devices |
+| GET | `/api/devices/{device_name}/policy` | Get device filesystem policy |
+| PATCH | `/api/devices/{device_name}/policy` | Update device filesystem policy |
+| GET | `/api/devices/{device_name}/mcp` | Get device MCP server config |
+| PUT | `/api/devices/{device_name}/mcp` | Update device MCP server config |
+
+### Sessions (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/sessions` | List sessions |
+| DELETE | `/api/sessions/{session_id}` | Delete a session |
+| GET | `/api/sessions/{session_id}/messages` | Get session message history |
+
+### User (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/user/profile` | Get user profile |
+| GET | `/api/user/soul` | Get user's soul (system prompt) |
+| PATCH | `/api/user/soul` | Update user's soul |
+| GET | `/api/user/memory` | Get user's persistent memory text |
+| PATCH | `/api/user/memory` | Update user's memory text |
+
+### Discord (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/discord-config` | Create/update Discord bot config |
+| GET | `/api/discord-config` | Get Discord bot config |
+| DELETE | `/api/discord-config` | Delete Discord bot config |
+
+### Skills (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/skills` | List user's skills |
+| POST | `/api/skills` | Create a skill |
+| POST | `/api/skills/install` | Install a skill from URL |
+| DELETE | `/api/skills/{name}` | Delete a skill |
+
+### Cron Jobs (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/cron-jobs` | List cron jobs |
+| POST | `/api/cron-jobs` | Create a cron job |
+| PATCH | `/api/cron-jobs/{job_id}` | Update a cron job |
+| DELETE | `/api/cron-jobs/{job_id}` | Delete a cron job |
+
+### Files (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/files` | Upload a file |
+| GET | `/api/files/{file_id}` | Download a file |
+
+### Admin (JWT required, admin only)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/admin/default-soul` | Get default soul (system prompt) |
+| PUT | `/api/admin/default-soul` | Set default soul |
+| GET | `/api/admin/skills` | List all users' skills |
+| GET | `/api/llm-config` | Get LLM configuration |
+| PUT | `/api/llm-config` | Update LLM configuration |
+| GET | `/api/server-mcp` | Get server MCP config |
+| PUT | `/api/server-mcp` | Update server MCP config |
+| GET | `/api/admin/rate-limit` | Get rate limit config |
+| PUT | `/api/admin/rate-limit` | Set rate limit config |
+
+## Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| `users` | User accounts (email, password hash, admin flag, soul, memory text) |
+| `device_tokens` | Per-device auth tokens with filesystem policy and MCP config (JSONB) |
+| `sessions` | Chat sessions, one per user per channel context |
+| `messages` | Message history (role, content, tool call metadata, compressed flag) |
+| `discord_configs` | Per-user Discord bot configuration (token, allowed users) |
+| `system_config` | Key-value store for server-wide settings (LLM config, MCP config) |
+| `cron_jobs` | Scheduled jobs with cron expressions or interval-based triggers |
+| `agent_checkpoints` | In-flight agent loop state for crash recovery (messages, iteration count) |
+| `skills` | User-installed skill scripts (name, description, file path, always-on flag) |
+
+## Build & Run
+
+```bash
+# Build
+cargo build --package nexus-server
+
+# Run (requires PostgreSQL)
+DATABASE_URL=postgres://user:pass@localhost/nexus \
+ADMIN_TOKEN=your-admin-token \
+JWT_SECRET=your-jwt-secret-at-least-32-chars \
+cargo run --package nexus-server
+
+# Lint
+cargo clippy --package nexus-server
+
+# Format check
+cargo fmt --package nexus-server --check
+```

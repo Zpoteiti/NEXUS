@@ -1,64 +1,96 @@
 # nexus-client
 
-## 1. 一句话定位
-nexus-client 是 NEXUS 的执行节点，负责连接 Server、上报本机能力并实际执行工具调用。
+Lightweight execution node -- connects to nexus-server via WebSocket, registers local tools, and executes tool calls on behalf of the agent.
 
-## 2. 职责边界
-### 负责什么
-- 与 Server 建立并维持 `/ws` 长连接，完成认证、心跳、重连。
-- 聚合三类工具（内置、MCP、Skill）并注册给 Server。
-- 接收 `ExecuteToolRequest`，执行前做 guardrails 校验，再回传标准结果。
-- 在工具集变化时通过 hash 检测实现热拔插同步。
+## Environment Variables
 
-### 不负责什么
-- 不直接对接 WebUI。
-- 不持有全局会话编排逻辑，不决策 Agent 推理路径。
-- 不定义跨端协议结构与退出码语义。
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `NEXUS_SERVER_WS_URL` | Yes | -- | Server WebSocket URL (e.g. `wss://nexus.example.com/ws`). Alias: `NEXUS_WS_URL` |
+| `NEXUS_AUTH_TOKEN` | Yes | -- | Device token (must start with `nexus_dev_` + 32 random chars). Alias: `NEXUS_DEVICE_TOKEN` |
 
-## 3. 架构决策（What + Why）
-### 决策 A：三阶段启动流程
-- What：按“连接 → 发现与注册 → 主循环”三阶段启动。
-- Why：将故障定位收敛到阶段边界，便于启动时快速判断卡点。
+Everything else is configured per-device through the web UI (Settings > Devices). The server sends these to the client on connect:
 
-### 决策 B：断线重连必须重走完整握手
-- What：重连成功后必须重新认证、重新注册工具，再恢复心跳。
-- Why：Server 在断线时已清理该设备状态，直接发心跳会导致状态不一致。
+| Setting | Description |
+|---------|-------------|
+| Workspace path | Root directory for file operations |
+| Filesystem policy | Sandbox or Unrestricted |
+| MCP servers | External tool servers to launch and discover |
+| Tool timeouts | Global execution timeout, shell timeout, filesystem tool timeout |
+| SSRF whitelist | CIDR ranges allowed to bypass private IP blocking in shell commands |
 
-### 决策 C：心跳携带工具 hash 触发热拔插同步
-- What：每次心跳前重算完整工具集 hash；hash 变更后立即补发全量 `RegisterTools`。
-- Why：在低开销心跳中实现工具集一致性，避免 Server 持有过期工具快照。
+## Built-in Tools
 
-### 决策 D：guardrails 强制前置校验
-- What：任何本地执行前，先做命令危险模式、路径越界、网络目标等校验。
-- Why：把风险拦截在调用系统资源之前，降低误执行与越权操作概率。
+These are registered automatically on connect. The server's agent can call them on any device.
 
-### 决策 E：工具命名采用前缀约定
-- What：内置工具保留原名；MCP 工具统一 `mcp_{server_name}_*`；Skill 工具统一 `skill_*`。
-- Why：命名空间隔离可避免重名冲突，便于路由与观测。
+| Tool | Description |
+|------|-------------|
+| `shell` | Execute a shell command on the device. Returns stdout/stderr. Supports `timeout_sec` (per-device configurable via web UI) and `working_dir` (must be within workspace). |
+| `read_file` | Read file contents. Returns numbered lines for text, metadata for images. Supports `offset` and `limit` for pagination. |
+| `write_file` | Write content to a file. Creates parent directories if needed. |
+| `edit_file` | Targeted string replacement -- finds `old_string` (must appear exactly once) and replaces it with `new_string`. |
+| `list_dir` | List directory contents. Supports `recursive` mode. Auto-ignores noise dirs (`.git`, `node_modules`, `__pycache__`, etc.). Max 200 entries by default. |
+| `glob` | Find files by pattern (e.g., `**/*.rs`, `src/**/*.test.ts`). Returns matching file paths. |
+| `grep` | Search file contents with regex. Returns matching lines with file paths and line numbers. |
 
-### 决策 F：工具参数统一使用 `serde_json::Value`
-- What：Client 端执行入口接受动态 JSON 参数，不额外定义工具 Schema 结构体。
-- Why：最大化兼容不同来源工具，减少新增工具时的编译期改动成本。
+All filesystem tools enforce the device's `FsPolicy`. The `shell` tool additionally runs through guardrails validation and optional bwrap sandboxing.
 
-## 4. 与其他模块的关系
-### 依赖谁
-- 依赖 `nexus-common` 提供消息协议与共享常量。
-- 依赖本机 OS 环境执行工具、启动子进程与访问文件系统。
+## MCP Support
 
-### 被谁依赖
-- 被 `nexus-server` 作为工具执行端依赖。
+MCP servers are configured per-device through the web UI (Settings > Devices), not locally on the client. Each device's MCP config is a list of servers with name, command, args, and transport type.
 
-### 通信方式
-- 仅与 Server 通过 `/ws` 双向通信。
-- 不与 WebUI 建立直连。
+Supported transport types: `stdio` (default), `sse`, `streamableHttp`.
 
-## 5. 环境要求与运行方式
-### 环境要求
-- 操作系统：Linux、Windows
-- Rust 1.85+，edition 2024
-- 可访问 Server WebSocket 地址
+On connect (and reconnect), the client reads its MCP config from the server, launches the configured MCP servers locally, discovers their tools via `tools/list`, and registers them with the prefix `mcp_{server_name}_*`. Each tool call is forwarded to the owning MCP server session.
 
-### 运行方式
-- 准备客户端配置（Server 地址、`device_id`、Device Token、MCP 配置、skills 目录）。
-- 启动后自动执行三阶段流程：连接认证、工具注册、心跳与指令循环。
-- 运行中如网络中断，将按退避策略重连并完整恢复握手状态。
+## Security
+
+### Filesystem Policy (FsPolicy)
+
+Every device has an `FsPolicy` that controls what the agent can access. Set it via the web UI (Settings > Devices). Two modes:
+
+| Policy | Filesystem | Shell | Description |
+|--------|-----------|-------|-------------|
+| **Sandbox** (default) | Read/write only within workspace | Guardrails active: dangerous command regex, SSRF detection, path traversal blocked. On Linux with `bwrap` installed, shell commands run inside a bubblewrap namespace (workspace r/w, system dirs read-only, config/secrets hidden behind tmpfs). | Locked down. Good for untrusted or shared environments. |
+| **Unrestricted** | All paths allowed, no restrictions. | Guardrails skipped entirely. No command filtering, no SSRF checks. Env isolation still applies (commands get a minimal `PATH`, `HOME`, `LANG`, `TERM`). | Full trust. Use only on personal machines you control. |
+
+### Guardrails (Sandbox mode)
+
+Active in Sandbox mode. Checks every shell command before execution:
+
+- **Dangerous command deny-list**: regex patterns block `rm -rf`, `dd if=`, `format`, `shutdown`/`reboot`, fork bombs, direct `/dev/sd*` writes, `mkfifo`/`mknod` in `/dev`
+- **SSRF protection**: extracts URLs from commands, resolves hostnames via async DNS, blocks requests to private/internal networks (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, link-local, IPv6 loopback/ULA/link-local). Unresolvable hostnames are conservatively rejected.
+- **Path traversal**: blocks `../` in shell commands. Absolute paths outside workspace are rejected.
+
+### Bwrap Sandbox (Linux only)
+
+When the policy is Sandbox and `bwrap` (bubblewrap) is installed, shell commands are wrapped in a namespace:
+
+- Workspace directory: read-write bind mount
+- `/usr`, `/bin`, `/lib`, `/lib64`: read-only
+- `/etc/ssl/certs`, `/etc/resolv.conf`, `/etc/ld.so.cache`: read-only
+- `/proc`, `/dev`: mounted
+- `/tmp`: tmpfs (isolated)
+- Home directory (workspace parent): hidden behind tmpfs (masks `~/.nexus/` config)
+
+### Environment Isolation
+
+All shell commands run with `env_clear()` -- only `PATH` (safe default), `HOME`, `LANG`, and `TERM` are set. No host environment variables leak to agent-executed commands.
+
+## Build & Run
+
+```bash
+# Build
+cargo build --package nexus-client
+
+# Run
+NEXUS_SERVER_WS_URL=ws://127.0.0.1:8080/ws \
+NEXUS_AUTH_TOKEN=nexus_dev_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+cargo run --package nexus-client
+
+# Lint
+cargo clippy --package nexus-client
+
+# Format check
+cargo fmt --package nexus-client --check
+```
