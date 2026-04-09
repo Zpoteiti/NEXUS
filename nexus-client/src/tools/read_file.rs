@@ -14,7 +14,7 @@ impl Tool for ReadFileTool {
         "read_file"
     }
     fn description(&self) -> &str {
-        "Read file contents with line numbers. Images return metadata."
+        "Read file contents with line numbers. Relative paths resolve from workspace. Images return metadata."
     }
     fn parameters(&self) -> Value {
         serde_json::json!({"type":"object","properties":{

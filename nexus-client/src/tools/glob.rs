@@ -12,7 +12,7 @@ impl Tool for GlobTool {
         "glob"
     }
     fn description(&self) -> &str {
-        "Find files matching a glob pattern, sorted by mtime (newest first)."
+        "Find files matching a glob pattern, sorted by mtime (newest first). Searches from workspace root by default."
     }
     fn parameters(&self) -> Value {
         serde_json::json!({"type":"object","properties":{

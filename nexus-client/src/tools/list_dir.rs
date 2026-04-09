@@ -14,7 +14,7 @@ impl Tool for ListDirTool {
         "list_dir"
     }
     fn description(&self) -> &str {
-        "List directory contents."
+        "List directory contents. Use '.' for workspace root. Relative paths resolve from workspace."
     }
     fn parameters(&self) -> Value {
         serde_json::json!({"type":"object","properties":{

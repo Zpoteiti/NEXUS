@@ -14,7 +14,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &str {
-        "Search file contents with regex."
+        "Search file contents with regex. Searches from workspace root by default."
     }
     fn parameters(&self) -> Value {
         serde_json::json!({"type":"object","properties":{

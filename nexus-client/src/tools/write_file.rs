@@ -12,7 +12,7 @@ impl Tool for WriteFileTool {
         "write_file"
     }
     fn description(&self) -> &str {
-        "Write content to a file. Creates parent directories."
+        "Write content to a file. Relative paths resolve from workspace. Creates parent directories."
     }
     fn parameters(&self) -> Value {
         serde_json::json!({"type":"object","properties":{
