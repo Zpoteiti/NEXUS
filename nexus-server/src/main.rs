@@ -65,6 +65,18 @@ async fn main() {
             nexus_common::consts::WEB_FETCH_CONCURRENT_MAX,
         )),
         http_client: reqwest::Client::new(),
+        web_fetch_client: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                nexus_common::consts::WEB_FETCH_TIMEOUT_SEC,
+            ))
+            .connect_timeout(std::time::Duration::from_secs(
+                nexus_common::consts::WEB_FETCH_CONNECT_TIMEOUT_SEC,
+            ))
+            .redirect(reqwest::redirect::Policy::limited(
+                nexus_common::consts::WEB_FETCH_MAX_REDIRECTS,
+            ))
+            .build()
+            .expect("Failed to create web_fetch client"),
         outbound_tx,
         shutdown: CancellationToken::new(),
     });

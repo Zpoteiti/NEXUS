@@ -13,7 +13,7 @@ use tracing::warn;
 pub fn build_tool_schemas(state: &AppState, user_id: &str) -> Vec<Value> {
     // Check cache first
     if let Some(cached) = state.tool_schema_cache.get(user_id) {
-        return cached.clone();
+        return cached.as_ref().clone();
     }
 
     let mut schemas = Vec::new();
@@ -83,10 +83,10 @@ pub fn build_tool_schemas(state: &AppState, user_id: &str) -> Vec<Value> {
         }
     }
 
-    // Cache result
+    // Cache result (wrapped in Arc for cheap clones on cache hits)
     state
         .tool_schema_cache
-        .insert(user_id.to_string(), schemas.clone());
+        .insert(user_id.to_string(), Arc::new(schemas.clone()));
 
     schemas
 }

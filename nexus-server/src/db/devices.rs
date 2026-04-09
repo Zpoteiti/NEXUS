@@ -86,3 +86,17 @@ pub async fn update_mcp_config(
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+pub async fn find_by_user_and_device(
+    pool: &PgPool,
+    user_id: &str,
+    device_name: &str,
+) -> Result<Option<DeviceToken>, sqlx::Error> {
+    sqlx::query_as::<_, DeviceToken>(
+        "SELECT * FROM device_tokens WHERE user_id = $1 AND device_name = $2",
+    )
+    .bind(user_id)
+    .bind(device_name)
+    .fetch_optional(pool)
+    .await
+}

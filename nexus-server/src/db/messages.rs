@@ -45,9 +45,10 @@ pub async fn list_uncompressed(
     session_id: &str,
 ) -> Result<Vec<Message>, sqlx::Error> {
     sqlx::query_as::<_, Message>(
-        "SELECT * FROM messages WHERE session_id = $1 AND compressed = FALSE ORDER BY created_at ASC",
+        "SELECT * FROM messages WHERE session_id = $1 AND compressed = FALSE ORDER BY created_at ASC LIMIT $2",
     )
     .bind(session_id)
+    .bind(nexus_common::consts::MAX_UNCOMPRESSED_MESSAGES)
     .fetch_all(pool)
     .await
 }

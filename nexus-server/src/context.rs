@@ -48,7 +48,7 @@ impl ChannelIdentity {
             is_owner: true,
             owner_name: user.email.clone(),
             owner_id: user.user_id.clone(),
-            channel_type: "gateway".into(),
+            channel_type: nexus_common::consts::CHANNEL_GATEWAY.into(),
         }
     }
 }
@@ -63,7 +63,7 @@ pub struct SkillInfo {
 
 /// Build the full context for an LLM call.
 /// Returns (messages, tool_schemas).
-pub async fn build_context(
+pub fn build_context(
     state: &AppState,
     user: &User,
     event: &InboundEvent,
@@ -71,11 +71,11 @@ pub async fn build_context(
     skills: &[SkillInfo],
     tool_schemas: &[Value],
     identity: &ChannelIdentity,
+    default_soul: &Option<String>,
 ) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
 
-    // 1. System prompt (soul or default)
-    let default_soul = state.default_soul.read().await;
+    // 1. System prompt (soul or default, cached per-session)
     let soul = user
         .soul
         .as_deref()
@@ -185,20 +185,20 @@ fn reconstruct_history(messages: &[Message]) -> Vec<ChatMessage> {
         let msg = &messages[i];
 
         match msg.role.as_str() {
-            "system" => {
+            nexus_common::consts::ROLE_SYSTEM => {
                 result.push(ChatMessage::system(msg.content.clone()));
                 i += 1;
             }
-            "user" => {
+            nexus_common::consts::ROLE_USER => {
                 result.push(ChatMessage::user(msg.content.clone()));
                 i += 1;
             }
-            "assistant" => {
+            nexus_common::consts::ROLE_ASSISTANT => {
                 if msg.tool_name.is_some() {
                     // Collect consecutive assistant rows with tool_name into tool_calls
                     let mut tool_calls = Vec::new();
                     while i < messages.len()
-                        && messages[i].role == "assistant"
+                        && messages[i].role == nexus_common::consts::ROLE_ASSISTANT
                         && messages[i].tool_name.is_some()
                     {
                         let m = &messages[i];
@@ -221,7 +221,7 @@ fn reconstruct_history(messages: &[Message]) -> Vec<ChatMessage> {
                     i += 1;
                 }
             }
-            "tool" => {
+            nexus_common::consts::ROLE_TOOL => {
                 result.push(ChatMessage::tool_result(
                     msg.tool_call_id.clone().unwrap_or_default(),
                     msg.content.clone(),
@@ -347,7 +347,7 @@ mod tests {
             is_owner: true,
             owner_name: "Alice".into(),
             owner_id: "123".into(),
-            channel_type: "gateway".into(),
+            channel_type: nexus_common::consts::CHANNEL_GATEWAY.into(),
         };
         let section = id.build_system_section().unwrap();
         assert!(section.contains("partner Alice"));
@@ -362,7 +362,7 @@ mod tests {
             is_owner: false,
             owner_name: "Alice".into(),
             owner_id: "123".into(),
-            channel_type: "discord".into(),
+            channel_type: nexus_common::consts::CHANNEL_DISCORD.into(),
         };
         let section = id.build_system_section().unwrap();
         assert!(section.contains("partner is Alice"));

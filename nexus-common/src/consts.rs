@@ -47,6 +47,17 @@ pub const BCRYPT_COST: u32 = 12;
 pub const HEARTBEAT_REAPER_INTERVAL_SEC: u64 = 30;
 pub const CRON_POLL_INTERVAL_SEC: u64 = 10;
 pub const COMPRESSION_SUMMARY_MAX_TOKENS: u32 = 12_000;
+pub const MAX_UNCOMPRESSED_MESSAGES: i64 = 2000;
+
+// Message roles (prevents typos in stringly-typed matching)
+pub const ROLE_SYSTEM: &str = "system";
+pub const ROLE_USER: &str = "user";
+pub const ROLE_ASSISTANT: &str = "assistant";
+pub const ROLE_TOOL: &str = "tool";
+
+// Channel names
+pub const CHANNEL_GATEWAY: &str = "gateway";
+pub const CHANNEL_DISCORD: &str = "discord";
 
 #[cfg(test)]
 mod tests {

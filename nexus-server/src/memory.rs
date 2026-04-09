@@ -23,7 +23,7 @@ pub async fn compress(
     // any tool calls/results after it (current turn)
     let mut compress_end = history.len();
     for i in (0..history.len()).rev() {
-        if history[i].role == "user" {
+        if history[i].role == nexus_common::consts::ROLE_USER {
             compress_end = i;
             break;
         }

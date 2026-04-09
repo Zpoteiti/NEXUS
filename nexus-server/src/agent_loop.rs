@@ -65,7 +65,14 @@ async fn handle_event(
     // Save user message to DB
     let msg_id = uuid::Uuid::new_v4().to_string();
     crate::db::messages::insert(
-        &state.db, &msg_id, session_id, "user", &content, None, None, None,
+        &state.db,
+        &msg_id,
+        session_id,
+        nexus_common::consts::ROLE_USER,
+        &content,
+        None,
+        None,
+        None,
     )
     .await
     .map_err(|e| format!("Save user message: {e}"))?;
@@ -85,15 +92,27 @@ async fn handle_event(
     // Load skills
     let skills = load_skills(state, user_id).await;
 
+    // Cache default soul for this session (avoids RwLock contention per iteration)
+    let cached_default_soul = state.default_soul.read().await.clone();
+
     // Loop detection state
     let mut call_counts: HashMap<String, u32> = HashMap::new();
 
+    // Load history once, append incrementally (avoids re-querying DB on every iteration)
+    let mut history = crate::db::messages::list_uncompressed(&state.db, session_id)
+        .await
+        .map_err(|e| format!("Load history: {e}"))?;
+    let mut needs_reload = false;
+
     // Agent iteration loop
     for iteration in 0..MAX_AGENT_ITERATIONS {
-        // Load message history
-        let history = crate::db::messages::list_uncompressed(&state.db, session_id)
-            .await
-            .map_err(|e| format!("Load history: {e}"))?;
+        if needs_reload {
+            history = crate::db::messages::list_uncompressed(&state.db, session_id)
+                .await
+                .map_err(|e| format!("Reload history: {e}"))?;
+            needs_reload = false;
+        }
+        let history_ref = &history;
 
         // Build tool schemas
         let tool_schemas = crate::tools_registry::build_tool_schemas(state, user_id);
@@ -103,12 +122,12 @@ async fn handle_event(
             state,
             &user,
             &event,
-            &history,
+            history_ref,
             &skills,
             &tool_schemas,
             &identity,
-        )
-        .await;
+            &cached_default_soul,
+        );
 
         // Check compression
         let llm_config = state.llm_config.read().await;
@@ -130,9 +149,9 @@ async fn handle_event(
         if (config.context_window as usize).saturating_sub(token_estimate)
             < nexus_common::consts::CONTEXT_COMPRESSION_THRESHOLD
         {
-            // Compress history
+            // Compress history then reload
             crate::memory::compress(state, session_id, &history, &config).await;
-            // Re-run this iteration with fresh history
+            needs_reload = true;
             continue;
         }
 

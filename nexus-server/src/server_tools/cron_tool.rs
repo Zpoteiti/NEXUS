@@ -93,23 +93,9 @@ async fn add_job(state: &Arc<AppState>, ctx: &ToolContext, args: &Value) -> (i32
     } else if let Some(secs) = every_seconds {
         Some(now + chrono::Duration::seconds(secs))
     } else if let Some(at_str) = at {
-        match chrono::DateTime::parse_from_rfc3339(at_str) {
-            Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
-            Err(_) => {
-                // Try naive datetime with timezone
-                match chrono::NaiveDateTime::parse_from_str(at_str, "%Y-%m-%dT%H:%M:%S") {
-                    Ok(naive) => {
-                        let tz: chrono_tz::Tz = timezone.parse().unwrap();
-                        let dt = naive
-                            .and_local_timezone(tz)
-                            .single()
-                            .map(|d| d.with_timezone(&chrono::Utc))
-                            .unwrap_or_else(|| naive.and_utc());
-                        Some(dt)
-                    }
-                    Err(e) => return (1, format!("Invalid datetime: {e}")),
-                }
-            }
+        match parse_at_datetime(at_str, &timezone) {
+            Ok(dt) => Some(dt),
+            Err(e) => return (1, e),
         }
     } else {
         None
@@ -217,4 +203,24 @@ fn compute_next_cron(expr: &str, timezone: &str) -> Result<chrono::DateTime<chro
         .next()
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .ok_or_else(|| "No next occurrence".to_string())
+}
+
+/// Parse an "at" datetime string (RFC 3339 or naive with timezone fallback).
+pub fn parse_at_datetime(
+    at: &str,
+    timezone: &str,
+) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(at) {
+        return Ok(dt.with_timezone(&chrono::Utc));
+    }
+    let naive = chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M:%S")
+        .map_err(|e| format!("Invalid datetime: {e}"))?;
+    let tz: chrono_tz::Tz = timezone
+        .parse()
+        .map_err(|_| format!("Invalid timezone: {timezone}"))?;
+    naive
+        .and_local_timezone(tz)
+        .single()
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .ok_or_else(|| "Ambiguous datetime".into())
 }

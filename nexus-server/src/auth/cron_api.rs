@@ -49,7 +49,9 @@ async fn create_job(
     let name = req
         .name
         .unwrap_or_else(|| req.message.chars().take(30).collect());
-    let channel = req.channel.unwrap_or_else(|| "gateway".into());
+    let channel = req
+        .channel
+        .unwrap_or_else(|| nexus_common::consts::CHANNEL_GATEWAY.into());
     let chat_id = req.chat_id.unwrap_or_default();
     let timezone = req.timezone.unwrap_or_else(|| "UTC".into());
     let delete_after_run = req.delete_after_run.unwrap_or(req.at.is_some());
@@ -88,7 +90,10 @@ async fn create_job(
     } else if let Some(secs) = req.every_seconds {
         Some(now + chrono::Duration::seconds(secs as i64))
     } else if let Some(ref at) = req.at {
-        Some(parse_at(at, &timezone).map_err(|e| ApiError::new(ErrorCode::ValidationFailed, e))?)
+        Some(
+            crate::server_tools::cron_tool::parse_at_datetime(at, &timezone)
+                .map_err(|e| ApiError::new(ErrorCode::ValidationFailed, e))?,
+        )
     } else {
         None
     };
@@ -192,24 +197,6 @@ async fn delete_job(
         return Err(ApiError::new(ErrorCode::NotFound, "Cron job not found"));
     }
     Ok(Json(serde_json::json!({ "message": "Cron job deleted" })))
-}
-
-fn parse_at(at: &str, timezone: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
-    // Try RFC 3339 first
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(at) {
-        return Ok(dt.with_timezone(&chrono::Utc));
-    }
-    // Try naive with timezone
-    let naive = chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M:%S")
-        .map_err(|e| format!("Invalid datetime: {e}"))?;
-    let tz: chrono_tz::Tz = timezone
-        .parse()
-        .map_err(|_| format!("Invalid timezone: {timezone}"))?;
-    naive
-        .and_local_timezone(tz)
-        .single()
-        .map(|d| d.with_timezone(&chrono::Utc))
-        .ok_or_else(|| "Ambiguous datetime".into())
 }
 
 pub fn cron_api_routes() -> Router<Arc<AppState>> {

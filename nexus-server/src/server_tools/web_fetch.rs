@@ -2,10 +2,7 @@
 
 use crate::state::AppState;
 use ipnet::IpNet;
-use nexus_common::consts::{
-    WEB_FETCH_CONNECT_TIMEOUT_SEC, WEB_FETCH_MAX_BODY_BYTES, WEB_FETCH_MAX_OUTPUT_CHARS,
-    WEB_FETCH_MAX_REDIRECTS, WEB_FETCH_TIMEOUT_SEC,
-};
+use nexus_common::consts::{WEB_FETCH_MAX_BODY_BYTES, WEB_FETCH_MAX_OUTPUT_CHARS};
 use regex::Regex;
 use serde_json::Value;
 use std::net::IpAddr;
@@ -54,17 +51,8 @@ pub async fn web_fetch(state: &Arc<AppState>, user_id: &str, args: &Value) -> (i
         }
     };
 
-    // Build request
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SEC))
-        .connect_timeout(std::time::Duration::from_secs(
-            WEB_FETCH_CONNECT_TIMEOUT_SEC,
-        ))
-        .redirect(reqwest::redirect::Policy::limited(WEB_FETCH_MAX_REDIRECTS))
-        .build()
-        .unwrap();
-
-    let resp = match client.get(url).send().await {
+    // Use pre-configured shared client (connection pooling + TLS reuse)
+    let resp = match state.web_fetch_client.get(url).send().await {
         Ok(r) => r,
         Err(e) => return (1, format!("HTTP request failed: {e}")),
     };

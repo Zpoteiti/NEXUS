@@ -62,9 +62,8 @@ async fn read_server_file(
     file_path: &str,
 ) -> Result<(Vec<u8>, String), String> {
     // Validate path (per-user isolation)
-    let path = Path::new(file_path);
-    let canonical = path
-        .canonicalize()
+    let canonical = tokio::fs::canonicalize(file_path)
+        .await
         .map_err(|e| format!("Path not found: {e}"))?;
     let canonical_str = canonical.to_string_lossy();
 

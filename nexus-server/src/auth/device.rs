@@ -118,12 +118,9 @@ async fn get_policy(
     Path(device_name): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let c = claims(&headers, &state)?;
-    let tokens = crate::db::devices::list_by_user(&state.db, &c.sub)
+    let dt = crate::db::devices::find_by_user_and_device(&state.db, &c.sub, &device_name)
         .await
-        .map_err(|e| ApiError::new(ErrorCode::InternalError, format!("{e}")))?;
-    let dt = tokens
-        .into_iter()
-        .find(|t| t.device_name == device_name)
+        .map_err(|e| ApiError::new(ErrorCode::InternalError, format!("{e}")))?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "Device not found"))?;
     Ok(Json(serde_json::json!({
         "device_name": dt.device_name,
@@ -175,12 +172,9 @@ async fn get_mcp(
     Path(device_name): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let c = claims(&headers, &state)?;
-    let tokens = crate::db::devices::list_by_user(&state.db, &c.sub)
+    let dt = crate::db::devices::find_by_user_and_device(&state.db, &c.sub, &device_name)
         .await
-        .map_err(|e| ApiError::new(ErrorCode::InternalError, format!("{e}")))?;
-    let dt = tokens
-        .into_iter()
-        .find(|t| t.device_name == device_name)
+        .map_err(|e| ApiError::new(ErrorCode::InternalError, format!("{e}")))?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "Device not found"))?;
     Ok(Json(serde_json::json!({
         "device_name": dt.device_name,
