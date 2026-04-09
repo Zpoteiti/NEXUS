@@ -88,7 +88,8 @@ pub fn sanitize_path(path: &str, config: &ClientConfig, write: bool) -> Result<P
                 .unwrap_or_else(|_| config.workspace.clone());
             if !canonical.starts_with(&ws) {
                 return Err(tool_error(&format!(
-                    "path outside workspace in Sandbox mode: {path}"
+                    "path outside workspace in Sandbox mode: {path}. Your workspace is: {}",
+                    config.workspace.display()
                 )));
             }
         }

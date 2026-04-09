@@ -51,7 +51,10 @@ async fn exec(args: Value, config: &ClientConfig) -> ToolResult {
         Err(e) => return ToolResult::error(e),
     };
     if !path.is_dir() {
-        return ToolResult::error(tool_error(&format!("not a directory: {p}")));
+        return ToolResult::error(tool_error(&format!(
+            "not a directory: {p}. Your workspace is: {}",
+            config.workspace.display()
+        )));
     }
 
     let entries = match tokio::task::spawn_blocking(move || {

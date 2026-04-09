@@ -45,7 +45,7 @@ async fn create_tables(pool: &PgPool) {
             device_name    TEXT NOT NULL,
             fs_policy      JSONB NOT NULL DEFAULT '{\"mode\":\"sandbox\"}',
             mcp_config     JSONB NOT NULL DEFAULT '[]',
-            workspace_path TEXT NOT NULL DEFAULT '',
+            workspace_path TEXT NOT NULL DEFAULT '~/.nexus/workspace',
             shell_timeout  BIGINT NOT NULL DEFAULT 60,
             ssrf_whitelist JSONB NOT NULL DEFAULT '[]',
             created_at     TIMESTAMPTZ DEFAULT NOW(),

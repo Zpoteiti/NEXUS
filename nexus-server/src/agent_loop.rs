@@ -221,6 +221,22 @@ async fn handle_event(
 
                 // Execute each tool call
                 for tc in &tool_calls {
+                    // Send human-friendly progress hint BEFORE execution
+                    let progress_hint = build_tool_hint(&tc.function.name, &tc.function.arguments);
+                    let _ = state
+                        .outbound_tx
+                        .send(OutboundEvent {
+                            channel: event.channel.clone(),
+                            chat_id: event.chat_id.clone(),
+                            session_id: session_id.to_string(),
+                            user_id: user_id.to_string(),
+                            content: progress_hint,
+                            media: vec![],
+                            is_progress: true,
+                            metadata: Default::default(),
+                        })
+                        .await;
+
                     // Loop detection
                     let call_key = format!("{}:{}", tc.function.name, tc.function.arguments);
                     let count = call_counts.entry(call_key).or_insert(0);
@@ -268,24 +284,7 @@ async fn handle_event(
                     .await
                     .map_err(|e| format!("Save tool result: {e}"))?;
 
-                    // Send progress
-                    let _ = state
-                        .outbound_tx
-                        .send(OutboundEvent {
-                            channel: event.channel.clone(),
-                            chat_id: event.chat_id.clone(),
-                            session_id: session_id.to_string(),
-                            user_id: user_id.to_string(),
-                            content: format!(
-                                "Tool: {} → {}",
-                                tc.function.name,
-                                &result_output[..result_output.len().min(200)]
-                            ),
-                            media: vec![],
-                            is_progress: true,
-                            metadata: Default::default(),
-                        })
-                        .await;
+                    // (progress hint already sent before execution)
 
                     // Hard stop on loop detection
                     if *call_counts
@@ -338,6 +337,26 @@ async fn handle_event(
     .await;
 
     Ok(())
+}
+
+/// Build a human-friendly progress hint for a tool call.
+fn build_tool_hint(tool_name: &str, arguments_json: &str) -> String {
+    let args: serde_json::Value = serde_json::from_str(arguments_json)
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+
+    let device = args
+        .get("device_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if server_tools::is_server_tool(tool_name) {
+        // Server tools: no device
+        format!("Executing {tool_name}...")
+    } else if device.is_empty() {
+        format!("Executing {tool_name}...")
+    } else {
+        format!("Executing {tool_name} on {device}...")
+    }
 }
 
 async fn execute_tool_call(
