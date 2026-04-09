@@ -72,7 +72,7 @@ async fn create_tables(pool: &PgPool) {
             user_id           TEXT PRIMARY KEY REFERENCES users(user_id),
             bot_token         TEXT NOT NULL,
             bot_user_id       TEXT,
-            owner_discord_id  TEXT,
+            partner_discord_id TEXT,
             enabled           BOOLEAN DEFAULT TRUE,
             allowed_users     TEXT[] DEFAULT '{}',
             created_at        TIMESTAMPTZ DEFAULT NOW(),
@@ -114,7 +114,7 @@ async fn create_tables(pool: &PgPool) {
         "CREATE TABLE IF NOT EXISTS telegram_configs (
             user_id           TEXT PRIMARY KEY REFERENCES users(user_id),
             bot_token         TEXT NOT NULL,
-            owner_telegram_id TEXT,
+            partner_telegram_id TEXT,
             enabled           BOOLEAN DEFAULT TRUE,
             allowed_users     TEXT[] DEFAULT '{}',
             group_policy      TEXT NOT NULL DEFAULT 'mention',
@@ -129,4 +129,5 @@ async fn create_tables(pool: &PgPool) {
             .await
             .unwrap_or_else(|e| panic!("Failed to execute SQL: {e}\n{sql}"));
     }
+
 }

@@ -38,7 +38,7 @@ async fn poll_and_execute(state: &Arc<AppState>) -> Result<(), String> {
             sender_id: None,
             media: vec![],
             cron_job_id: Some(job.job_id.clone()),
-            identity: None, // Cron = system-triggered, always owner context
+            identity: None, // Cron = system-triggered, always partner context
             metadata: Default::default(),
         };
 

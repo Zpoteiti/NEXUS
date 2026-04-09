@@ -17,7 +17,7 @@ fn claims(headers: &HeaderMap, state: &AppState) -> Result<crate::auth::Claims, 
 #[derive(Deserialize)]
 struct CreateDiscordConfig {
     bot_token: String,
-    owner_discord_id: String,
+    partner_discord_id: String,
     #[serde(default)]
     allowed_users: Vec<String>,
 }
@@ -32,7 +32,7 @@ async fn create_config(
         &state.db,
         &c.sub,
         &req.bot_token,
-        &req.owner_discord_id,
+        &req.partner_discord_id,
         &req.allowed_users,
     )
     .await
@@ -45,7 +45,7 @@ async fn create_config(
     Ok(Json(serde_json::json!({
         "user_id": c.sub,
         "enabled": true,
-        "owner_discord_id": req.owner_discord_id,
+        "partner_discord_id": req.partner_discord_id,
         "allowed_users": req.allowed_users,
     })))
 }
@@ -63,7 +63,7 @@ async fn get_config(
         "user_id": config.user_id,
         "bot_user_id": config.bot_user_id,
         "enabled": config.enabled,
-        "owner_discord_id": config.owner_discord_id,
+        "partner_discord_id": config.partner_discord_id,
         "allowed_users": config.allowed_users,
     })))
 }

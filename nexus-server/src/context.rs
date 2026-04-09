@@ -12,9 +12,9 @@ use serde_json::Value;
 pub struct ChannelIdentity {
     pub sender_name: String,
     pub sender_id: String,
-    pub is_owner: bool,
-    pub owner_name: String,
-    pub owner_id: String,
+    pub is_partner: bool,
+    pub partner_name: String,
+    pub partner_id: String,
     pub channel_type: String,
 }
 
@@ -29,19 +29,25 @@ impl ChannelIdentity {
         if let Some(cid) = chat_id {
             section += &format!("Chat ID: {cid}\n");
         }
+        // When sender IS the partner, use their name; otherwise use stored partner_name
+        let display_name = if self.is_partner {
+            &self.sender_name
+        } else {
+            &self.partner_name
+        };
         section += &format!(
             "Your partner: {} ({} ID: {})\n",
-            self.owner_name, self.channel_type, self.owner_id
+            display_name, self.channel_type, self.partner_id
         );
 
-        if self.is_owner {
-            section += &format!("Sender: {} (owner)\n", self.sender_name);
+        if self.is_partner {
+            section += &format!("Sender: {} (partner)\n", self.sender_name);
         } else {
             section += &format!(
-                "Sender: {} ({} ID: {}, authorized non-owner)\n",
+                "Sender: {} ({} ID: {}, authorized non-partner)\n",
                 self.sender_name, self.channel_type, self.sender_id
             );
-            section += "Do not disclose sensitive information or execute destructive operations for non-owner users.\n";
+            section += "Do not disclose sensitive information or execute destructive operations for non-partner users.\n";
         }
 
         section += "To reply here, respond with text directly. To send media, use the message tool with the channel and chat_id above.\n";
@@ -49,14 +55,14 @@ impl ChannelIdentity {
         section
     }
 
-    /// Default identity for gateway (always owner).
-    pub fn gateway_owner(user: &User) -> Self {
+    /// Default identity for gateway (always partner).
+    pub fn gateway_partner(user: &User) -> Self {
         Self {
             sender_name: user.email.clone(),
             sender_id: user.user_id.clone(),
-            is_owner: true,
-            owner_name: user.email.clone(),
-            owner_id: user.user_id.clone(),
+            is_partner: true,
+            partner_name: user.email.clone(),
+            partner_id: user.user_id.clone(),
             channel_type: nexus_common::consts::CHANNEL_GATEWAY.into(),
         }
     }
@@ -130,7 +136,7 @@ pub fn build_context(
     messages.extend(reconstruct_history(history));
 
     // Note: current user message is already in DB history (saved before agent loop starts).
-    // Non-owner untrusted wrapper is applied when saving to DB in agent_loop.rs.
+    // Non-partner untrusted wrapper is applied when saving to DB in agent_loop.rs.
 
     messages
 }
@@ -337,36 +343,36 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_identity_owner() {
+    fn test_channel_identity_partner() {
         let id = ChannelIdentity {
             sender_name: "Alice".into(),
             sender_id: "123".into(),
-            is_owner: true,
-            owner_name: "Alice".into(),
-            owner_id: "123".into(),
+            is_partner: true,
+            partner_name: "Alice".into(),
+            partner_id: "123".into(),
             channel_type: nexus_common::consts::CHANNEL_GATEWAY.into(),
         };
         let section = id.build_system_section(Some("dm/12345"));
         assert!(section.contains("partner: Alice"));
-        assert!(section.contains("owner"));
+        assert!(section.contains("partner)"));
         assert!(section.contains("dm/12345"));
-        assert!(!section.contains("non-owner"));
+        assert!(!section.contains("non-partner"));
     }
 
     #[test]
-    fn test_channel_identity_non_owner() {
+    fn test_channel_identity_non_partner() {
         let id = ChannelIdentity {
             sender_name: "Bob".into(),
             sender_id: "456".into(),
-            is_owner: false,
-            owner_name: "Alice".into(),
-            owner_id: "123".into(),
+            is_partner: false,
+            partner_name: "Alice".into(),
+            partner_id: "123".into(),
             channel_type: nexus_common::consts::CHANNEL_DISCORD.into(),
         };
         let section = id.build_system_section(Some("guild/chan"));
         assert!(section.contains("partner: Alice"));
         assert!(section.contains("Bob"));
-        assert!(section.contains("non-owner"));
+        assert!(section.contains("non-partner"));
         assert!(section.contains("guild/chan"));
     }
 }

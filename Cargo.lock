@@ -1733,6 +1733,8 @@ dependencies = [
 name = "nexus-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "dotenvy",
  "futures-util",
  "glob",
  "ipnet",
@@ -1770,6 +1772,7 @@ dependencies = [
  "chrono-tz",
  "cron",
  "dashmap 6.1.0",
+ "dotenvy",
  "futures-util",
  "ipnet",
  "jsonwebtoken",

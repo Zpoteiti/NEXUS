@@ -118,7 +118,7 @@ async fn connect_and_run(state: &Arc<AppState>, ws_url: &str, token: &str) -> Re
         // The sender_id from gateway is the user_id (JWT-authenticated)
         let user_id = sender_id.clone().unwrap_or_default();
 
-        // Gateway users are always the account owner (JWT-authenticated)
+        // Gateway users are always the partner (JWT-authenticated)
         let event = InboundEvent {
             session_id,
             user_id: user_id.clone(),
@@ -128,7 +128,7 @@ async fn connect_and_run(state: &Arc<AppState>, ws_url: &str, token: &str) -> Re
             sender_id: Some(user_id.clone()),
             media: vec![],
             cron_job_id: None,
-            identity: None, // Gateway = always owner, built from User in agent_loop
+            identity: None, // Gateway = always partner, built from User in agent_loop
             metadata: Default::default(),
         };
 

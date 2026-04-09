@@ -43,9 +43,9 @@ pub async fn start_bot(state: Arc<AppState>, user_id: String, bot_token: String)
         .await
         .ok()
         .flatten();
-    let owner_telegram_id = config
+    let partner_telegram_id = config
         .as_ref()
-        .and_then(|c| c.owner_telegram_id.clone())
+        .and_then(|c| c.partner_telegram_id.clone())
         .unwrap_or_default();
     let allowed_users: Vec<String> = config
         .as_ref()
@@ -79,7 +79,7 @@ pub async fn start_bot(state: Arc<AppState>, user_id: String, bot_token: String)
         let handler = Update::filter_message().endpoint(move |bot: Bot, msg: Message| {
             let state = Arc::clone(&state_clone);
             let nexus_user_id = user_id.clone();
-            let owner_id = owner_telegram_id.clone();
+            let owner_id = partner_telegram_id.clone();
             let allowed = allowed_users.clone();
             let policy = group_policy.clone();
             let username = bot_username.clone();
@@ -121,7 +121,7 @@ async fn handle_message(
     _bot: &Bot,
     msg: &Message,
     nexus_user_id: &str,
-    owner_telegram_id: &str,
+    partner_telegram_id: &str,
     allowed_users: &[String],
     group_policy: &str,
     bot_username: &str,
@@ -140,9 +140,9 @@ async fn handle_message(
     let sender_id = sender.id.0.to_string();
     let sender_name = sender.first_name.clone();
 
-    // Access control
-    let is_owner = sender_id == owner_telegram_id;
-    if !is_owner && !allowed_users.contains(&sender_id) {
+    // Access control: partner or allowed_users
+    let is_partner = sender_id == partner_telegram_id;
+    if !is_partner && !allowed_users.contains(&sender_id) {
         return;
     }
 
@@ -187,9 +187,9 @@ async fn handle_message(
         identity: Some(crate::context::ChannelIdentity {
             sender_name: sender_name.clone(),
             sender_id,
-            is_owner,
-            owner_name: owner_telegram_id.to_string(),
-            owner_id: owner_telegram_id.to_string(),
+            is_partner,
+            partner_name: partner_telegram_id.to_string(),
+            partner_id: partner_telegram_id.to_string(),
             channel_type: crate::channels::CHANNEL_TELEGRAM.to_string(),
         }),
         metadata: Default::default(),
@@ -251,10 +251,20 @@ pub async fn deliver(_state: &AppState, event: &OutboundEvent) {
         }
     }
 
-    // Send media URLs
-    for media_url in &event.media {
-        if let Err(e) = bot.send_message(chat_id, media_url).await {
-            error!("Telegram media send error: {e}");
+    // Send media as file attachments (or raw URLs for non-file-store paths)
+    for item in crate::file_store::resolve_media(&event.user_id, &event.media).await {
+        match item {
+            crate::file_store::ResolvedMedia::File { bytes, filename } => {
+                let input = teloxide::types::InputFile::memory(bytes).file_name(filename);
+                if let Err(e) = bot.send_document(chat_id, input).await {
+                    error!("Telegram media send error: {e}");
+                }
+            }
+            crate::file_store::ResolvedMedia::Url(url) => {
+                if let Err(e) = bot.send_message(chat_id, url).await {
+                    error!("Telegram media url send error: {e}");
+                }
+            }
         }
     }
 }

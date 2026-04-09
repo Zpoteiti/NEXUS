@@ -30,6 +30,7 @@ ipnet = "2"
 base64 = "0.22"
 cron = "0.15"
 chrono-tz = "0.10"
+dotenvy = "0.15"
 rmcp = { version = "1.3", features = ["client", "transport-child-process"] }
 serenity = { version = "0.12", features = ["client", "gateway", "model", "cache"] }
 teloxide = { version = "0.13", features = ["macros"] }

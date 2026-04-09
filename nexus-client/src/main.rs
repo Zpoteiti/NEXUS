@@ -15,11 +15,13 @@ use nexus_common::protocol::{ClientToServer, ServerToClient, ToolExecutionResult
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use tokio::sync::{Mutex, RwLock};
+use base64::Engine;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -191,6 +193,84 @@ async fn message_loop(
                     let msg = ClientToServer::RegisterTools { schemas };
                     let _ = send_message(&mut *sink.lock().await, &msg).await;
                 }
+            }
+            ServerToClient::FileRequest { request_id, path } => {
+                let sink = Arc::clone(sink);
+                let config = Arc::clone(config);
+                tokio::spawn(async move {
+                    let cfg = config.read().await;
+                    let resp = match tools::helpers::sanitize_path(&path, &cfg, false) {
+                        Ok(resolved) => match tokio::fs::read(&resolved).await {
+                            Ok(bytes) => {
+                                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                                ClientToServer::FileResponse {
+                                    request_id,
+                                    content_base64: b64,
+                                    mime_type: None,
+                                    error: None,
+                                }
+                            }
+                            Err(e) => ClientToServer::FileResponse {
+                                request_id,
+                                content_base64: String::new(),
+                                mime_type: None,
+                                error: Some(format!("Read failed: {e}")),
+                            },
+                        },
+                        Err(e) => ClientToServer::FileResponse {
+                            request_id,
+                            content_base64: String::new(),
+                            mime_type: None,
+                            error: Some(e),
+                        },
+                    };
+                    if let Err(e) = send_message(&mut *sink.lock().await, &resp).await {
+                        warn!("send FileResponse failed: {e}");
+                    }
+                });
+            }
+            ServerToClient::FileSend {
+                request_id,
+                filename: _,
+                content_base64,
+                destination,
+            } => {
+                let sink = Arc::clone(sink);
+                let config = Arc::clone(config);
+                tokio::spawn(async move {
+                    let cfg = config.read().await;
+                    let ack_err = match tools::helpers::sanitize_path(&destination, &cfg, true) {
+                        Ok(resolved) => {
+                            match base64::engine::general_purpose::STANDARD.decode(&content_base64) {
+                                Ok(bytes) => {
+                                    let mkdir_err = if let Some(parent) = resolved.parent() {
+                                        tokio::fs::create_dir_all(parent).await
+                                            .err()
+                                            .map(|e| format!("Create dirs failed: {e}"))
+                                    } else {
+                                        None
+                                    };
+                                    match mkdir_err {
+                                        Some(e) => Some(e),
+                                        None => match tokio::fs::write(&resolved, &bytes).await {
+                                            Ok(()) => None,
+                                            Err(e) => Some(format!("Write failed: {e}")),
+                                        },
+                                    }
+                                }
+                                Err(e) => Some(format!("Decode base64: {e}")),
+                            }
+                        }
+                        Err(e) => Some(e),
+                    };
+                    let resp = ClientToServer::FileSendAck {
+                        request_id,
+                        error: ack_err,
+                    };
+                    if let Err(e) = send_message(&mut *sink.lock().await, &resp).await {
+                        warn!("send FileSendAck failed: {e}");
+                    }
+                });
             }
             other => {
                 warn!("Unexpected message: {other:?}");

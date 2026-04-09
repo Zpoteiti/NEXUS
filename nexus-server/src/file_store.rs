@@ -63,6 +63,37 @@ pub async fn load_file(user_id: &str, file_id: &str) -> Result<(Vec<u8>, String)
     Err(ApiError::new(ErrorCode::NotFound, "File not found"))
 }
 
+/// A resolved media item ready for channel delivery.
+pub enum ResolvedMedia {
+    /// File bytes + filename, fetched from the server file store.
+    File { bytes: Vec<u8>, filename: String },
+    /// Raw URL/path passed through as-is (e.g. direct URLs from future channels).
+    Url(String),
+}
+
+/// Resolve media paths for channel delivery. Loads all `/api/files/{id}` entries
+/// in parallel; passes through anything else as a raw URL.
+pub async fn resolve_media(user_id: &str, media_paths: &[String]) -> Vec<ResolvedMedia> {
+    let futures = media_paths.iter().map(|path| {
+        let path = path.clone();
+        let user_id = user_id.to_string();
+        async move {
+            if let Some(file_id) = path.strip_prefix("/api/files/") {
+                match load_file(&user_id, file_id).await {
+                    Ok((bytes, filename)) => ResolvedMedia::File { bytes, filename },
+                    Err(e) => {
+                        warn!("resolve_media: failed to load {file_id}: {}", e.message);
+                        ResolvedMedia::Url(path)
+                    }
+                }
+            } else {
+                ResolvedMedia::Url(path)
+            }
+        }
+    });
+    futures_util::future::join_all(futures).await
+}
+
 fn sanitize_filename(name: &str) -> String {
     name.chars()
         .map(|c| {

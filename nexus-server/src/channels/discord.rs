@@ -7,8 +7,8 @@ use crate::bus::{self, InboundEvent, OutboundEvent};
 use crate::state::AppState;
 use nexus_common::consts::CHANNEL_DISCORD;
 use serenity::all::{
-    ChannelId, Context, CreateMessage, EventHandler, GatewayIntents, Message as DiscordMessage,
-    Ready,
+    ChannelId, Context, CreateAttachment, CreateMessage, EventHandler, GatewayIntents,
+    Message as DiscordMessage, Ready,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,9 +54,9 @@ pub async fn start_bot(state: Arc<AppState>, user_id: String, bot_token: String)
         .await
         .ok()
         .flatten();
-    let owner_discord_id = config
+    let partner_discord_id = config
         .as_ref()
-        .and_then(|c| c.owner_discord_id.clone())
+        .and_then(|c| c.partner_discord_id.clone())
         .unwrap_or_default();
     let allowed_users: Vec<String> = config
         .as_ref()
@@ -73,7 +73,7 @@ pub async fn start_bot(state: Arc<AppState>, user_id: String, bot_token: String)
 
         let handler = DiscordHandler {
             nexus_user_id: user_id_clone.clone(),
-            owner_discord_id,
+            partner_discord_id,
             allowed_users,
             state: state_clone,
             channels: channels_clone,
@@ -177,9 +177,14 @@ pub async fn deliver(state: &AppState, event: &OutboundEvent) {
         }
     }
 
-    // Send media as file URLs
-    for media_url in &event.media {
-        let msg = CreateMessage::new().content(media_url);
+    // Send media as file attachments (or raw URLs for non-file-store paths)
+    for item in crate::file_store::resolve_media(&event.user_id, &event.media).await {
+        let msg = match item {
+            crate::file_store::ResolvedMedia::File { bytes, filename } => {
+                CreateMessage::new().add_file(CreateAttachment::bytes(bytes, filename))
+            }
+            crate::file_store::ResolvedMedia::Url(url) => CreateMessage::new().content(url),
+        };
         if let Err(e) = channel_id.send_message(&http, msg).await {
             error!("Discord media send error: {e}");
         }
@@ -190,7 +195,7 @@ pub async fn deliver(state: &AppState, event: &OutboundEvent) {
 
 struct DiscordHandler {
     nexus_user_id: String,
-    owner_discord_id: String,
+    partner_discord_id: String,
     allowed_users: Vec<String>,
     state: Arc<AppState>,
     channels: Arc<RwLock<HashMap<String, ChannelId>>>,
@@ -218,9 +223,9 @@ impl EventHandler for DiscordHandler {
         let sender_id = msg.author.id.to_string();
         let sender_name = msg.author.name.clone();
 
-        // Access control: owner or allowed_users
-        let is_owner = sender_id == self.owner_discord_id;
-        if !is_owner && !self.allowed_users.contains(&sender_id) {
+        // Access control: partner or allowed_users
+        let is_partner = sender_id == self.partner_discord_id;
+        if !is_partner && !self.allowed_users.contains(&sender_id) {
             return;
         }
 
@@ -272,9 +277,9 @@ impl EventHandler for DiscordHandler {
             identity: Some(crate::context::ChannelIdentity {
                 sender_name: sender_name.clone(),
                 sender_id,
-                is_owner,
-                owner_name: self.owner_discord_id.clone(),
-                owner_id: self.owner_discord_id.clone(),
+                is_partner,
+                partner_name: self.partner_discord_id.clone(),
+                partner_id: self.partner_discord_id.clone(),
                 channel_type: CHANNEL_DISCORD.to_string(),
             }),
             metadata: Default::default(),

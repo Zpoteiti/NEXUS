@@ -17,7 +17,7 @@ fn claims(headers: &HeaderMap, state: &AppState) -> Result<crate::auth::Claims, 
 #[derive(Deserialize)]
 struct CreateTelegramConfig {
     bot_token: String,
-    owner_telegram_id: String,
+    partner_telegram_id: String,
     #[serde(default)]
     allowed_users: Vec<String>,
     #[serde(default = "default_group_policy")]
@@ -38,7 +38,7 @@ async fn create_config(
         &state.db,
         &c.sub,
         &req.bot_token,
-        &req.owner_telegram_id,
+        &req.partner_telegram_id,
         &req.allowed_users,
         &req.group_policy,
     )
@@ -51,7 +51,7 @@ async fn create_config(
     Ok(Json(serde_json::json!({
         "user_id": c.sub,
         "enabled": true,
-        "owner_telegram_id": req.owner_telegram_id,
+        "partner_telegram_id": req.partner_telegram_id,
         "allowed_users": req.allowed_users,
         "group_policy": req.group_policy,
     })))
@@ -69,7 +69,7 @@ async fn get_config(
     Ok(Json(serde_json::json!({
         "user_id": config.user_id,
         "enabled": config.enabled,
-        "owner_telegram_id": config.owner_telegram_id,
+        "partner_telegram_id": config.partner_telegram_id,
         "allowed_users": config.allowed_users,
         "group_policy": config.group_policy,
     })))

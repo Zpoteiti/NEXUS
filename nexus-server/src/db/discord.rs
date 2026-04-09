@@ -6,7 +6,7 @@ pub struct DiscordConfig {
     pub user_id: String,
     pub bot_token: String,
     pub bot_user_id: Option<String>,
-    pub owner_discord_id: Option<String>,
+    pub partner_discord_id: Option<String>,
     pub enabled: bool,
     pub allowed_users: Vec<String>,
     pub created_at: DateTime<Utc>,
@@ -17,18 +17,18 @@ pub async fn upsert_config(
     pool: &PgPool,
     user_id: &str,
     bot_token: &str,
-    owner_discord_id: &str,
+    partner_discord_id: &str,
     allowed_users: &[String],
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO discord_configs (user_id, bot_token, owner_discord_id, allowed_users, updated_at)
+        "INSERT INTO discord_configs (user_id, bot_token, partner_discord_id, allowed_users, updated_at)
          VALUES ($1, $2, $3, $4, NOW())
          ON CONFLICT (user_id) DO UPDATE SET
-           bot_token = $2, owner_discord_id = $3, allowed_users = $4, updated_at = NOW()",
+           bot_token = $2, partner_discord_id = $3, allowed_users = $4, updated_at = NOW()",
     )
     .bind(user_id)
     .bind(bot_token)
-    .bind(owner_discord_id)
+    .bind(partner_discord_id)
     .bind(allowed_users)
     .execute(pool)
     .await?;
