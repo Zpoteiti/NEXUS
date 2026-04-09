@@ -3,10 +3,12 @@
 
 pub mod cron;
 pub mod devices;
+pub mod discord;
 pub mod messages;
 pub mod sessions;
 pub mod skills;
 pub mod system_config;
+pub mod telegram;
 pub mod users;
 
 use sqlx::PgPool;
@@ -108,6 +110,16 @@ async fn create_tables(pool: &PgPool) {
             skill_path     TEXT NOT NULL,
             created_at     TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE(user_id, name)
+        )",
+        "CREATE TABLE IF NOT EXISTS telegram_configs (
+            user_id           TEXT PRIMARY KEY REFERENCES users(user_id),
+            bot_token         TEXT NOT NULL,
+            owner_telegram_id TEXT,
+            enabled           BOOLEAN DEFAULT TRUE,
+            allowed_users     TEXT[] DEFAULT '{}',
+            group_policy      TEXT NOT NULL DEFAULT 'mention',
+            created_at        TIMESTAMPTZ DEFAULT NOW(),
+            updated_at        TIMESTAMPTZ DEFAULT NOW()
         )",
     ];
 

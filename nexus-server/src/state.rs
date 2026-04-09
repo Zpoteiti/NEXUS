@@ -65,6 +65,25 @@ pub struct AppState {
     // Pre-configured HTTP client for web_fetch (custom timeout/redirect)
     pub web_fetch_client: reqwest::Client,
 
+    // Server-side MCP manager (admin-configured)
+    pub server_mcp: Arc<RwLock<crate::server_mcp::ServerMcpManager>>,
+
+    // Gateway WebSocket sink (for outbound delivery)
+    pub gateway_sink: RwLock<
+        Option<
+            Arc<
+                Mutex<
+                    futures_util::stream::SplitSink<
+                        tokio_tungstenite::WebSocketStream<
+                            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+                        >,
+                        tokio_tungstenite::tungstenite::Message,
+                    >,
+                >,
+            >,
+        >,
+    >,
+
     // Shutdown signal
     pub shutdown: CancellationToken,
 }

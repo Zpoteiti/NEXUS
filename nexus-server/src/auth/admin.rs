@@ -174,6 +174,47 @@ async fn get_all_skills(
     Ok(Json(serde_json::json!({ "skills": skills })))
 }
 
+// -- Server MCP --
+
+async fn get_server_mcp(
+    headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    admin_claims(&headers, &state)?;
+    let mcp_json = crate::db::system_config::get(&state.db, "server_mcp_config")
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::InternalError, format!("{e}")))?
+        .unwrap_or_else(|| "[]".into());
+    let servers: serde_json::Value =
+        serde_json::from_str(&mcp_json).unwrap_or(serde_json::json!([]));
+    Ok(Json(serde_json::json!({ "mcp_servers": servers })))
+}
+
+#[derive(Deserialize)]
+struct McpConfigUpdate {
+    mcp_servers: Vec<nexus_common::protocol::McpServerEntry>,
+}
+
+async fn put_server_mcp(
+    headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<McpConfigUpdate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    admin_claims(&headers, &state)?;
+    let json = serde_json::to_string(&req.mcp_servers)
+        .map_err(|e| ApiError::new(ErrorCode::InternalError, format!("{e}")))?;
+    crate::db::system_config::set(&state.db, "server_mcp_config", &json)
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::InternalError, format!("{e}")))?;
+    state
+        .server_mcp
+        .write()
+        .await
+        .reinitialize(&req.mcp_servers)
+        .await;
+    Ok(Json(serde_json::json!({ "mcp_servers": req.mcp_servers })))
+}
+
 pub fn admin_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
@@ -186,4 +227,5 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         )
         .route("/api/llm-config", get(get_llm_config).put(put_llm_config))
         .route("/api/admin/skills", get(get_all_skills))
+        .route("/api/server-mcp", get(get_server_mcp).put(put_server_mcp))
 }

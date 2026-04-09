@@ -3,7 +3,9 @@
 pub mod admin;
 pub mod cron_api;
 pub mod device;
+pub mod discord_api;
 pub mod skills_api;
+pub mod telegram_api;
 
 use crate::state::AppState;
 use axum::extract::State;
