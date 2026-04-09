@@ -77,8 +77,11 @@ async fn handle_event(
     .await
     .map_err(|e| format!("Save user message: {e}"))?;
 
-    // Build identity
-    let identity = ChannelIdentity::gateway_owner(&user); // TODO: channel-specific in M2d
+    // Use channel-provided identity, or default to owner for gateway/cron
+    let identity = event
+        .identity
+        .clone()
+        .unwrap_or_else(|| ChannelIdentity::gateway_owner(&user));
 
     // Build tool context for server tools
     let tool_ctx = ToolContext {

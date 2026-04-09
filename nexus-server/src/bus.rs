@@ -19,6 +19,7 @@ pub struct InboundEvent {
     pub sender_id: Option<String>,
     pub media: Vec<String>,
     pub cron_job_id: Option<String>,
+    pub identity: Option<crate::context::ChannelIdentity>,
     pub metadata: HashMap<String, String>,
 }
 

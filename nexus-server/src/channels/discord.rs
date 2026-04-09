@@ -266,16 +266,18 @@ impl EventHandler for DiscordHandler {
             content,
             channel: CHANNEL_DISCORD.to_string(),
             chat_id: Some(chat_id),
-            sender_id: Some(sender_id),
+            sender_id: Some(sender_id.clone()),
             media: vec![],
             cron_job_id: None,
-            metadata: {
-                let mut m = HashMap::new();
-                m.insert("sender_name".into(), sender_name);
-                m.insert("is_owner".into(), is_owner.to_string());
-                m.insert("owner_name".into(), self.owner_discord_id.clone());
-                m
-            },
+            identity: Some(crate::context::ChannelIdentity {
+                sender_name: sender_name.clone(),
+                sender_id,
+                is_owner,
+                owner_name: self.owner_discord_id.clone(),
+                owner_id: self.owner_discord_id.clone(),
+                channel_type: CHANNEL_DISCORD.to_string(),
+            }),
+            metadata: Default::default(),
         };
 
         if let Err(e) = bus::publish_inbound(&self.state, event).await {

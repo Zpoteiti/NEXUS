@@ -181,15 +181,18 @@ async fn handle_message(
         content,
         channel: crate::channels::CHANNEL_TELEGRAM.to_string(),
         chat_id: Some(chat_id),
-        sender_id: Some(sender_id),
+        sender_id: Some(sender_id.clone()),
         media: vec![],
         cron_job_id: None,
-        metadata: {
-            let mut m = std::collections::HashMap::new();
-            m.insert("sender_name".into(), sender_name);
-            m.insert("is_owner".into(), is_owner.to_string());
-            m
-        },
+        identity: Some(crate::context::ChannelIdentity {
+            sender_name: sender_name.clone(),
+            sender_id,
+            is_owner,
+            owner_name: owner_telegram_id.to_string(),
+            owner_id: owner_telegram_id.to_string(),
+            channel_type: crate::channels::CHANNEL_TELEGRAM.to_string(),
+        }),
+        metadata: Default::default(),
     };
 
     if let Err(e) = bus::publish_inbound(state, event).await {

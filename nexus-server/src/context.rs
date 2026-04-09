@@ -8,6 +8,8 @@ use crate::state::AppState;
 use serde_json::Value;
 
 /// Channel-agnostic sender identity for security boundaries.
+/// Constructed by each channel (Discord, Telegram, Gateway) and passed through InboundEvent.
+#[derive(Debug, Clone)]
 pub struct ChannelIdentity {
     pub sender_name: String,
     pub sender_id: String,
